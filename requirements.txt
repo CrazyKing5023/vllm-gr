@@ -1,0 +1,23 @@
+# vllm-GR Requirements
+# 基础版本：支持 DLRM_v3 (HSTU) 模型的离线推理
+
+# Core dependencies
+torch>=2.0.0
+
+# TorchRec 用于嵌入和稀疏特征（可选依赖）
+# Uncomment if you need TorchRec features:
+# torchrec>=0.6.0
+# fbgemm-gpu>=0.6.0
+
+# Development dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# Optional: for loading safetensors format
+safetensors>=0.4.0
+
+# Optional: for serving (future extension)
+# fastapi>=0.100.0
+# uvicorn>=0.23.0
+# pydantic>=2.0.0
+

@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vllm-gr"
+version = "0.1.0"
+description = "vLLM-based Generative Recommender Inference Engine"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.8"
+authors = [
+    {name = "vllm-GR Authors"},
+]
+keywords = ["machine-learning", "recommender-systems", "inference", "vllm", "hstu", "dlrm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "torch>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+torchrec = [
+    "torchrec>=0.6.0",
+]
+safetensors = [
+    "safetensors>=0.4.0",
+]
+all = [
+    "vllm-gr[dev,safetensors]",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-org/vllm-GR"
+Documentation = "https://github.com/your-org/vllm-GR#readme"
+Repository = "https://github.com/your-org/vllm-GR.git"
+Issues = "https://github.com/your-org/vllm-GR/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vllm_gr*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v"
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311']
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
