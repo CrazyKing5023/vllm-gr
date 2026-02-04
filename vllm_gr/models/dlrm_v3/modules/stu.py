@@ -127,6 +127,13 @@ class STULayer(STU):
         )
         
         # Output projection
+        # When concat_u=True and concat_x=True in pytorch_norm_mul_dropout:
+        #   y = torch.cat([u, x, y], dim=1)  where x is actually attn
+        # u dim: num_heads * hidden_dim
+        # x (attn) dim: num_heads * hidden_dim  
+        # y (u * normalized(attn)) dim: num_heads * hidden_dim
+        # Total: 3 * num_heads * hidden_dim
+        # output_weight shape: (y_dim, embedding_dim) for torch.addmm
         self._output_weight = torch.nn.Parameter(
             torch.empty((self._hidden_dim * self._num_heads * 3, self._embedding_dim)),
         )
