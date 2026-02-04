@@ -96,6 +96,54 @@ class HSTUModelWrapper(nn.Module):
             is_dense=True,  # Use dense mode (embeddings provided externally)
         )
     
+    def _build_seq_embeddings(
+        self,
+        total_embeddings: torch.Tensor,
+        total_lengths: torch.Tensor,
+        candidate_embeddings: torch.Tensor,
+        num_candidates: torch.Tensor,
+    ) -> Dict[str, SequenceEmbedding]:
+        """
+        Build sequence embeddings dict with all required feature names.
+        
+        This ensures that both user_embedding_feature_names and item_embedding_feature_names
+        are properly populated in the seq_embeddings dict, matching the expected format
+        from the original generative-recommenders implementation.
+        
+        Args:
+            total_embeddings: Combined UIH + candidate embeddings
+            total_lengths: Total lengths per batch element
+            candidate_embeddings: Candidate item embeddings only
+            num_candidates: Number of candidates per batch element
+        
+        Returns:
+            Dictionary mapping feature names to SequenceEmbedding objects
+        """
+        seq_embeddings: Dict[str, SequenceEmbedding] = {}
+        
+        # Add user embedding features (use combined sequence)
+        for name in self.config.user_embedding_feature_names:
+            seq_embeddings[name] = SequenceEmbedding(
+                lengths=total_lengths,
+                embedding=total_embeddings,
+            )
+        
+        # Add item embedding features (use candidate embeddings only)
+        for name in self.config.item_embedding_feature_names:
+            seq_embeddings[name] = SequenceEmbedding(
+                lengths=num_candidates,
+                embedding=candidate_embeddings,
+            )
+        
+        # Ensure uih_post_id_feature_name is available (needed by _user_forward)
+        if self.config.uih_post_id_feature_name and self.config.uih_post_id_feature_name not in seq_embeddings:
+            seq_embeddings[self.config.uih_post_id_feature_name] = SequenceEmbedding(
+                lengths=total_lengths,
+                embedding=total_embeddings,
+            )
+        
+        return seq_embeddings
+    
     def forward(
         self,
         uih_embeddings: torch.Tensor,
@@ -119,13 +167,14 @@ class HSTUModelWrapper(nn.Module):
         total_embeddings = torch.cat([uih_embeddings, candidate_embeddings], dim=0)
         total_lengths = uih_lengths + num_candidates
         
-        # Create sequence embeddings dict
-        seq_embeddings = {
-            "item_id": SequenceEmbedding(
-                lengths=total_lengths,
-                embedding=total_embeddings,
-            ),
-        }
+        # Create sequence embeddings dict with all required feature names
+        # The key must match the feature names defined in config
+        seq_embeddings = self._build_seq_embeddings(
+            total_embeddings=total_embeddings,
+            total_lengths=total_lengths,
+            candidate_embeddings=candidate_embeddings,
+            num_candidates=num_candidates,
+        )
         
         # Run model
         (
@@ -174,12 +223,21 @@ class HSTUModelWrapper(nn.Module):
         Returns:
             HSTUModelOutput
         """
-        seq_embeddings = {
-            "item_id": SequenceEmbedding(
-                lengths=sequence_lengths,
-                embedding=sequence_embeddings,
-            ),
-        }
+        # Extract candidate embeddings from the combined sequence
+        # Candidate embeddings are at the end of the sequence
+        total_candidates = int(num_candidates.sum().item())
+        if total_candidates > 0:
+            candidate_embeddings = sequence_embeddings[-total_candidates:]
+        else:
+            candidate_embeddings = sequence_embeddings.new_empty(0, sequence_embeddings.size(-1))
+        
+        # Build seq_embeddings with all required feature names
+        seq_embeddings = self._build_seq_embeddings(
+            total_embeddings=sequence_embeddings,
+            total_lengths=sequence_lengths,
+            candidate_embeddings=candidate_embeddings,
+            num_candidates=num_candidates,
+        )
         
         (
             user_embeddings,

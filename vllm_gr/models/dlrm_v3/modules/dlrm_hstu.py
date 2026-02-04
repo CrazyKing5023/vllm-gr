@@ -265,20 +265,43 @@ class DlrmHSTU(HammerModule):
         self,
         seq_embeddings: Dict[str, SequenceEmbedding],
     ) -> torch.Tensor:
-        """Compute item embeddings from features."""
-        if not self._hstu_configs.item_embedding_feature_names:
-            # Fallback: use first available embedding
+        """Compute item embeddings from features.
+        
+        This method concatenates embeddings from all item_embedding_feature_names
+        and passes them through the item_embedding_mlp.
+        
+        Note: In the original generative-recommenders implementation, this method
+        expects all item_embedding_feature_names to be present in seq_embeddings.
+        The caller (HSTUModelWrapper) must ensure this by populating seq_embeddings
+        correctly.
+        """
+        # Collect embeddings for item features
+        item_feature_names = self._hstu_configs.item_embedding_feature_names
+        
+        if not item_feature_names:
+            # Fallback: if no item features configured, use first available embedding
             first_key = next(iter(seq_embeddings.keys()))
             return self._item_embedding_mlp(seq_embeddings[first_key].embedding)
         
-        all_embeddings = torch.cat(
-            [
-                seq_embeddings[name].embedding
-                for name in self._hstu_configs.item_embedding_feature_names
-                if name in seq_embeddings
-            ],
-            dim=-1,
-        )
+        # Collect available embeddings
+        available_embeddings = [
+            seq_embeddings[name].embedding
+            for name in item_feature_names
+            if name in seq_embeddings
+        ]
+        
+        if not available_embeddings:
+            # Fallback: if none of the configured item features are available,
+            # use first available embedding and log warning
+            logger.warning(
+                f"None of the configured item_embedding_feature_names {item_feature_names} "
+                f"are present in seq_embeddings (keys: {list(seq_embeddings.keys())}). "
+                f"Falling back to first available embedding."
+            )
+            first_key = next(iter(seq_embeddings.keys()))
+            return self._item_embedding_mlp(seq_embeddings[first_key].embedding)
+        
+        all_embeddings = torch.cat(available_embeddings, dim=-1)
         return self._item_embedding_mlp(all_embeddings)
 
     def _user_forward(
