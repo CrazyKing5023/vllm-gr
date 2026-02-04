@@ -3,10 +3,10 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-Jagged Tensor 算子入口
+Jagged Tensor Operator Entry Point
 
-Jagged Tensor 是处理变长序列的核心数据结构。
-当前使用 PyTorch 实现。
+Jagged Tensor is the core data structure for handling variable-length sequences.
+Currently uses PyTorch implementation.
 """
 
 from typing import Optional, Tuple
@@ -31,9 +31,9 @@ def concat_2D_jagged(
     kernel: HammerKernel = HammerKernel.PYTORCH,
 ) -> torch.Tensor:
     """
-    拼接两个 2D Jagged Tensor
+    Concatenate two 2D Jagged Tensors
     
-    用于合并用户历史序列和候选物品序列。
+    Used for merging user history sequence and candidate item sequence.
     """
     return pytorch_concat_2D_jagged(
         values_left=values_left,
@@ -57,9 +57,9 @@ def split_2D_jagged(
     kernel: HammerKernel = HammerKernel.PYTORCH,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    分割 2D Jagged Tensor 为两部分
+    Split 2D Jagged Tensor into two parts
     
-    用于从合并序列中分离用户嵌入和候选嵌入。
+    Used for separating user embeddings and candidate embeddings from merged sequence.
     """
     return pytorch_split_2D_jagged(
         max_seq_len=max_seq_len,
@@ -69,4 +69,3 @@ def split_2D_jagged(
         offsets_left=offsets_left,
         offsets_right=offsets_right,
     )
-

@@ -3,10 +3,10 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-HSTU 计算算子
+HSTU Compute Operators
 
-包含 UVQK 投影、注意力计算和输出投影等操作。
-当前使用 PyTorch 实现。
+Contains UVQK projection, attention computation, and output projection operations.
+Currently uses PyTorch implementation.
 """
 
 from typing import Optional, Tuple
@@ -26,7 +26,7 @@ def addmm(
     weight: torch.Tensor,
     kernel: HammerKernel = HammerKernel.PYTORCH,
 ) -> torch.Tensor:
-    """带偏置的矩阵乘法，使用 torch.addmm 实现。"""
+    """Matrix multiplication with bias, using torch.addmm implementation."""
     return torch.addmm(bias, input, weight)
 
 
@@ -53,7 +53,7 @@ def hstu_compute_uqvk(
         attn_dim: Attention dimension
         hidden_dim: Hidden dimension
         uvqk_weight, uvqk_bias: Projection parameters
-        kernel: 内核实现类型（当前版本使用 PyTorch）
+        kernel: Kernel implementation type (current version uses PyTorch)
     
     Returns:
         (u, q, k, v) tensors
@@ -106,9 +106,9 @@ def hstu_compute_output(
     kernel: HammerKernel = HammerKernel.PYTORCH,
 ) -> torch.Tensor:
     """
-    计算 HSTU 输出
+    Compute HSTU output
     
-    包含归一化、门控、dropout 和残差连接。
+    Includes normalization, gating, dropout, and residual connection.
     """
     return pytorch_hstu_compute_output(
         attn=attn,
@@ -152,9 +152,9 @@ def hstu_preprocess_and_attention(
     kernel: HammerKernel = HammerKernel.PYTORCH,
 ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
     """
-    HSTU 预处理和注意力计算的组合操作
+    Combined HSTU preprocessing and attention computation
     
-    包含 UVQK 投影和多头注意力计算。
+    Includes UVQK projection and multi-head attention computation.
     """
     # Compute U, Q, K, V
     u, q, k, v = hstu_compute_uqvk(
@@ -189,4 +189,3 @@ def hstu_preprocess_and_attention(
     ).view(-1, hidden_dim * num_heads)
     
     return u, attn_output, k, v
-

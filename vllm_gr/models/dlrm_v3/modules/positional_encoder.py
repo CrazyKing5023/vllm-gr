@@ -53,9 +53,9 @@ class HSTUPositionalEncoder(HammerModule):
         num_targets: Optional[torch.Tensor],
     ) -> torch.Tensor:
         """
-        为序列嵌入添加位置编码
+        Add positional encoding to sequence embeddings
         
-        包含位置嵌入和时间戳嵌入两部分。
+        Includes both position embeddings and timestamp embeddings.
         """
         L = seq_embeddings.size(0)
         device = seq_embeddings.device
@@ -79,7 +79,7 @@ class HSTUPositionalEncoder(HammerModule):
         
         # Compute time bucket indices from timestamps
         if seq_timestamps is not None and seq_timestamps.numel() > 0:
-            # 简单的时间桶计算（使用直接映射）
+            # Simple time bucket computation (using direct mapping)
             time_buckets = (seq_timestamps.abs() % (self._timestamp_embeddings_weight.size(0) - 1)).long()
             time_emb = self._timestamp_embeddings_weight[time_buckets]
             
@@ -89,4 +89,3 @@ class HSTUPositionalEncoder(HammerModule):
             seq_embeddings = seq_embeddings * (self._embedding_dim ** 0.5) + pos_emb.to(dtype)
         
         return seq_embeddings
-

@@ -3,9 +3,9 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-DLRM_v3 模型通用工具
+DLRM_v3 Model Common Utilities
 
-包含 HammerModule 基类、内核选择和辅助函数。
+Contains HammerModule base class, kernel selection, and helper functions.
 """
 
 import abc
@@ -28,32 +28,32 @@ class HammerKernel(Enum):
 
 class HammerModule(torch.nn.Module, abc.ABC):
     """
-    HSTU 模块基类
+    HSTU Module Base Class
     
-    提供内核选择和推理模式控制。
-    当前版本使用 PyTorch 内核实现。
+    Provides kernel selection and inference mode control.
+    Current version uses PyTorch kernel implementation.
     """
     _is_inference: bool = False
-    _use_triton_cc: bool = False  # 当前禁用
+    _use_triton_cc: bool = False  # Currently disabled
     _training_dtype: torch.dtype = torch.float32
-    _hammer_kernel: Optional[HammerKernel] = HammerKernel.PYTORCH  # 当前使用 PyTorch
+    _hammer_kernel: Optional[HammerKernel] = HammerKernel.PYTORCH  # Currently uses PyTorch
 
     def __init__(
         self,
         is_inference: bool,
         training_dtype: torch.dtype = torch.float32,
-        use_triton_cc: bool = False,  # 当前版本忽略
+        use_triton_cc: bool = False,  # Ignored in current version
         hammer_kernel: Optional[HammerKernel] = None,
     ) -> None:
         super().__init__()
         self._is_inference = is_inference
         self._training_dtype = training_dtype
-        # 当前版本使用 PyTorch 内核
+        # Current version uses PyTorch kernel
         self._hammer_kernel = HammerKernel.PYTORCH
         self._use_triton_cc = False
 
     def hammer_kernel(self) -> HammerKernel:
-        """返回当前使用的内核类型"""
+        """Return current kernel type"""
         return HammerKernel.PYTORCH
 
     def recursive_setattr(self, name: str, value: Any) -> None:
@@ -62,7 +62,7 @@ class HammerModule(torch.nn.Module, abc.ABC):
                 setattr(module, name, value)
 
     def set_use_triton_cc(self, use_triton_cc: bool) -> None:
-        # 当前版本不支持，保留接口用于未来扩展
+        # Not supported in current version, interface reserved for future extension
         pass
 
     def set_is_inference(self, is_inference: bool) -> None:
@@ -74,7 +74,7 @@ class HammerModule(torch.nn.Module, abc.ABC):
         self.recursive_setattr("_training_dtype", training_dtype)
 
     def set_hammer_kernel(self, hammer_kernel: HammerKernel) -> None:
-        # 当前版本不支持，保留接口用于未来扩展
+        # Not supported in current version, interface reserved for future extension
         pass
 
     @property
@@ -90,7 +90,7 @@ class HammerModule(torch.nn.Module, abc.ABC):
         return (not self._is_inference) and self.training
 
 
-# 全局设置
+# Global settings
 STATIC_MAX_SEQ_LENS: List[int] = []
 USE_RUNTIME_MAX_SEQ_LEN: bool = True
 
@@ -203,9 +203,9 @@ def jagged_to_padded_dense(
     padding_value: float,
 ) -> torch.Tensor:
     """
-    将 Jagged Tensor 转换为填充的稠密张量
+    Convert Jagged Tensor to padded dense tensor
     
-    优先使用 fbgemm，不可用时回退到 PyTorch 实现。
+    Prefers fbgemm, falls back to PyTorch implementation if unavailable.
     """
     try:
         return torch.ops.fbgemm.jagged_to_padded_dense(
@@ -258,9 +258,9 @@ def dense_to_jagged(
     x_offsets: List[torch.Tensor],
 ) -> torch.Tensor:
     """
-    将填充的稠密张量转换为 Jagged Tensor
+    Convert padded dense tensor to Jagged Tensor
     
-    优先使用 fbgemm，不可用时回退到 PyTorch 实现。
+    Prefers fbgemm, falls back to PyTorch implementation if unavailable.
     """
     try:
         return torch.ops.fbgemm.dense_to_jagged(
@@ -294,4 +294,3 @@ def _pytorch_dense_to_jagged(
         return torch.cat(results, dim=0)
     else:
         return torch.empty(0, *dense.shape[2:], dtype=dense.dtype, device=dense.device)
-

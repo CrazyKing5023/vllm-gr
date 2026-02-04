@@ -2,17 +2,17 @@
 
 **vLLM-based Generative Recommender Inference Engine**
 
-> 🚀 基础版本：支持 DLRM_v3 (HSTU) 模型的离线推理
+> 🚀 Foundation Version: Supports offline inference for DLRM_v3 (HSTU) model
 
-vllm-GR 是基于 vLLM 生态构建的生成式推荐模型推理引擎。当前版本专注于 Meta DLRM_v3 模型的离线推理，该模型采用 HSTU (Hierarchical Sequential Transducer Unit) 架构。
+vllm-GR is a generative recommendation model inference engine built on the vLLM ecosystem. The current version focuses on offline inference for Meta's DLRM_v3 model, which uses the HSTU (Hierarchical Sequential Transducer Unit) architecture.
 
-## 功能特性
+## Features
 
-- ✅ **DLRM_v3 (HSTU) 模型** - 完整移植自 Meta generative-recommenders
-- ✅ **离线推理** - 简洁的推荐生成 API
-- ✅ **Top-K 采样** - 支持多任务预测和可配置的任务权重
-- ✅ **灵活配置** - 易于使用的 JSON 配置格式
-- ✅ **PyTorch 后端** - 纯 PyTorch 实现，无 Triton/CUDA 依赖
+- ✅ **DLRM_v3 (HSTU) Model** - Fully ported from Meta generative-recommenders
+- ✅ **Offline Inference** - Simple recommendation generation API
+- ✅ **Top-K Sampling** - Supports multi-task prediction with configurable task weights
+- ✅ **Flexible Configuration** - Easy-to-use JSON configuration format
+- ✅ **PyTorch Backend** - Pure PyTorch implementation, no Triton/CUDA dependencies
 
 ## Quick Start
 
@@ -123,13 +123,13 @@ vllm_gr/
     └── topk_sampler.py         # Top-K sampling
 ```
 
-## 运行测试
+## Running Tests
 
 ```bash
-# 运行所有测试
+# Run all tests
 python tests/test_offline_inference.py
 
-# 运行单个测试
+# Run individual test
 python -c "from tests.test_offline_inference import test_grllm_basic; test_grllm_basic()"
 ```
 
@@ -241,29 +241,29 @@ class RecommendationResponse:
 | `hash_size` | 10,000,000 | Hash size for embeddings |
 | `task_names` | ["is_click", "is_like"] | Multi-task names |
 
-## 开发路线图
+## Development Roadmap
 
-### 第一阶段：基础版本（当前）
-- ✅ DLRM_v3 模型移植
-- ✅ 离线推理
-- ✅ Top-K 采样
-- ✅ JSON 输入输出
+### Phase 1: Foundation Version (Current)
+- ✅ DLRM_v3 model porting
+- ✅ Offline inference
+- ✅ Top-K sampling
+- ✅ JSON input/output
 
-### 第二阶段：性能优化
-- ⬜ Triton 注意力内核
-- ⬜ KV 缓存优化
-- ⬜ 批处理优化
+### Phase 2: Online Service
+- ⬜ GRScheduler implementation
+- ⬜ API server (FastAPI)
+- ⬜ CLI tools
+- ⬜ Continuous batching
 
-### 第三阶段：在线服务
-- ⬜ GRScheduler 实现
-- ⬜ API 服务器 (FastAPI)
-- ⬜ CLI 工具
-- ⬜ 连续批处理
+### Phase 3: Performance Optimization
+- ⬜ Triton attention kernels
+- ⬜ KV cache optimization
+- ⬜ Batch processing optimization
 
-### 第四阶段：生产化
-- ⬜ 分布式嵌入
-- ⬜ 监控指标
-- ⬜ 压力测试
+### Phase 4: Production-Ready
+- ⬜ Distributed embeddings
+- ⬜ Monitoring metrics
+- ⬜ Stress testing
 
 ## License
 

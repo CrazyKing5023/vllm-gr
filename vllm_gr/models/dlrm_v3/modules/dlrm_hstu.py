@@ -3,10 +3,10 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-DlrmHSTU 主模型类
+DlrmHSTU Main Model Class
 
-基于 HSTU (Hierarchical Sequential Transducer Unit) 架构的生成式推荐模型。
-支持多任务预测和用户-物品交互建模。
+Generative recommendation model based on HSTU (Hierarchical Sequential Transducer Unit) architecture.
+Supports multi-task prediction and user-item interaction modeling.
 """
 
 import logging
@@ -120,10 +120,10 @@ def _get_supervision_labels_and_weights(
 
 class DlrmHSTU(HammerModule):
     """
-    DLRM_v3 HSTU 模型
+    DLRM_v3 HSTU Model
     
-    基于 Hierarchical Sequential Transducer Unit 的生成式推荐模型。
-    支持稀疏-稠密分离、因果注意力、目标感知注意力和多任务学习。
+    Generative recommendation model based on Hierarchical Sequential Transducer Unit.
+    Supports sparse-dense separation, causal attention, target-aware attention, and multi-task learning.
     """
     
     def __init__(
@@ -321,7 +321,7 @@ class DlrmHSTU(HammerModule):
         embedding = seq_embeddings[source_key].embedding
         total_targets = int(num_candidates.sum().item())
         
-        # 创建时间戳（简化实现）
+        # Create timestamps (simplified implementation)
         total_len = embedding.size(0)
         source_timestamps = torch.zeros(total_len, device=embedding.device, dtype=torch.float32)
         
@@ -450,4 +450,3 @@ class DlrmHSTU(HammerModule):
                 max_num_candidates=max_num_candidates,
                 num_candidates=num_candidates,
             )
-

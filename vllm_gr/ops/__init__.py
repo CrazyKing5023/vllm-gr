@@ -3,10 +3,10 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-HSTU 模型算子包
+HSTU Model Operators Package
 
-包含注意力、计算、Jagged Tensor 操作和归一化等算子。
-当前提供 PyTorch 实现，可扩展 Triton/CUDA 优化版本。
+Contains attention, compute, jagged tensor operations, and normalization operators.
+Currently provides PyTorch implementations, extensible to Triton/CUDA optimized versions.
 """
 
 from vllm_gr.ops.hstu_attention import hstu_mha, delta_hstu_mha
@@ -30,4 +30,3 @@ __all__ = [
     "SwishLayerNorm",
     "layer_norm",
 ]
-

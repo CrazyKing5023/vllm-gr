@@ -123,7 +123,7 @@ class ContextualPreprocessor(InputPreprocessor):
                 LayerNorm(self._output_embedding_dim),
             ).apply(init_mlp_weights_optional_bias)
         
-        # 动作嵌入（当前简化版，不使用动作编码器）
+        # Action embedding (current simplified version, not using action encoder)
         self._action_weights: Optional[List[int]] = action_weights
 
     def forward(
@@ -183,4 +183,3 @@ class ContextualPreprocessor(InputPreprocessor):
             output_num_targets,
             seq_payloads,
         )
-

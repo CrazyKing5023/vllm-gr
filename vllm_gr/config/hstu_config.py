@@ -2,9 +2,9 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-HSTU 模型配置
+HSTU Model Configuration
 
-定义模型架构参数、嵌入表配置和多任务配置。
+Defines model architecture parameters, embedding table configuration, and multitask settings.
 """
 
 from dataclasses import dataclass, field
@@ -15,14 +15,14 @@ import os
 
 
 class MultitaskTaskType(IntEnum):
-    """多任务类型枚举"""
+    """Multitask type enumeration"""
     BINARY_CLASSIFICATION = 0
     REGRESSION = 1
 
 
 @dataclass
 class TaskConfig:
-    """任务配置"""
+    """Task configuration"""
     task_name: str
     task_weight: int
     task_type: MultitaskTaskType
@@ -30,7 +30,7 @@ class TaskConfig:
 
 @dataclass
 class EmbeddingTableConfig:
-    """嵌入表配置"""
+    """Embedding table configuration"""
     name: str
     embedding_dim: int
     num_embeddings: int
@@ -43,9 +43,9 @@ class EmbeddingTableConfig:
 
 @dataclass
 class HSTUModelConfig:
-    """HSTU 模型配置"""
+    """HSTU Model Configuration"""
     
-    # 模型架构
+    # Model architecture
     num_layers: int = 5
     num_heads: int = 4
     embedding_dim: int = 512
@@ -54,17 +54,17 @@ class HSTUModelConfig:
     embedding_table_dim: int = 192
     preprocessor_hidden_dim: int = 256
     
-    # 序列参数
+    # Sequence parameters
     max_seq_len: int = 1024
     max_num_candidates: int = 100
     
-    # 特征配置
+    # Feature configuration
     hash_size: int = 10_000_000
     feature_names: List[str] = field(default_factory=lambda: [
         "user_id", "item_id", "item_candidate_id"
     ])
     
-    # 用户/物品特征名称
+    # User/Item feature names
     user_embedding_feature_names: List[str] = field(default_factory=lambda: ["item_id"])
     item_embedding_feature_names: List[str] = field(default_factory=lambda: ["item_candidate_id"])
     uih_post_id_feature_name: str = "item_id"
@@ -74,33 +74,33 @@ class HSTUModelConfig:
     candidates_watchtime_feature_name: str = "candidate_watchtime"
     candidates_querytime_feature_name: str = "query_time"
     
-    # 特征映射
+    # Feature mapping
     merge_uih_candidate_feature_mapping: List[Tuple[str, str]] = field(default_factory=list)
     contextual_feature_to_max_length: Dict[str, int] = field(default_factory=dict)
     contextual_feature_to_min_uih_length: Dict[str, int] = field(default_factory=dict)
     
-    # 多任务配置
+    # Multitask configuration
     task_names: List[str] = field(default_factory=lambda: ["is_click", "is_like"])
     multitask_configs: List[TaskConfig] = field(default_factory=list)
     causal_multitask_weights: float = 0.2
     
-    # 嵌入表配置
+    # Embedding table configuration
     embedding_tables: List[EmbeddingTableConfig] = field(default_factory=list)
     
     # Dropout
     input_dropout_ratio: float = 0.2
     linear_dropout_rate: float = 0.2
     
-    # 后处理器配置
+    # Postprocessor configuration
     enable_postprocessor: bool = True
     use_layer_norm_postprocessor: bool = False
     
-    # 推理模式
+    # Inference mode
     is_inference: bool = True
     
     def __post_init__(self):
-        """初始化后处理"""
-        # 如果没有配置多任务，根据 task_names 创建默认配置
+        """Post-initialization processing"""
+        # If no multitask config, create default config based on task_names
         if not self.multitask_configs and self.task_names:
             self.multitask_configs = [
                 TaskConfig(
@@ -111,7 +111,7 @@ class HSTUModelConfig:
                 for i, name in enumerate(self.task_names)
             ]
         
-        # 如果没有配置嵌入表，创建默认配置
+        # If no embedding tables configured, create default configuration
         if not self.embedding_tables:
             self.embedding_tables = [
                 EmbeddingTableConfig(
@@ -130,41 +130,41 @@ class HSTUModelConfig:
     
     @classmethod
     def from_pretrained(cls, model_path: str) -> "HSTUModelConfig":
-        """从模型路径加载配置"""
+        """Load configuration from model path"""
         config_path = os.path.join(model_path, "config.json")
         if os.path.exists(config_path):
             with open(config_path, "r") as f:
                 config_dict = json.load(f)
             return cls.from_dict(config_dict)
         else:
-            # 返回默认配置
+            # Return default configuration
             return cls()
     
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "HSTUModelConfig":
-        """从字典创建配置"""
-        # 处理嵌入表配置
+        """Create configuration from dictionary"""
+        # Process embedding table configuration
         if "embedding_tables" in config_dict:
             config_dict["embedding_tables"] = [
                 EmbeddingTableConfig.from_dict(t) if isinstance(t, dict) else t
                 for t in config_dict["embedding_tables"]
             ]
         
-        # 处理多任务配置
+        # Process multitask configuration
         if "multitask_configs" in config_dict:
             config_dict["multitask_configs"] = [
                 TaskConfig(**t) if isinstance(t, dict) else t
                 for t in config_dict["multitask_configs"]
             ]
         
-        # 过滤未知字段
+        # Filter unknown fields
         valid_fields = {f.name for f in cls.__dataclass_fields__.values()}
         filtered_dict = {k: v for k, v in config_dict.items() if k in valid_fields}
         
         return cls(**filtered_dict)
     
     def to_dict(self) -> Dict[str, Any]:
-        """转换为字典"""
+        """Convert to dictionary"""
         return {
             "num_layers": self.num_layers,
             "num_heads": self.num_heads,
@@ -181,8 +181,7 @@ class HSTUModelConfig:
         }
     
     def save(self, path: str) -> None:
-        """保存配置到文件"""
+        """Save configuration to file"""
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             json.dump(self.to_dict(), f, indent=2)
-

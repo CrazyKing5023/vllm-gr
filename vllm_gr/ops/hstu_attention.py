@@ -3,9 +3,9 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-HSTU 注意力算子入口
+HSTU Attention Operator Entry Point
 
-当前版本使用 PyTorch 实现，后续可扩展 Triton/CUDA 优化版本。
+Current version uses PyTorch implementation, extensible to Triton/CUDA optimized versions.
 """
 
 from typing import Optional
@@ -39,11 +39,11 @@ def hstu_mha(
     enable_tma: bool = False,
 ) -> torch.Tensor:
     """
-    HSTU 多头注意力
+    HSTU Multi-Head Attention
     
-    当前使用 PyTorch 实现，kernel 参数保留用于未来扩展。
+    Currently uses PyTorch implementation, kernel parameter reserved for future extensions.
     """
-    # 使用 PyTorch 实现
+    # Use PyTorch implementation
     return pytorch_hstu_mha(
         max_seq_len=max_seq_len,
         alpha=alpha,
@@ -76,9 +76,9 @@ def delta_hstu_mha(
     enable_tma: bool = False,
 ) -> torch.Tensor:
     """
-    增量 HSTU 注意力（用于 KV 缓存推理）
+    Incremental HSTU Attention (for KV cache inference)
     
-    当前使用 PyTorch 实现。
+    Currently uses PyTorch implementation.
     """
     return pytorch_cached_hstu_mha(
         max_seq_len=max_seq_len,
@@ -91,4 +91,3 @@ def delta_hstu_mha(
         max_attn_len=max_attn_len,
         contextual_seq_len=contextual_seq_len,
     )
-

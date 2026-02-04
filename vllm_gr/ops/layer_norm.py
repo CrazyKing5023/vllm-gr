@@ -3,9 +3,9 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-Layer Normalization 算子
+Layer Normalization Operators
 
-包含标准 LayerNorm 和 SwishLayerNorm（LayerNorm + SiLU 激活）。
+Contains standard LayerNorm and SwishLayerNorm (LayerNorm + SiLU activation).
 """
 
 import torch
@@ -23,9 +23,9 @@ def layer_norm(
     kernel: HammerKernel = HammerKernel.PYTORCH,
 ) -> torch.Tensor:
     """
-    应用 Layer Normalization
+    Apply Layer Normalization
     
-    使用 PyTorch F.layer_norm 实现。
+    Uses PyTorch F.layer_norm implementation.
     """
     return F.layer_norm(x, [x.shape[-1]], weight, bias, eps)
 
@@ -50,4 +50,3 @@ class SwishLayerNorm(nn.Module):
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return F.silu(self.layer_norm(x))
-

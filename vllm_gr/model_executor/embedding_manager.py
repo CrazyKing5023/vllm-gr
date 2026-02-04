@@ -2,10 +2,10 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-嵌入管理器
+Embedding Manager
 
-管理特征嵌入表的创建、查找和权重加载。
-当前版本仅支持单 GPU，不支持分布式分片。
+Manages feature embedding table creation, lookup, and weight loading.
+Current version only supports single GPU, does not support distributed sharding.
 """
 
 from typing import Dict, List, Optional
@@ -17,7 +17,7 @@ from vllm_gr.config.hstu_config import HSTUModelConfig, EmbeddingTableConfig
 
 
 class SimpleEmbeddingTable(nn.Module):
-    """简单嵌入表实现，基于 PyTorch nn.Embedding。"""
+    """Simple embedding table implementation based on PyTorch nn.Embedding."""
     
     def __init__(
         self,
@@ -41,14 +41,14 @@ class SimpleEmbeddingTable(nn.Module):
 
 class EmbeddingManager:
     """
-    嵌入管理器
+    Embedding Manager
     
-    管理多个嵌入表，支持按特征名称进行嵌入查找。
+    Manages multiple embedding tables, supports embedding lookup by feature name.
     
-    当前限制：
-    - 仅支持单 GPU
-    - 不支持量化
-    - 不支持分布式分片
+    Current limitations:
+    - Single GPU only
+    - No quantization support
+    - No distributed sharding support
     """
     
     def __init__(
@@ -162,4 +162,3 @@ class EmbeddingManager:
             first_table = next(iter(self.embedding_tables.values()))
             return first_table.embedding.embedding_dim
         return self.config.embedding_tables[0].embedding_dim if self.config.embedding_tables else 512
-

@@ -2,9 +2,9 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-GRLLM 离线推理接口
+GRLLM Offline Inference Interface
 
-提供简洁的推荐生成 API，支持单请求和批量请求推理。
+Provides a concise recommendation generation API supporting single and batch request inference.
 """
 
 from dataclasses import dataclass
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RecommendationResponse:
-    """推荐响应"""
+    """Recommendation response"""
     request_id: str
     recommendations: List[Dict[str, Any]]
     latency_ms: float
@@ -35,9 +35,9 @@ class RecommendationResponse:
 
 class GRLLM:
     """
-    生成式推荐离线推理接口
+    Generative Recommender Offline Inference Interface
     
-    使用示例:
+    Usage example:
         llm = GRLLM(model_path="path/to/hstu-model")
         response = llm.recommend(
             user_id="user_001",
@@ -54,16 +54,16 @@ class GRLLM:
         device: str = "cuda",
     ):
         """
-        初始化 GRLLM
+        Initialize GRLLM
         
         Args:
-            model_path: 模型路径（可选，如果不提供则使用默认配置）
-            config: 模型配置（可选）
-            device: 运行设备 ("cuda" 或 "cpu")
+            model_path: Model path (optional, uses default config if not provided)
+            config: Model configuration (optional)
+            device: Runtime device ("cuda" or "cpu")
         """
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         
-        # 1. 加载或创建配置
+        # 1. Load or create configuration
         if config is not None:
             self.config = config
         elif model_path is not None:
@@ -71,12 +71,12 @@ class GRLLM:
         else:
             self.config = HSTUModelConfig()
         
-        # 2. 加载模型
+        # 2. Load model
         if model_path is not None:
             loader = GRModelLoader(model_path, self.config, self.device)
             self.model, self.embedding_manager = loader.load()
         else:
-            # 创建默认模型和嵌入管理器
+            # Create default model and embedding manager
             self.embedding_manager = EmbeddingManager(self.config, self.device)
             from vllm_gr.model_executor.models.hstu import HSTUModelWrapper
             self.model = HSTUModelWrapper(
@@ -88,7 +88,7 @@ class GRLLM:
         
         self.model.eval()
         
-        # 3. 初始化处理器
+        # 3. Initialize processors
         self.input_processor = GRInputProcessor(self.config)
         self.output_processor = GROutputProcessor(self.config)
         self.sampler = TopKSampler()
@@ -104,24 +104,24 @@ class GRLLM:
         request_id: Optional[str] = None,
     ) -> RecommendationResponse:
         """
-        生成推荐
+        Generate recommendations
         
         Args:
-            user_id: 用户 ID
-            sequence: 用户行为序列 [{"item_id": ..., "timestamp": ..., ...}, ...]
-            candidates: 候选物品 [{"item_id": ...}, ...]
-            top_k: 返回的推荐数量
-            request_id: 请求 ID（可选）
+            user_id: User ID
+            sequence: User behavior sequence [{"item_id": ..., "timestamp": ..., ...}, ...]
+            candidates: Candidate items [{"item_id": ...}, ...]
+            top_k: Number of recommendations to return
+            request_id: Request ID (optional)
         
         Returns:
-            RecommendationResponse: 推荐结果
+            RecommendationResponse: Recommendation results
         """
         start_time = time.time()
         
         request_id = request_id or f"req_{int(time.time() * 1000)}"
         
         with torch.no_grad():
-            # 1. 输入处理：转换为索引
+            # 1. Input processing: convert to indices
             (
                 sequence_indices,
                 sequence_lengths,
@@ -134,11 +134,11 @@ class GRLLM:
                 device=self.device,
             )
             
-            # 2. 嵌入查找
+            # 2. Embedding lookup
             sequence_embeddings = self.embedding_manager.lookup("item_id", sequence_indices)
             candidate_embeddings = self.embedding_manager.lookup("item_id", candidate_indices)
             
-            # 3. 模型推理
+            # 3. Model inference
             model_output = self.model(
                 uih_embeddings=sequence_embeddings,
                 uih_lengths=sequence_lengths,
@@ -146,7 +146,7 @@ class GRLLM:
                 num_candidates=num_candidates,
             )
             
-            # 4. Top-K 采样
+            # 4. Top-K sampling
             candidate_ids = [c["item_id"] for c in candidates]
             sampled = self.sampler.sample(
                 predictions=model_output.predictions,
@@ -154,7 +154,7 @@ class GRLLM:
                 top_k=top_k,
             )
             
-            # 5. 输出处理
+            # 5. Output processing
             recommendations = self.output_processor.format_output(
                 sampled=sampled,
                 task_names=self.config.task_names,
@@ -174,14 +174,14 @@ class GRLLM:
         top_k: int = 10,
     ) -> List[RecommendationResponse]:
         """
-        批量生成推荐
+        Generate batch recommendations
         
         Args:
-            requests: 请求列表，每个请求包含 user_id, sequence, candidates
-            top_k: 返回的推荐数量
+            requests: Request list, each request contains user_id, sequence, candidates
+            top_k: Number of recommendations to return
         
         Returns:
-            推荐响应列表
+            List of recommendation responses
         """
         responses = []
         for i, req in enumerate(requests):
@@ -194,4 +194,3 @@ class GRLLM:
             )
             responses.append(response)
         return responses
-

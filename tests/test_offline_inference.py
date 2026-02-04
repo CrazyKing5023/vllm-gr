@@ -2,9 +2,9 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-离线推理端到端测试
+End-to-End Offline Inference Tests
 
-测试 vllm-GR 完整的推理流程，从 JSON 请求到推荐结果响应。
+Tests the complete vllm-GR inference flow from JSON request to recommendation response.
 """
 
 import os
@@ -13,25 +13,25 @@ import time
 
 import torch
 
-# 添加父目录到路径
+# Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def test_config_creation():
-    """测试 HSTUModelConfig 创建和序列化"""
-    print("\n=== 测试: 配置创建 ===")
+    """Test HSTUModelConfig creation and serialization"""
+    print("\n=== Test: Config Creation ===")
     
     from vllm_gr.config.hstu_config import HSTUModelConfig, EmbeddingTableConfig
     
-    # 测试默认配置
+    # Test default config
     config = HSTUModelConfig()
     assert config.num_layers == 5
     assert config.num_heads == 4
     assert config.embedding_dim == 512
     assert len(config.task_names) == 2
-    print(f"  ✓ 默认配置创建成功: num_layers={config.num_layers}, num_heads={config.num_heads}")
+    print(f"  ✓ Default config created: num_layers={config.num_layers}, num_heads={config.num_heads}")
     
-    # 测试自定义配置
+    # Test custom config
     custom_config = HSTUModelConfig(
         num_layers=3,
         num_heads=2,
@@ -41,20 +41,20 @@ def test_config_creation():
     )
     assert custom_config.num_layers == 3
     assert len(custom_config.task_names) == 3
-    print(f"  ✓ 自定义配置创建成功: tasks={custom_config.task_names}")
+    print(f"  ✓ Custom config created: tasks={custom_config.task_names}")
     
-    # 测试配置序列化
+    # Test config serialization
     config_dict = config.to_dict()
     assert "num_layers" in config_dict
     assert "embedding_dim" in config_dict
-    print(f"  ✓ 配置序列化正常")
+    print(f"  ✓ Config serialization successful")
     
-    print("✅ 配置创建测试通过")
+    print("✅ Config creation test passed")
 
 
 def test_embedding_manager():
-    """测试 EmbeddingManager 创建和查找"""
-    print("\n=== 测试: 嵌入管理器 ===")
+    """Test EmbeddingManager creation and lookup"""
+    print("\n=== Test: Embedding Manager ===")
     
     from vllm_gr.config.hstu_config import HSTUModelConfig
     from vllm_gr.model_executor.embedding_manager import EmbeddingManager
@@ -66,22 +66,22 @@ def test_embedding_manager():
     )
     
     embedding_manager = EmbeddingManager(config, device)
-    print(f"  ✓ EmbeddingManager 创建成功，设备: {device}")
+    print(f"  ✓ EmbeddingManager created, device: {device}")
     
-    # 测试嵌入查找
+    # Test embedding lookup
     indices = torch.tensor([1, 5, 10, 100], dtype=torch.long, device=device)
     embeddings = embedding_manager.lookup("item_id", indices)
     
     assert embeddings.shape[0] == 4
     assert embeddings.shape[1] == config.embedding_table_dim
-    print(f"  ✓ 嵌入查找正常: shape={embeddings.shape}")
+    print(f"  ✓ Embedding lookup successful: shape={embeddings.shape}")
     
-    print("✅ 嵌入管理器测试通过")
+    print("✅ Embedding manager test passed")
 
 
 def test_input_processor():
-    """测试 GRInputProcessor"""
-    print("\n=== 测试: 输入处理器 ===")
+    """Test GRInputProcessor"""
+    print("\n=== Test: Input Processor ===")
     
     from vllm_gr.config.hstu_config import HSTUModelConfig
     from vllm_gr.engine.input_processor import GRInputProcessor
@@ -113,14 +113,14 @@ def test_input_processor():
     assert seq_lengths.item() == 3
     assert cand_indices.shape[0] == 5
     assert num_candidates.item() == 5
-    print(f"  ✓ 输入处理正常: seq_len={seq_lengths.item()}, num_candidates={num_candidates.item()}")
+    print(f"  ✓ Input processing successful: seq_len={seq_lengths.item()}, num_candidates={num_candidates.item()}")
     
-    print("✅ 输入处理器测试通过")
+    print("✅ Input processor test passed")
 
 
 def test_output_processor():
-    """测试 GROutputProcessor"""
-    print("\n=== 测试: 输出处理器 ===")
+    """Test GROutputProcessor"""
+    print("\n=== Test: Output Processor ===")
     
     from vllm_gr.config.hstu_config import HSTUModelConfig
     from vllm_gr.engine.output_processor import GROutputProcessor
@@ -141,20 +141,20 @@ def test_output_processor():
     assert recommendations[0]["item_id"] == "movie_102"
     assert recommendations[0]["rank"] == 0
     assert "task_scores" in recommendations[0]
-    print(f"  ✓ 输出格式化正常: {len(recommendations)} 条推荐")
+    print(f"  ✓ Output formatting successful: {len(recommendations)} recommendations")
     
-    print("✅ 输出处理器测试通过")
+    print("✅ Output processor test passed")
 
 
 def test_topk_sampler():
-    """测试 TopKSampler"""
-    print("\n=== 测试: Top-K 采样器 ===")
+    """Test TopKSampler"""
+    print("\n=== Test: Top-K Sampler ===")
     
     from vllm_gr.sample.topk_sampler import TopKSampler
     
     sampler = TopKSampler()
     
-    # 创建模拟预测 (2 个任务, 5 个候选)
+    # Create mock predictions (2 tasks, 5 candidates)
     predictions = torch.tensor([
         [0.9, 0.5, 0.7, 0.3, 0.8],
         [0.85, 0.6, 0.65, 0.4, 0.75],
@@ -165,14 +165,14 @@ def test_topk_sampler():
     
     assert len(results) == 3
     assert all(len(r) == 3 for r in results)  # (id, score, task_scores)
-    print(f"  ✓ Top-K 采样正常: top_3={[r[0] for r in results]}")
+    print(f"  ✓ Top-K sampling successful: top_3={[r[0] for r in results]}")
     
-    print("✅ Top-K 采样器测试通过")
+    print("✅ Top-K sampler test passed")
 
 
 def test_hstu_model_wrapper():
-    """测试 HSTUModelWrapper 创建和前向传播"""
-    print("\n=== 测试: HSTU 模型封装器 ===")
+    """Test HSTUModelWrapper creation and forward pass"""
+    print("\n=== Test: HSTU Model Wrapper ===")
     
     from vllm_gr.config.hstu_config import HSTUModelConfig
     from vllm_gr.model_executor.embedding_manager import EmbeddingManager
@@ -180,7 +180,7 @@ def test_hstu_model_wrapper():
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # 使用小型配置进行测试
+    # Use small config for testing
     config = HSTUModelConfig(
         num_layers=2,
         num_heads=2,
@@ -198,9 +198,9 @@ def test_hstu_model_wrapper():
     model = HSTUModelWrapper(config, embedding_manager, device)
     model = model.to(device)
     model.eval()
-    print(f"  ✓ HSTUModelWrapper 创建成功，设备: {device}")
+    print(f"  ✓ HSTUModelWrapper created, device: {device}")
     
-    # 创建模拟输入
+    # Create mock input
     seq_len = 5
     num_candidates = 3
     
@@ -209,7 +209,7 @@ def test_hstu_model_wrapper():
     candidate_embeddings = torch.randn(num_candidates, config.embedding_table_dim, device=device)
     num_candidates_tensor = torch.tensor([num_candidates], dtype=torch.long, device=device)
     
-    # 前向传播
+    # Forward pass
     with torch.no_grad():
         output = model(
             uih_embeddings=uih_embeddings,
@@ -221,21 +221,21 @@ def test_hstu_model_wrapper():
     assert output.predictions is not None
     assert output.user_embeddings is not None
     assert output.item_embeddings is not None
-    print(f"  ✓ 前向传播正常: predictions shape={output.predictions.shape}")
+    print(f"  ✓ Forward pass successful: predictions shape={output.predictions.shape}")
     
-    print("✅ HSTU 模型封装器测试通过")
+    print("✅ HSTU model wrapper test passed")
 
 
 def test_grllm_basic():
-    """测试 GRLLM 基本初始化和推荐功能"""
-    print("\n=== 测试: GRLLM 基础功能 ===")
+    """Test GRLLM basic initialization and recommendation functionality"""
+    print("\n=== Test: GRLLM Basic Functionality ===")
     
     from vllm_gr.entrypoint.gr import GRLLM
     from vllm_gr.config.hstu_config import HSTUModelConfig
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    # 使用最小配置进行快速测试
+    # Use minimal config for fast testing
     config = HSTUModelConfig(
         num_layers=2,
         num_heads=2,
@@ -249,11 +249,11 @@ def test_grllm_basic():
         hash_size=1000,
     )
     
-    # 创建 GRLLM（无预训练权重）
+    # Create GRLLM (no pretrained weights)
     llm = GRLLM(model_path=None, config=config, device=device)
-    print(f"  ✓ GRLLM 创建成功，设备: {device}")
+    print(f"  ✓ GRLLM created, device: {device}")
     
-    # 准备请求
+    # Prepare request
     user_id = "user_001"
     sequence = [
         {"item_id": "movie_123", "timestamp": 1640995200},
@@ -262,7 +262,7 @@ def test_grllm_basic():
     ]
     candidates = [{"item_id": f"candidate_{i}"} for i in range(10)]
     
-    # 生成推荐
+    # Generate recommendations
     start_time = time.time()
     response = llm.recommend(
         user_id=user_id,
@@ -275,20 +275,20 @@ def test_grllm_basic():
     assert response.request_id is not None
     assert len(response.recommendations) == 5
     assert response.latency_ms > 0
-    print(f"  ✓ 推荐生成成功，耗时: {elapsed:.2f}ms (报告: {response.latency_ms:.2f}ms)")
-    print(f"  ✓ Top 5 推荐: {[r['item_id'] for r in response.recommendations[:3]]}...")
+    print(f"  ✓ Recommendations generated, latency: {elapsed:.2f}ms (reported: {response.latency_ms:.2f}ms)")
+    print(f"  ✓ Top 5 recommendations: {[r['item_id'] for r in response.recommendations[:3]]}...")
     
     for i, rec in enumerate(response.recommendations):
         assert rec["rank"] == i
         assert "item_id" in rec
         assert "score" in rec
     
-    print("✅ GRLLM 基础功能测试通过")
+    print("✅ GRLLM basic functionality test passed")
 
 
 def test_grllm_batch():
-    """测试 GRLLM 批量推荐"""
-    print("\n=== 测试: GRLLM 批量推荐 ===")
+    """Test GRLLM batch recommendations"""
+    print("\n=== Test: GRLLM Batch Recommendations ===")
     
     from vllm_gr.entrypoint.gr import GRLLM
     from vllm_gr.config.hstu_config import HSTUModelConfig
@@ -310,7 +310,7 @@ def test_grllm_batch():
     
     llm = GRLLM(model_path=None, config=config, device=device)
     
-    # 准备批量请求
+    # Prepare batch requests
     requests = [
         {
             "user_id": f"user_{i}",
@@ -320,7 +320,7 @@ def test_grllm_batch():
         for i in range(3)
     ]
     
-    # 批量推荐
+    # Batch recommendations
     start_time = time.time()
     responses = llm.recommend_batch(requests, top_k=5)
     elapsed = (time.time() - start_time) * 1000
@@ -329,20 +329,20 @@ def test_grllm_batch():
     for response in responses:
         assert len(response.recommendations) == 5
     
-    print(f"  ✓ 批量推荐完成: 3 个用户，耗时 {elapsed:.2f}ms")
-    print("✅ GRLLM 批量推荐测试通过")
+    print(f"  ✓ Batch recommendations completed: 3 users, latency {elapsed:.2f}ms")
+    print("✅ GRLLM batch recommendations test passed")
 
 
 def test_full_e2e_pipeline():
-    """完整端到端测试，模拟真实使用场景"""
-    print("\n=== 测试: 完整端到端流程 ===")
+    """Full end-to-end test simulating real use case"""
+    print("\n=== Test: Full End-to-End Pipeline ===")
     
     from vllm_gr import GRLLM
     from vllm_gr.config.hstu_config import HSTUModelConfig
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    # 1. 创建配置
+    # 1. Create configuration
     config = HSTUModelConfig(
         num_layers=2,
         num_heads=2,
@@ -355,13 +355,13 @@ def test_full_e2e_pipeline():
         hash_size=10000,
         task_names=["click", "like"],
     )
-    print("  ✓ 步骤 1: 配置创建完成")
+    print("  ✓ Step 1: Configuration created")
     
-    # 2. 初始化 GRLLM
+    # 2. Initialize GRLLM
     llm = GRLLM(config=config, device=device)
-    print(f"  ✓ 步骤 2: GRLLM 初始化完成，设备: {device}")
+    print(f"  ✓ Step 2: GRLLM initialized, device: {device}")
     
-    # 3. 模拟真实请求
+    # 3. Simulate real request
     user_id = "user_alice_12345"
     sequence = [
         {"item_id": "The_Matrix_1999", "timestamp": 1609459200},
@@ -383,7 +383,7 @@ def test_full_e2e_pipeline():
         {"item_id": "The_Martian_2015"},
     ]
     
-    # 4. 获取推荐
+    # 4. Get recommendations
     response = llm.recommend(
         user_id=user_id,
         sequence=sequence,
@@ -391,43 +391,43 @@ def test_full_e2e_pipeline():
         top_k=5,
         request_id="test_request_001",
     )
-    print(f"  ✓ 步骤 3: 推荐生成完成")
+    print(f"  ✓ Step 3: Recommendations generated")
     
-    # 5. 验证响应
+    # 5. Validate response
     assert response.request_id == "test_request_001"
     assert len(response.recommendations) == 5
     assert all("item_id" in r and "score" in r and "rank" in r for r in response.recommendations)
     
-    print(f"\n  📊 结果:")
-    print(f"     请求 ID: {response.request_id}")
-    print(f"     延迟: {response.latency_ms:.2f}ms")
-    print(f"     Top 5 推荐:")
+    print(f"\n  📊 Results:")
+    print(f"     Request ID: {response.request_id}")
+    print(f"     Latency: {response.latency_ms:.2f}ms")
+    print(f"     Top 5 Recommendations:")
     for rec in response.recommendations:
-        print(f"       #{rec['rank']}: {rec['item_id']} (分数: {rec['score']:.4f})")
+        print(f"       #{rec['rank']}: {rec['item_id']} (score: {rec['score']:.4f})")
     
-    print("\n✅ 完整端到端流程测试通过")
+    print("\n✅ Full end-to-end pipeline test passed")
 
 
 def run_all_tests():
-    """运行所有测试"""
+    """Run all tests"""
     print("=" * 60)
-    print(" vllm-GR 离线推理端到端测试套件")
+    print(" vllm-GR Offline Inference End-to-End Test Suite")
     print("=" * 60)
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"\n🖥️  设备: {device}")
-    print(f"🔧 PyTorch 版本: {torch.__version__}")
+    print(f"\n🖥️  Device: {device}")
+    print(f"🔧 PyTorch Version: {torch.__version__}")
     
     tests = [
-        ("配置创建", test_config_creation),
-        ("嵌入管理器", test_embedding_manager),
-        ("输入处理器", test_input_processor),
-        ("输出处理器", test_output_processor),
-        ("Top-K 采样器", test_topk_sampler),
-        ("HSTU 模型封装器", test_hstu_model_wrapper),
-        ("GRLLM 基础功能", test_grllm_basic),
-        ("GRLLM 批量推荐", test_grllm_batch),
-        ("完整端到端流程", test_full_e2e_pipeline),
+        ("Config Creation", test_config_creation),
+        ("Embedding Manager", test_embedding_manager),
+        ("Input Processor", test_input_processor),
+        ("Output Processor", test_output_processor),
+        ("Top-K Sampler", test_topk_sampler),
+        ("HSTU Model Wrapper", test_hstu_model_wrapper),
+        ("GRLLM Basic Functionality", test_grllm_basic),
+        ("GRLLM Batch Recommendations", test_grllm_batch),
+        ("Full End-to-End Pipeline", test_full_e2e_pipeline),
     ]
     
     passed = 0
@@ -438,24 +438,23 @@ def run_all_tests():
             test_fn()
             passed += 1
         except Exception as e:
-            print(f"\n❌ {name} 失败: {e}")
+            print(f"\n❌ {name} failed: {e}")
             import traceback
             traceback.print_exc()
             failed += 1
     
     print("\n" + "=" * 60)
-    print(f" 测试结果: {passed} 通过, {failed} 失败")
+    print(f" Test Results: {passed} passed, {failed} failed")
     print("=" * 60)
     
     if failed > 0:
-        print("\n⚠️  部分测试失败，请检查上述错误信息。")
+        print("\n⚠️  Some tests failed, please check the error messages above.")
         return False
     else:
-        print("\n🎉 所有测试通过！")
+        print("\n🎉 All tests passed!")
         return True
 
 
 if __name__ == "__main__":
     success = run_all_tests()
     sys.exit(0 if success else 1)
-

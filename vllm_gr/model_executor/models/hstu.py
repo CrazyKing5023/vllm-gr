@@ -2,9 +2,9 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-HSTU 模型封装器
+HSTU Model Wrapper
 
-封装 DlrmHSTU 模型，提供简化的推理接口。
+Wraps the DlrmHSTU model and provides a simplified inference interface.
 """
 
 from dataclasses import dataclass
@@ -28,10 +28,10 @@ class HSTUModelOutput:
 
 class HSTUModelWrapper(nn.Module):
     """
-    HSTU 模型封装器
+    HSTU Model Wrapper
     
-    封装移植后的 DlrmHSTU 模型，提供简化的推理接口。
-    支持用户历史序列嵌入和候选物品嵌入的输入格式。
+    Wraps the transplanted DlrmHSTU model and provides a simplified inference interface.
+    Supports user interaction history embeddings and candidate item embeddings as input format.
     """
     
     def __init__(
@@ -267,4 +267,3 @@ class HSTUModelWrapper(nn.Module):
             user_embeddings=user_embeddings,
             item_embeddings=item_embeddings,
         )
-

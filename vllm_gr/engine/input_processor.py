@@ -2,9 +2,9 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-输入处理器
+Input Processor
 
-将 JSON 格式的推荐请求转换为模型可接受的张量格式。
+Converts JSON format recommendation requests to tensor format acceptable by the model.
 """
 
 from typing import List, Dict, Any, Tuple, Optional
@@ -16,10 +16,10 @@ from vllm_gr.config.hstu_config import HSTUModelConfig
 
 class GRInputProcessor:
     """
-    输入处理器
+    Input Processor
     
-    将 JSON 格式的推荐请求转换为模型输入张量。
-    支持用户行为序列和候选物品的特征哈希。
+    Converts JSON format recommendation requests to model input tensors.
+    Supports feature hashing for user behavior sequences and candidate items.
     """
     
     def __init__(self, config: HSTUModelConfig):
@@ -35,24 +35,24 @@ class GRInputProcessor:
         device: Optional[torch.device] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        处理输入请求
+        Process input request
         
         Args:
-            user_id: 用户 ID
-            sequence: 用户行为序列 [{"item_id": ..., "timestamp": ...}, ...]
-            candidates: 候选物品列表 [{"item_id": ...}, ...]
-            device: 目标设备
+            user_id: User ID
+            sequence: User behavior sequence [{"item_id": ..., "timestamp": ...}, ...]
+            candidates: Candidate items list [{"item_id": ...}, ...]
+            device: Target device
         
         Returns:
             (sequence_indices, sequence_lengths, candidate_indices, num_candidates)
         """
         device = device or torch.device("cpu")
         
-        # 1. 处理用户行为序列
+        # 1. Process user behavior sequence
         sequence_indices = self._process_sequence(sequence)
         sequence_lengths = torch.tensor([len(sequence_indices)], dtype=torch.long, device=device)
         
-        # 2. 处理候选物品
+        # 2. Process candidate items
         candidate_indices = self._process_candidates(candidates)
         num_candidates = torch.tensor([len(candidate_indices)], dtype=torch.long, device=device)
         
@@ -68,11 +68,11 @@ class GRInputProcessor:
         device: Optional[torch.device] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        批量处理请求
+        Batch process requests
         
         Args:
-            requests: 请求列表，每个请求包含 user_id, sequence, candidates
-            device: 目标设备
+            requests: Request list, each request contains user_id, sequence, candidates
+            device: Target device
         
         Returns:
             (all_sequence_indices, sequence_lengths, all_candidate_indices, num_candidates)
@@ -108,7 +108,7 @@ class GRInputProcessor:
         )
     
     def _process_sequence(self, sequence: List[Dict[str, Any]]) -> torch.Tensor:
-        """处理用户行为序列"""
+        """Process user behavior sequence"""
         if not sequence:
             return torch.tensor([], dtype=torch.long)
         
@@ -121,7 +121,7 @@ class GRInputProcessor:
         return torch.tensor(indices, dtype=torch.long)
     
     def _process_candidates(self, candidates: List[Dict[str, Any]]) -> torch.Tensor:
-        """处理候选物品"""
+        """Process candidate items"""
         if not candidates:
             return torch.tensor([], dtype=torch.long)
         
@@ -135,18 +135,17 @@ class GRInputProcessor:
     
     def _hash_feature(self, feature_name: str, value: Any) -> int:
         """
-        对特征值进行哈希
+        Hash feature value
         
         Args:
-            feature_name: 特征名称
-            value: 特征值
+            feature_name: Feature name
+            value: Feature value
         
         Returns:
-            哈希后的索引
+            Hashed index
         """
         if isinstance(value, int):
             return value % self.hash_size
         
-        # 字符串或其他类型使用 Python hash
+        # Use Python hash for string or other types
         return hash(f"{feature_name}:{value}") % self.hash_size
-

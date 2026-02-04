@@ -2,9 +2,9 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-模型加载器
+Model Loader
 
-支持从 PyTorch checkpoint 或 SafeTensors 格式加载 HSTU 模型。
+Supports loading HSTU models from PyTorch checkpoint or SafeTensors format.
 """
 
 import os
@@ -22,12 +22,12 @@ logger = logging.getLogger(__name__)
 
 class GRModelLoader:
     """
-    HSTU 模型加载器
+    HSTU Model Loader
     
-    支持的加载格式：
+    Supported loading formats:
     - PyTorch checkpoint (.pt, .pth)
-    - SafeTensors 格式 (.safetensors)
-    - 包含 config.json 和模型文件的目录
+    - SafeTensors format (.safetensors)
+    - Directory containing config.json and model files
     """
     
     def __init__(
@@ -163,4 +163,3 @@ class GRModelLoader:
                 model.load_state_dict(model_weights, strict=False)
             except Exception as e:
                 logger.warning(f"Partial model weight loading: {e}")
-
