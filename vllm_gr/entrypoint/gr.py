@@ -2,195 +2,325 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-GRLLM Offline Inference Interface
+GRLLM: Generative Recommendation LLM entry point.
 
-Provides a concise recommendation generation API supporting single and batch request inference.
+Inherits from vLLM's LLM class and provides a recommendation-specific interface.
 """
 
-from dataclasses import dataclass
-from typing import List, Dict, Any, Optional
+from typing import Any, Optional, Union, Sequence, List
 import time
 import logging
 
+# Required imports - these are mandatory dependencies
+from tqdm.auto import tqdm
 import torch
 
-from vllm_gr.config.hstu_config import HSTUModelConfig
-from vllm_gr.model_executor.model_loader import GRModelLoader
-from vllm_gr.model_executor.embedding_manager import EmbeddingManager
-from vllm_gr.engine.input_processor import GRInputProcessor
-from vllm_gr.engine.output_processor import GROutputProcessor
-from vllm_gr.sample.topk_sampler import TopKSampler
+# vLLM imports - mandatory dependency (vLLM 0.11.0)
+from vllm.entrypoints.llm import LLM
+from vllm.usage.usage_lib import UsageContext
+from vllm.utils import Counter
+
+logger = logging.getLogger("vllm_gr.entrypoint")
+
+from vllm_gr.inputs.data import GRPrompt, is_gr_prompt
+from vllm_gr.outputs import GRRequestOutput
+from vllm_gr.engine.arg_utils import GREngineArgs
+from vllm_gr.engine.gr_engine import GRLLMEngine
 
 
-logger = logging.getLogger(__name__)
-
-
-@dataclass
-class RecommendationResponse:
-    """Recommendation response"""
-    request_id: str
-    recommendations: List[Dict[str, Any]]
-    latency_ms: float
-
-
-class GRLLM:
+class GRLLM(LLM):
     """
-    Generative Recommender Offline Inference Interface
+    Generative Recommendation LLM - Inherits from vLLM's LLM class.
     
-    Usage example:
-        llm = GRLLM(model_path="path/to/hstu-model")
-        response = llm.recommend(
-            user_id="user_001",
-            sequence=[{"item_id": "item_1", "timestamp": 1234567890}, ...],
-            candidates=[{"item_id": "item_100"}, {"item_id": "item_101"}, ...],
-            top_k=10,
-        )
+    Responsibility boundaries (division with GRLLMEngine):
+    - GRLLM: User interface layer, handles request validation, ID generation, result collection
+    - GRLLMEngine: Engine layer, handles processor management, scheduling, model inference
+    
+    GRLLM does not directly create or manage processors; all delegated to GRLLMEngine.
+    
+    Args:
+        model: Model name or path (HSTU model)
+        embedding_path: Embedding table path (optional)
+        max_seq_len: Maximum sequence length, default 512
+        max_candidates: Maximum number of candidates, default 1000
+        default_top_k: Default number of recommendations, default 10
+        tensor_parallel_size: Tensor parallelism degree, default 1
+        gpu_memory_utilization: GPU memory utilization, default 0.9
+        **kwargs: Additional arguments passed to LLM
+    
+    Example:
+        >>> from vllm_gr import GRLLM
+        >>> 
+        >>> # Initialize
+        >>> llm = GRLLM(
+        ...     model="path/to/hstu_model",
+        ...     tensor_parallel_size=2,
+        ... )
+        >>> 
+        >>> # Build recommendation request - using numeric IDs
+        >>> prompt = {
+        ...     "user_id": 123,
+        ...     "user_history": [
+        ...         {"item_id": 1, "timestamp": 1000, "rating": 4},
+        ...         {"item_id": 50, "timestamp": 2000, "rating": 5},
+        ...     ],
+        ...     "candidates": [
+        ...         {"item_id": i} for i in range(1, 101)
+        ...     ],
+        ...     "num_recommendations": 10,
+        ... }
+        >>> 
+        >>> # Get recommendation results
+        >>> outputs = llm.recommend([prompt])
+        >>> for item in outputs[0].recommendations:
+        ...     print(f"Rank {item.rank}: item_{item.item_id} (score: {item.score:.4f})")
     """
     
     def __init__(
         self,
-        model_path: Optional[str] = None,
-        config: Optional[HSTUModelConfig] = None,
-        device: str = "cuda",
+        model: str = "",
+        embedding_path: Optional[str] = None,
+        max_seq_len: int = 512,
+        max_candidates: int = 1000,
+        default_top_k: int = 10,
+        tensor_parallel_size: int = 1,
+        gpu_memory_utilization: float = 0.9,
+        # Model loading parameters
+        device: Optional[str] = None,
+        embedding_dim: int = 192,
+        hash_size: int = 10_000_000,
+        load_model: bool = True,
+        # HSTU model architecture parameters (used when creating model from config without pretrained weights)
+        num_layers: int = 3,
+        num_heads: int = 2,
+        hidden_dim: int = 128,
+        attention_dim: int = 64,
+        **kwargs,
     ):
         """
-        Initialize GRLLM
+        Initialize GRLLM.
+        
+        Note: Does not call super().__init__()
+        
+        Reason:
+        1. LLM.__init__() creates a standard LLMEngine, but we need GRLLMEngine
+        2. Fully overriding __init__() is consistent with vLLM design (LLM class has no parent)
+        3. Maintains necessary attributes (llm_engine, request_counter, engine_class) initialization
+        
+        Reference: vllm/entrypoints/llm.py LLM.__init__()
         
         Args:
-            model_path: Model path (optional, uses default config if not provided)
-            config: Model configuration (optional)
-            device: Runtime device ("cuda" or "cpu")
+            model: Model name or path (HSTU model, empty string uses config to create)
+            embedding_path: Embedding table path (optional)
+            max_seq_len: Maximum sequence length
+            max_candidates: Maximum number of candidates
+            default_top_k: Default number of recommendations
+            tensor_parallel_size: Tensor parallelism degree
+            gpu_memory_utilization: GPU memory utilization
+            device: Inference device (cuda/cpu), None for auto-selection
+            embedding_dim: Embedding vector dimension
+            hash_size: Embedding table hash size
+            load_model: Whether to load and initialize the HSTU model
+            num_layers: Number of HSTU layers (used without pretrained weights)
+            num_heads: Number of attention heads (used without pretrained weights)
+            hidden_dim: Hidden layer dimension (used without pretrained weights)
+            attention_dim: Attention dimension (used without pretrained weights)
+            **kwargs: Additional arguments
         """
-        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        # 1. Build GR-specific engine arguments
+        excluded_keys = [
+            'model', 'embedding_path', 'device', 'embedding_dim', 'hash_size', 
+            'load_model', 'num_layers', 'num_heads', 'hidden_dim', 'attention_dim'
+        ]
+        engine_args = GREngineArgs(
+            model=model,
+            embedding_path=embedding_path,
+            max_seq_len=max_seq_len,
+            max_candidates=max_candidates,
+            default_top_k=default_top_k,
+            tensor_parallel_size=tensor_parallel_size,
+            gpu_memory_utilization=gpu_memory_utilization,
+            device=device,
+            embedding_dim=embedding_dim,
+            hash_size=hash_size,
+            load_model=load_model,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            hidden_dim=hidden_dim,
+            attention_dim=attention_dim,
+            **{k: v for k, v in kwargs.items() if k not in excluded_keys}
+        )
         
-        # 1. Load or create configuration
-        if config is not None:
-            self.config = config
-        elif model_path is not None:
-            self.config = HSTUModelConfig.from_pretrained(model_path)
-        else:
-            self.config = HSTUModelConfig()
+        # 2. Initialize engine (GRLLMEngine internally initializes processors)
+        self._init_engine(engine_args)
         
-        # 2. Load model
-        if model_path is not None:
-            loader = GRModelLoader(model_path, self.config, self.device)
-            self.model, self.embedding_manager = loader.load()
-        else:
-            # Create default model and embedding manager
-            self.embedding_manager = EmbeddingManager(self.config, self.device)
-            from vllm_gr.model_executor.models.hstu import HSTUModelWrapper
-            self.model = HSTUModelWrapper(
-                config=self.config,
-                embedding_manager=self.embedding_manager,
-                device=self.device,
-            )
-            self.model.to(self.device)
+        # 3. Save configuration (only for API layer validation)
+        self.model = model
+        self.max_seq_len = max_seq_len
+        self.max_candidates = max_candidates
+        self.default_top_k = default_top_k
         
-        self.model.eval()
+        # 4. Request counter (consistent with vLLM LLM)
+        self.request_counter = Counter()
         
-        # 3. Initialize processors
-        self.input_processor = GRInputProcessor(self.config)
-        self.output_processor = GROutputProcessor(self.config)
-        self.sampler = TopKSampler()
+        # 5. Recommendation tasks don't need these vLLM attributes (keep as None for parent compatibility)
+        self.default_sampling_params = None  # GR uses num_recommendations instead of SamplingParams
+        self.supported_tasks = ("recommendation",)  # GR-specific task type
+        self.io_processor = None  # GR doesn't use IO processor plugins
         
-        logger.info(f"GRLLM initialized on {self.device}")
+        logger.info(
+            f"GRLLM initialized: model={model}, max_seq_len={max_seq_len}, "
+            f"max_candidates={max_candidates}, default_top_k={default_top_k}"
+        )
+    
+    def _init_engine(self, engine_args: GREngineArgs) -> None:
+        """Initialize the engine."""
+        self.llm_engine = GRLLMEngine.from_engine_args(
+            engine_args=engine_args,
+            usage_context=UsageContext.LLM_CLASS,
+        )
+        self.engine_class = type(self.llm_engine)
+    
+    # ==================== Recommendation Interface ====================
     
     def recommend(
         self,
-        user_id: str,
-        sequence: List[Dict[str, Any]],
-        candidates: List[Dict[str, Any]],
-        top_k: int = 10,
-        request_id: Optional[str] = None,
-    ) -> RecommendationResponse:
+        prompts: Union[GRPrompt, Sequence[GRPrompt]],
+        *,
+        use_tqdm: bool = True,
+        top_k: Optional[int] = None,
+    ) -> List[GRRequestOutput]:
         """
-        Generate recommendations
+        Generate recommendation results.
         
         Args:
-            user_id: User ID
-            sequence: User behavior sequence [{"item_id": ..., "timestamp": ..., ...}, ...]
-            candidates: Candidate items [{"item_id": ...}, ...]
-            top_k: Number of recommendations to return
-            request_id: Request ID (optional)
+            prompts: Single or batch of GRPrompt
+            use_tqdm: Whether to show progress bar
+            top_k: Override default number of recommendations
         
         Returns:
-            RecommendationResponse: Recommendation results
+            List of recommendation results, corresponding to input prompts order
+        
+        Example:
+            >>> outputs = llm.recommend([
+            ...     {"user_id": "u1", "user_history": [...], "candidates": [...]},
+            ...     {"user_id": "u2", "user_history": [...], "candidates": [...]},
+            ... ])
         """
         start_time = time.time()
         
-        request_id = request_id or f"req_{int(time.time() * 1000)}"
+        # Normalize to list
+        if not isinstance(prompts, (list, tuple)):
+            prompts = [prompts]
         
-        with torch.no_grad():
-            # 1. Input processing: convert to indices
-            (
-                sequence_indices,
-                sequence_lengths,
-                candidate_indices,
-                num_candidates,
-            ) = self.input_processor.process(
-                user_id=user_id,
-                sequence=sequence,
-                candidates=candidates,
-                device=self.device,
-            )
+        # Validate input
+        for prompt in prompts:
+            if not is_gr_prompt(prompt):
+                raise ValueError(
+                    f"Expected GRPrompt, got {type(prompt)}. "
+                    "GRPrompt must contain 'user_id', 'user_history', and 'candidates'."
+                )
+        
+        # Generate request IDs
+        request_ids = [f"gr-{next(self.request_counter)}" for _ in prompts]
+        
+        # Add requests to engine (pass GRPrompt directly, processed by GRLLMEngine)
+        for prompt, request_id in zip(prompts, request_ids):
+            # Determine recommendation count: top_k parameter takes priority, then prompt value
+            num_recs = top_k or prompt.get("num_recommendations")
             
-            # 2. Embedding lookup
-            sequence_embeddings = self.embedding_manager.lookup("item_id", sequence_indices)
-            candidate_embeddings = self.embedding_manager.lookup("item_id", candidate_indices)
-            
-            # 3. Model inference
-            model_output = self.model(
-                uih_embeddings=sequence_embeddings,
-                uih_lengths=sequence_lengths,
-                candidate_embeddings=candidate_embeddings,
-                num_candidates=num_candidates,
-            )
-            
-            # 4. Top-K sampling
-            candidate_ids = [c["item_id"] for c in candidates]
-            sampled = self.sampler.sample(
-                predictions=model_output.predictions,
-                candidate_ids=candidate_ids,
-                top_k=top_k,
-            )
-            
-            # 5. Output processing
-            recommendations = self.output_processor.format_output(
-                sampled=sampled,
-                task_names=self.config.task_names,
+            # Pass GRPrompt directly to GRLLMEngine
+            self.llm_engine.add_gr_request(
+                request_id=request_id,
+                prompt=prompt,
+                num_recommendations=num_recs,
             )
         
-        latency_ms = (time.time() - start_time) * 1000
-        
-        return RecommendationResponse(
-            request_id=request_id,
-            recommendations=recommendations,
-            latency_ms=latency_ms,
+        # Run engine and collect results
+        outputs = self._run_recommendation_engine(
+            num_prompts=len(prompts),
+            use_tqdm=use_tqdm,
         )
+        
+        elapsed = time.time() - start_time
+        logger.debug(f"Recommendation completed in {elapsed:.3f}s for {len(prompts)} prompts")
+        
+        return outputs
+    
+    def _run_recommendation_engine(
+        self,
+        num_prompts: int,
+        use_tqdm: bool,
+    ) -> List[GRRequestOutput]:
+        """Run engine and collect recommendation results."""
+        outputs: List[GRRequestOutput] = []
+        
+        if use_tqdm:
+            pbar = tqdm(total=num_prompts, desc="Generating recommendations")
+        else:
+            pbar = None
+        
+        while self.llm_engine.has_unfinished_requests():
+            step_outputs = self.llm_engine.step()
+            
+            for output in step_outputs:
+                if isinstance(output, GRRequestOutput) and output.finished:
+                    outputs.append(output)
+                    if pbar is not None:
+                        pbar.update(1)
+        
+        if pbar is not None:
+            pbar.close()
+        
+        return outputs
+    
+    # ==================== Batch Interface ====================
     
     def recommend_batch(
         self,
-        requests: List[Dict[str, Any]],
-        top_k: int = 10,
-    ) -> List[RecommendationResponse]:
+        prompts: Sequence[GRPrompt],
+        batch_size: int = 32,
+        top_k: Optional[int] = None,
+    ) -> List[GRRequestOutput]:
         """
-        Generate batch recommendations
+        Batch recommendation (process large number of requests in batches).
+        
+        Suitable for offline batch inference scenarios.
         
         Args:
-            requests: Request list, each request contains user_id, sequence, candidates
-            top_k: Number of recommendations to return
+            prompts: List of GRPrompt
+            batch_size: Number of requests per batch
+            top_k: Number of recommendations
         
         Returns:
-            List of recommendation responses
+            List of recommendation results
         """
-        responses = []
-        for i, req in enumerate(requests):
-            response = self.recommend(
-                user_id=req.get("user_id", f"user_{i}"),
-                sequence=req.get("sequence", []),
-                candidates=req.get("candidates", []),
-                top_k=top_k,
-                request_id=req.get("request_id"),
-            )
-            responses.append(response)
-        return responses
+        all_outputs = []
+        
+        for i in range(0, len(prompts), batch_size):
+            batch = prompts[i:i + batch_size]
+            outputs = self.recommend(batch, top_k=top_k, use_tqdm=False)
+            all_outputs.extend(outputs)
+        
+        return all_outputs
+    
+    # ==================== Engine Management ====================
+    
+    def get_engine(self) -> GRLLMEngine:
+        """Get the underlying engine."""
+        return self.llm_engine
+    
+    def shutdown(self) -> None:
+        """Shutdown the engine."""
+        if hasattr(self, 'llm_engine') and self.llm_engine is not None:
+            self.llm_engine.shutdown()
+        logger.info("GRLLM shutdown complete")
+    
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
+        self.shutdown()
+        return False

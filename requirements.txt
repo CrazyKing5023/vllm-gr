@@ -1,22 +1,41 @@
 # vllm-GR Requirements
-# Foundation Version: Supports offline inference for DLRM_v3 (HSTU) model
+# Generative Recommender Inference Engine based on vLLM architecture
+#
+# Installation:
+#   pip install .                    # Standard install
+#   pip install ".[all]"             # Full install with all dependencies
+#   pip install -e ".[dev]"          # Editable install for development
+#
+# Uninstallation:
+#   pip uninstall vllm-gr
 
-# Core dependencies
+# ============================================================
+# Required: Core dependencies
+# ============================================================
 torch>=2.0.0
+tqdm>=4.60.0
+vllm==0.11.0
 
-# TorchRec for embeddings and sparse features (optional dependency)
-# Uncomment if you need TorchRec features:
+# ============================================================
+# Optional: TorchRec for distributed embeddings
+# ============================================================
 # torchrec>=0.6.0
 # fbgemm-gpu>=0.6.0
 
+# ============================================================
 # Development dependencies
+# ============================================================
 pytest>=7.0.0
 pytest-cov>=4.0.0
 
-# Optional: for loading safetensors format
+# ============================================================
+# Optional: SafeTensors for model loading
+# ============================================================
 safetensors>=0.4.0
 
-# Optional: for serving (future extension)
+# ============================================================
+# Optional: Serving (future extension)
+# ============================================================
 # fastapi>=0.100.0
 # uvicorn>=0.23.0
 # pydantic>=2.0.0

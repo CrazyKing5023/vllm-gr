@@ -272,8 +272,8 @@ class DlrmHSTU(HammerModule):
         
         Note: In the original generative-recommenders implementation, this method
         expects all item_embedding_feature_names to be present in seq_embeddings.
-        The caller (HSTUModelWrapper) must ensure this by populating seq_embeddings
-        correctly.
+        The caller (HSTUForRecommendation) must ensure this by populating
+        seq_embeddings correctly.
         """
         # Collect embeddings for item features
         item_feature_names = self._hstu_configs.item_embedding_feature_names
