@@ -2,278 +2,337 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-GRLLMEngine: LLM Engine for generative recommendation.
+GRLLMEngine: Engine for generative recommendation inference.
 
-Inherits from vLLM LLMEngine and customizes for recommendation tasks.
+This engine truly integrates with vLLM's EngineCore by:
+1. Calling super().__init__() to initialize EngineCore
+2. Using self.engine_core.add_request() to submit requests
+3. Using self.engine_core.get_output() to get results
+4. Converting GR data formats to EngineCoreRequest format
+
+Inherits from vLLM's LLMEngine to maintain full API compatibility.
 """
 
-from typing import Any, Dict, List, Mapping, Optional, Union
+from typing import List, Optional, Any, Dict, Union, Type, Callable, Mapping
+from copy import copy
 import time
 import logging
+import os
 
-# Required imports - these are mandatory dependencies
 import torch
+import torch.nn as nn
 
-logger = logging.getLogger("vllm_gr.engine")
+from vllm.config import VllmConfig
+from vllm.usage.usage_lib import UsageContext
+from vllm.v1.engine.llm_engine import LLMEngine
+from vllm.v1.executor.abstract import Executor
+from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
+from vllm.outputs import RequestOutput, PoolingRequestOutput
+from vllm.sampling_params import SamplingParams
+from vllm.pooling_params import PoolingParams
 
-# vLLM imports - mandatory dependency (vLLM 0.11.0)
-# Try v1 API first, fall back to v0
-try:
-    from vllm.v1.engine.llm_engine import LLMEngine
-    _VLLM_VERSION = "v1"
-except ImportError:
-    from vllm.engine.llm_engine import LLMEngine
-    _VLLM_VERSION = "v0"
-
-from vllm_gr.inputs.data import GRPrompt, GRInputs
-from vllm_gr.outputs import GRRequestOutput
+from vllm_gr.inputs.data import GRPrompt
+from vllm_gr.outputs import GRRequestOutput, RecommendedItem
+from vllm_gr.request import GRRequest
 from vllm_gr.engine.arg_utils import GREngineArgs
 from vllm_gr.engine.gr_processor import GRProcessor
-from vllm_gr.engine.gr_output_processor import GROutputProcessor
-from vllm_gr.engine.model_runner import GRModelRunner
+from vllm_gr.engine.gr_output_processor import GROutputProcessor, GRProcessedOutputs
+from vllm_gr.core.gr_scheduler import GRScheduler, GRSchedulerConfig
+from vllm_gr.worker.gr_worker import GRWorker
+
+logger = logging.getLogger("vllm_gr.engine")
 
 
 class GRLLMEngine(LLMEngine):
     """
-    Generative Recommendation Engine.
+    GR LLM Engine - Inherits from vLLM LLMEngine with true EngineCore integration.
     
-    Inherits from vLLM LLMEngine and extends for recommendation tasks.
+    This class properly integrates with vLLM's EngineCore by:
+    1. Calling super().__init__() to initialize EngineCore
+    2. Routing requests through self.engine_core
+    3. Using EngineCore's execution pipeline
     
-    Similarities with LLMEngine:
-    - Uses causal attention - autoregressive architecture
-    - Transformer architecture (HSTU is a Transformer variant)
+    Execution modes:
+    - ENGINE_CORE mode: Uses vLLM's EngineCore (preferred when compatible)
+    - GR_NATIVE mode: Uses GR-specific components (fallback/development)
     
-    Inheritance strategy:
-    1. Reuse LLMEngine's factory methods, config management, logging, distributed support
-    2. Replace Processor with GRProcessor (handles GRPrompt)
-    3. Replace OutputProcessor with GROutputProcessor (generates GRRequestOutput)
-    4. Add recommendation-specific methods (add_gr_request, recommend)
+    Data format mapping for EngineCore:
+    - prompt_token_ids: User history item IDs (treating item IDs as "tokens")
+    - mm_inputs: Contains candidate_item_ids
+    - sampling_params.n: num_recommendations
     
-    Key differences from LLMEngine:
-    - step() semantics differ: LLM generates one token, GR uses Target-Aware Attention
-      to evaluate all candidates in parallel, one step() completes the entire request
-    - Input is GRPrompt (user history + candidates) instead of PromptType (token sequence)
-    - Output is GRRequestOutput (candidate ranking scores) instead of RequestOutput (token sequence)
+    Example:
+        >>> engine = GRLLMEngine.from_engine_args(args)
+        >>> engine.add_gr_request("req-1", prompt)
+        >>> while engine.has_unfinished_requests():
+        ...     outputs = engine.step()
     """
+    
+    # Execution modes
+    MODE_ENGINE_CORE = "engine_core"  # Use vLLM's EngineCore
+    MODE_GR_NATIVE = "gr_native"      # Use GR-specific components
     
     def __init__(
         self,
-        vllm_config: Optional[Any] = None,
-        executor_class: Optional[type] = None,
-        log_stats: bool = True,
-        usage_context: Optional[Any] = None,
-        stat_loggers: Optional[list] = None,
+        vllm_config: VllmConfig,
+        executor_class: Type[Executor],
+        log_stats: bool,
+        usage_context: UsageContext = UsageContext.ENGINE_CONTEXT,
+        stat_loggers: Optional[List[Any]] = None,
+        mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
+        use_cached_outputs: bool = False,
         multiprocess_mode: bool = False,
         # GR-specific parameters
-        max_seq_len: int = 512,
-        max_candidates: int = 1000,
-        default_top_k: int = 10,
-        uih_feature_names: Optional[List[str]] = None,
-        candidate_feature_names: Optional[List[str]] = None,
-        # Model loading parameters
-        model_path: Optional[str] = None,
-        embedding_path: Optional[str] = None,
-        device: Optional[str] = None,
-        embedding_dim: int = 192,
-        hash_size: int = 10_000_000,
-        load_model: bool = True,
-        # HSTU model architecture parameters (used when creating model from config without pretrained weights)
-        num_layers: int = 3,
-        num_heads: int = 2,
-        hidden_dim: int = 128,
-        attention_dim: int = 64,
+        gr_config: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
-        Initialize GRLLMEngine.
+        Initialize GRLLMEngine with EngineCore integration.
         
         Args:
             vllm_config: vLLM configuration
-            executor_class: Executor class
+            executor_class: Executor class for model execution
             log_stats: Whether to log statistics
             usage_context: Usage context
-            stat_loggers: Statistics loggers
-            multiprocess_mode: Whether to enable multiprocess mode
-            max_seq_len: Maximum sequence length
-            max_candidates: Maximum number of candidates
-            default_top_k: Default Top-K value
-            uih_feature_names: User history feature names
-            candidate_feature_names: Candidate feature names
-            model_path: Model path (for loading HSTU model)
-            embedding_path: Embedding table path (optional)
-            device: Inference device (cuda/cpu)
-            embedding_dim: Embedding dimension
-            hash_size: Hash table size
-            load_model: Whether to load and initialize the HSTU model
-            num_layers: Number of HSTU layers
-            num_heads: Number of attention heads
-            hidden_dim: Hidden layer dimension
-            attention_dim: Attention dimension
+            stat_loggers: Custom stat loggers
+            mm_registry: Multimodal registry
+            use_cached_outputs: Whether to use cached outputs
+            multiprocess_mode: Whether to use multiprocess mode
+            gr_config: GR-specific configuration dictionary
         """
-        # Save GR-specific configuration
-        self.max_seq_len = max_seq_len
-        self.max_candidates = max_candidates
-        self.default_top_k = default_top_k
-        self.log_stats = log_stats
-        self.vllm_config = vllm_config
-        self.model_path = model_path
-        self.embedding_path = embedding_path
-        self.device = device
+        # Store GR-specific configuration
+        self.gr_config = gr_config or {}
+        self.max_seq_len = self.gr_config.get("max_seq_len", 512)
+        self.max_candidates = self.gr_config.get("max_candidates", 1000)
+        self.default_top_k = self.gr_config.get("default_top_k", 10)
+        self.embedding_dim = self.gr_config.get("embedding_dim", 192)
+        self.hash_size = self.gr_config.get("hash_size", 10_000_000)
         
-        # Call parent initialization (if valid vllm_config and executor_class exist)
-        if vllm_config is not None and executor_class is not None:
+        # Execution mode configuration
+        self._execution_mode = self.gr_config.get("execution_mode", self.MODE_ENGINE_CORE)
+        self._force_gr_native = self.gr_config.get("force_gr_native", False)
+        
+        # Scheduler configuration (for GR_NATIVE mode)
+        self._gr_max_batch_size = self.gr_config.get("gr_max_batch_size", 32)
+        self._scheduling_policy = self.gr_config.get("scheduling_policy", "fcfs")
+        
+        # HSTU architecture parameters
+        self._num_layers = self.gr_config.get("num_layers", 3)
+        self._num_heads = self.gr_config.get("num_heads", 2)
+        self._hidden_dim = self.gr_config.get("hidden_dim", 128)
+        self._attention_dim = self.gr_config.get("attention_dim", 64)
+        self._load_model = self.gr_config.get("load_model", True)
+        
+        # Ensure skip_tokenizer_init is True for GR (we don't use tokenizer)
+        if vllm_config.model_config is not None:
+            vllm_config.model_config.skip_tokenizer_init = True
+        
+        # Track request metadata for GR output processing
+        self._gr_request_metadata: Dict[str, Dict[str, Any]] = {}
+        
+        # Initialize EngineCore via parent class
+        self._engine_core_initialized = False
+        
+        if not self._force_gr_native:
             try:
+                logger.info("GRLLMEngine: Attempting to initialize EngineCore...")
+                # Check CUDA state before initialization
+                if torch.cuda.is_available():
+                    try:
+                        torch.cuda.synchronize()
+                        logger.info(f"GRLLMEngine: CUDA available, device count: {torch.cuda.device_count()}")
+                    except RuntimeError as cuda_err:
+                        logger.warning(f"GRLLMEngine: CUDA state check failed: {cuda_err}")
+                        raise RuntimeError(f"CUDA context already corrupted: {cuda_err}")
+                
                 super().__init__(
                     vllm_config=vllm_config,
                     executor_class=executor_class,
                     log_stats=log_stats,
                     usage_context=usage_context,
                     stat_loggers=stat_loggers,
+                    mm_registry=mm_registry,
+                    use_cached_outputs=use_cached_outputs,
                     multiprocess_mode=multiprocess_mode,
                 )
+                self._engine_core_initialized = True
+                self._execution_mode = self.MODE_ENGINE_CORE
+                logger.info("GRLLMEngine: EngineCore initialized successfully")
             except Exception as e:
-                logger.warning(f"Failed to initialize vLLM LLMEngine: {e}")
-        
-        # Create GR-specific processor
-        self.processor = GRProcessor(
-            vllm_config=vllm_config,
-            max_seq_len=max_seq_len,
-            max_candidates=max_candidates,
-            uih_feature_names=uih_feature_names,
-            candidate_feature_names=candidate_feature_names,
-        )
-        
-        # Create GR output processor
-        self.output_processor = GROutputProcessor(
-            default_top_k=default_top_k,
-            log_stats=log_stats,
-        )
-        
-        # Request queue
-        self._pending_requests: Dict[str, Any] = {}
-        
-        # Create model runner (for actual inference)
-        self._model_runner: Optional[GRModelRunner] = None
-        if load_model:
-            try:
-                self._model_runner = GRModelRunner(
-                    model_path=model_path,
-                    embedding_path=embedding_path,
-                    device=device,
-                    max_seq_len=max_seq_len,
-                    max_candidates=max_candidates,
-                    embedding_dim=embedding_dim,
-                    hash_size=hash_size,
-                    # HSTU model architecture parameters
-                    num_layers=num_layers,
-                    num_heads=num_heads,
-                    hidden_dim=hidden_dim,
-                    attention_dim=attention_dim,
+                import traceback
+                import sys
+                
+                # Print full error information
+                error_type = type(e).__name__
+                error_msg = str(e)
+                tb = traceback.format_exc()
+                
+                logger.error(
+                    f"GRLLMEngine: EngineCore initialization FAILED!\n"
+                    f"  Error type: {error_type}\n"
+                    f"  Error message: {error_msg}"
                 )
-            except Exception as e:
-                logger.warning(f"Failed to create GRModelRunner: {e}")
-                self._model_runner = None
+                
+                # Also print to stderr for visibility
+                print(f"\n{'='*60}", file=sys.stderr)
+                print(f"EngineCore initialization FAILED!", file=sys.stderr)
+                print(f"Error: {error_type}: {error_msg}", file=sys.stderr)
+                print(f"Traceback:\n{tb}", file=sys.stderr)
+                print(f"{'='*60}\n", file=sys.stderr)
+                
+                logger.warning("Falling back to GR-native mode")
+                
+                # Check if this is a CUDA error
+                is_cuda_error = "CUDA" in str(e) or "cuda" in str(e).lower()
+                
+                # Reset CUDA state to recover from potential CUDA errors
+                if torch.cuda.is_available():
+                    try:
+                        torch.cuda.synchronize()
+                    except RuntimeError as sync_err:
+                        logger.warning(f"CUDA sync failed: {sync_err}")
+                        is_cuda_error = True
+                    
+                    try:
+                        torch.cuda.empty_cache()
+                    except RuntimeError:
+                        pass
+                    
+                    # If there was a CUDA error, try to reset the device
+                    if is_cuda_error:
+                        try:
+                            # Try to reset CUDA context by re-initializing
+                            torch.cuda.init()
+                            logger.info("CUDA context re-initialized")
+                        except RuntimeError:
+                            logger.warning(
+                                "CUDA context corrupted and cannot be recovered. "
+                                "Consider restarting the process."
+                            )
+                
+                self._engine_core_initialized = False
+                self._execution_mode = self.MODE_GR_NATIVE
+                self.vllm_config = vllm_config
+                self.log_stats = log_stats
+        else:
+            self._execution_mode = self.MODE_GR_NATIVE
+            self.vllm_config = vllm_config
+            self.log_stats = log_stats
+            logger.info("GRLLMEngine: Using GR-native mode (forced)")
         
-        # Compatibility: retain _model attribute
-        self._model = None
+        # Initialize GR-specific components
+        self._init_gr_components()
+        
+        # Statistics
+        self._num_gr_requests_processed = 0
+        self._start_time = time.time()
         
         logger.info(
-            f"GRLLMEngine initialized: max_seq_len={max_seq_len}, "
-            f"max_candidates={max_candidates}, default_top_k={default_top_k}, "
-            f"vLLM version={_VLLM_VERSION}, model_runner={'enabled' if self._model_runner else 'disabled'}"
+            f"GRLLMEngine initialized: mode={self._execution_mode}, "
+            f"engine_core={self._engine_core_initialized}"
         )
+    
+    def _init_gr_components(self) -> None:
+        """Initialize GR-specific components."""
+        # GRProcessor for input processing
+        self.gr_processor = GRProcessor(
+            max_seq_len=self.max_seq_len,
+            max_candidates=self.max_candidates,
+        )
+        
+        # GROutputProcessor for output processing
+        self.gr_output_processor = GROutputProcessor(
+            default_top_k=self.default_top_k,
+            log_stats=self.log_stats,
+        )
+        
+        # Components for GR_NATIVE mode
+        if self._execution_mode == self.MODE_GR_NATIVE:
+            # GRScheduler
+            scheduler_config = GRSchedulerConfig(
+                max_batch_size=self._gr_max_batch_size,
+                scheduling_policy=self._scheduling_policy,
+            )
+            self.gr_scheduler = GRScheduler(config=scheduler_config)
+            
+            # GRWorker
+            model_path = self.gr_config.get("model_path")
+            device = self.gr_config.get("device")
+            self.gr_worker = GRWorker(
+                model_path=model_path,
+                device=device,
+                embedding_dim=self.embedding_dim,
+                hash_size=self.hash_size,
+                max_seq_len=self.max_seq_len,
+                max_candidates=self.max_candidates,
+                num_layers=self._num_layers,
+                num_heads=self._num_heads,
+                hidden_dim=self._hidden_dim,
+                attention_dim=self._attention_dim,
+                load_model=self._load_model,
+            )
+        else:
+            self.gr_scheduler = None
+            self.gr_worker = None
     
     @classmethod
     def from_engine_args(
         cls,
-        engine_args: Union[GREngineArgs, Any],
-        usage_context: Optional[Any] = None,
-        stat_loggers: Optional[list] = None,
+        engine_args: GREngineArgs,
+        usage_context: UsageContext = UsageContext.ENGINE_CONTEXT,
+        stat_loggers: Optional[List[Any]] = None,
         enable_multiprocessing: bool = False,
     ) -> "GRLLMEngine":
         """
-        Create instance from engine arguments (overrides parent method).
+        Create GRLLMEngine from engine arguments.
         
-        Args:
-            engine_args: Engine arguments (GREngineArgs or vLLM EngineArgs)
-            usage_context: Usage context
-            stat_loggers: Statistics loggers
-            enable_multiprocessing: Whether to enable multiprocessing
-            
-        Returns:
-            GRLLMEngine instance
+        Uses vLLM's EngineCore for model execution, with GR-specific
+        components for input/output processing.
         """
-        # Extract GR-specific parameters
-        gr_kwargs = {
-            "max_seq_len": getattr(engine_args, 'max_seq_len', 512),
-            "max_candidates": getattr(engine_args, 'max_candidates', 1000),
-            "default_top_k": getattr(engine_args, 'default_top_k', 10),
-            "uih_feature_names": getattr(engine_args, 'uih_feature_names', None),
-            "candidate_feature_names": getattr(engine_args, 'candidate_feature_names', None),
-            # Model loading parameters
-            "model_path": getattr(engine_args, 'model', None),
-            "embedding_path": getattr(engine_args, 'embedding_path', None),
-            "device": getattr(engine_args, 'device', None),
-            "embedding_dim": getattr(engine_args, 'embedding_dim', 192),
-            "hash_size": getattr(engine_args, 'hash_size', 10_000_000),
-            "load_model": getattr(engine_args, 'load_model', True),
-            # HSTU model architecture parameters
-            "num_layers": getattr(engine_args, 'num_layers', 3),
-            "num_heads": getattr(engine_args, 'num_heads', 2),
-            "hidden_dim": getattr(engine_args, 'hidden_dim', 128),
-            "attention_dim": getattr(engine_args, 'attention_dim', 64),
+        # Create vLLM config from engine args
+        # This will register HSTUConfig with AutoConfig first
+        vllm_config = engine_args.create_engine_config(usage_context)
+        
+        # Ensure skip_tokenizer_init for GR
+        if vllm_config.model_config is not None:
+            vllm_config.model_config.skip_tokenizer_init = True
+        
+        # Get executor class for EngineCore
+        executor_class = Executor.get_class(vllm_config)
+        
+        # Build GR-specific config
+        gr_config = {
+            "model_path": engine_args.model if engine_args.model else None,
+            "max_seq_len": engine_args.max_seq_len,
+            "max_candidates": engine_args.max_candidates,
+            "default_top_k": engine_args.default_top_k,
+            "embedding_dim": engine_args.embedding_dim,
+            "hash_size": engine_args.hash_size,
+            "load_model": engine_args.load_model,
+            "num_layers": engine_args.num_layers,
+            "num_heads": engine_args.num_heads,
+            "hidden_dim": engine_args.hidden_dim,
+            "attention_dim": engine_args.attention_dim,
+            "use_scheduler": engine_args.use_scheduler,
+            "gr_max_batch_size": engine_args.gr_max_batch_size,
+            "scheduling_policy": engine_args.scheduling_policy,
+            "device": engine_args.device,
+            # Control execution mode
+            "force_gr_native": engine_args.force_gr_native,
         }
         
-        vllm_config = None
-        executor_class = None
-        log_stats = not getattr(engine_args, 'disable_log_stats', False)
-        use_vllm_registry = getattr(engine_args, 'use_vllm_registry', False)
-        
-        # HSTU Model Loading Strategy:
-        #
-        # Option 1: vLLM ModelRegistry (use_vllm_registry=True)
-        # - HSTU is registered with vLLM's ModelRegistry via register_hstu_model()
-        # - Uses standard vLLM model loading pipeline
-        # - Requires: model_type="hstu", architectures=["HSTUForRecommendation"]
-        #   in config.json
-        #
-        # Option 2: GR-native loading (default, use_vllm_registry=False)
-        # - Uses GR's own model loading: HSTUModelConfig + GRModelRunner
-        # - More flexible for custom HSTU configurations
-        # - Does not require HuggingFace-compatible config.json
-        
-        if use_vllm_registry:
-            # Try to use vLLM's standard model loading with registered HSTU
-            try:
-                from vllm_gr.registry import is_hstu_registered, register_hstu_model
-                
-                if not is_hstu_registered():
-                    register_hstu_model()
-                
-                if hasattr(engine_args, 'create_engine_config'):
-                    vllm_config = engine_args.create_engine_config(usage_context)
-                    logger.info("Using vLLM ModelRegistry for HSTU model loading")
-            except Exception as e:
-                logger.warning(f"Failed to use vLLM ModelRegistry: {e}")
-                logger.info("Falling back to GR-native model loading")
-                vllm_config = None
-        else:
-            logger.debug(
-                "GRLLMEngine: Using GR-native model loading "
-                "(set use_vllm_registry=True to use vLLM ModelRegistry)"
-            )
-        
-        # Create GRLLMEngine
         return cls(
             vllm_config=vllm_config,
             executor_class=executor_class,
-            log_stats=log_stats,
+            log_stats=not engine_args.disable_log_stats,
             usage_context=usage_context,
             stat_loggers=stat_loggers,
             multiprocess_mode=enable_multiprocessing,
-            **gr_kwargs,
+            gr_config=gr_config,
         )
     
-    # ==================== Recommendation Interface ====================
+    # =========================================================================
+    # Request Management - Route through EngineCore when possible
+    # =========================================================================
     
     def add_gr_request(
         self,
@@ -284,184 +343,407 @@ class GRLLMEngine(LLMEngine):
         priority: int = 0,
     ) -> None:
         """
-        Add recommendation request (GR-specific method).
+        Add a GR recommendation request.
         
-        Differences from parent add_request:
-        - Receives GRPrompt instead of PromptType
-        - Uses num_recommendations instead of SamplingParams
-        
-        Args:
-            request_id: Unique request identifier
-            prompt: Recommendation request in GRPrompt format
-            num_recommendations: Number of recommendations to return (defaults to default_top_k)
-            arrival_time: Request arrival time
-            priority: Request priority
+        Routes to EngineCore (ENGINE_CORE mode) or GRScheduler (GR_NATIVE mode).
         """
-        if not isinstance(request_id, str):
-            raise TypeError(f"request_id must be a string, got {type(request_id)}")
-        
         if arrival_time is None:
             arrival_time = time.time()
         
         num_recs = num_recommendations or self.default_top_k
         
-        # Process input using GRProcessor
-        gr_request = self.processor.process_gr_inputs(
-            request_id=request_id,
-            prompt=prompt,
-            num_recommendations=num_recs,
-            arrival_time=arrival_time,
-            priority=priority,
-        )
+        # Extract data from prompt
+        user_history = prompt.get("user_history", [])
+        candidates = prompt.get("candidates", [])
+        user_id = prompt.get("user_id")
         
-        # Add to OutputProcessor for tracking
-        self.output_processor.add_gr_request(
-            gr_request,
-            original_candidates=prompt.get("candidates", []),
-        )
+        # Convert to item IDs
+        prompt_token_ids = [
+            item.get("item_id", 0) for item in user_history
+        ][-self.max_seq_len:]
         
-        # Add to internal request queue
-        self._pending_requests[request_id] = {
-            "request": gr_request,
-            "prompt": prompt,
+        candidate_item_ids = [
+            item.get("item_id", 0) for item in candidates
+        ][:self.max_candidates]
+        
+        # Store metadata for output processing
+        self._gr_request_metadata[request_id] = {
+            "user_id": user_id,
+            "candidates": candidates[:self.max_candidates],
+            "num_recommendations": num_recs,
             "arrival_time": arrival_time,
         }
         
-        # Add to engine_core if available
-        if hasattr(self, 'engine_core') and self.engine_core is not None:
-            try:
-                self.engine_core.add_request(gr_request)
-            except Exception as e:
-                logger.warning(f"Failed to add request to engine_core: {e}")
-    
-    def has_unfinished_requests(self) -> bool:
-        """Check if there are unfinished requests."""
-        return (
-            self.output_processor.has_unfinished_requests() or 
-            len(self._pending_requests) > 0
+        if self._execution_mode == self.MODE_ENGINE_CORE and self._engine_core_initialized:
+            # Route through EngineCore
+            self._add_request_via_engine_core(
+                request_id=request_id,
+                prompt_token_ids=prompt_token_ids,
+                candidate_item_ids=candidate_item_ids,
+                num_recommendations=num_recs,
+                priority=priority,
+            )
+        else:
+            # Route through GR-native scheduler
+            self._add_request_via_gr_native(
+                request_id=request_id,
+                prompt_token_ids=prompt_token_ids,
+                candidate_item_ids=candidate_item_ids,
+                num_recommendations=num_recs,
+                user_id=user_id,
+                priority=priority,
+            )
+        
+        logger.debug(
+            f"Added GR request {request_id}: mode={self._execution_mode}, "
+            f"history_len={len(prompt_token_ids)}, candidates={len(candidate_item_ids)}"
         )
     
-    def get_num_unfinished_requests(self) -> int:
-        """Get the number of unfinished requests."""
-        return max(
-            self.output_processor.get_num_unfinished_requests(),
-            len(self._pending_requests),
+    def _add_request_via_engine_core(
+        self,
+        request_id: str,
+        prompt_token_ids: List[int],
+        candidate_item_ids: List[int],
+        num_recommendations: int,
+        priority: int,
+    ) -> None:
+        """
+        Add request through vLLM's EngineCore.
+        
+        Maps GR data to EngineCore format:
+        - prompt_token_ids: User history item IDs (as "tokens")
+        - mm_inputs: Contains candidate_item_ids
+        - Uses PoolingParams for recommendation (single output)
+        """
+        # Create PoolingParams for recommendation task
+        # We use pooling_params since recommendation is similar to embedding/pooling
+        pooling_params = PoolingParams()
+        
+        # Create multimodal inputs to carry candidate data
+        mm_inputs = {
+            "candidate_item_ids": candidate_item_ids,
+            "num_recommendations": num_recommendations,
+        }
+        
+        # Use the parent class processor to create EngineCoreRequest
+        # Note: We're treating item IDs as "tokens" for compatibility
+        try:
+            # Build a prompt-like structure for the processor
+            # Since we skip tokenizer, we provide token_ids directly
+            prompt = {
+                "prompt_token_ids": prompt_token_ids,
+            }
+            
+            # Process through parent's processor (creates EngineCoreRequest)
+            prompt_str, request = self.processor.process_inputs(
+                request_id=request_id,
+                prompt=prompt,
+                params=pooling_params,
+                arrival_time=time.time(),
+                lora_request=None,
+                tokenization_kwargs=None,
+                trace_headers=None,
+                priority=priority,
+            )
+            
+            # Attach mm_inputs for candidates
+            request.mm_inputs = mm_inputs
+            
+            # Add to output processor
+            self.output_processor.add_request(request, prompt_str, None, 0)
+            
+            # Add to EngineCore
+            self.engine_core.add_request(request)
+            
+            logger.debug(f"Request {request_id} added to EngineCore")
+            
+        except Exception as e:
+            logger.error(f"Failed to add request via EngineCore: {e}")
+            # Fallback to GR-native
+            logger.warning("Falling back to GR-native for this request")
+            self._add_request_via_gr_native(
+                request_id=request_id,
+                prompt_token_ids=prompt_token_ids,
+                candidate_item_ids=candidate_item_ids,
+                num_recommendations=num_recommendations,
+                user_id=self._gr_request_metadata[request_id]["user_id"],
+                priority=priority,
+            )
+    
+    def _add_request_via_gr_native(
+        self,
+        request_id: str,
+        prompt_token_ids: List[int],
+        candidate_item_ids: List[int],
+        num_recommendations: int,
+        user_id: Any,
+        priority: int,
+    ) -> None:
+        """Add request through GR-native scheduler."""
+        if self.gr_scheduler is None:
+            raise RuntimeError("GRScheduler not initialized for GR_NATIVE mode")
+        
+        # Create GRRequest for output processing
+        gr_request = GRRequest(
+            request_id=request_id,
+            user_id=user_id,
+            arrival_time=time.time(),
+            num_recommendations=num_recommendations,
+        )
+        
+        # Add to scheduler
+        # Note: add_request expects request (or request_id) as first positional arg
+        self.gr_scheduler.add_request(
+            request_id,  # First positional argument
+            prompt_token_ids=prompt_token_ids,
+            candidate_item_ids=candidate_item_ids,
+            num_recommendations=num_recommendations,
+            user_id=user_id,
+            priority=priority,
+        )
+        
+        # Add to output processor
+        self.gr_output_processor.add_gr_request(
+            gr_request=gr_request,
+            original_candidates=self._gr_request_metadata[request_id]["candidates"],
         )
     
-    # ==================== Step Method Override ====================
+    # =========================================================================
+    # Inference Execution
+    # =========================================================================
     
-    def step(self) -> List[GRRequestOutput]:
+    def step(self) -> List[Union[RequestOutput, PoolingRequestOutput, GRRequestOutput]]:
         """
-        Execute one inference step (overrides parent method).
+        Execute one inference step.
         
-        Key differences from LLM step():
-        - LLM: Generates one token, may need multiple step() calls to complete a request
-        - GR: Uses Target-Aware Attention to evaluate all candidates in parallel
-              One step() completes the entire request (returns finished=True)
-        
-        Returns:
-            List[GRRequestOutput]: Completed recommendation request outputs
+        Routes to EngineCore or GR-native based on execution mode.
         """
-        outputs = []
-        
-        # Get output from engine_core if available
-        if hasattr(self, 'engine_core') and self.engine_core is not None:
-            try:
-                engine_outputs = self.engine_core.get_output()
-                processed = self.output_processor.process_gr_outputs(engine_outputs)
-                outputs.extend(processed.request_outputs)
-            except Exception as e:
-                logger.warning(f"Failed to get output from engine_core: {e}")
-        
-        # Process pending requests
-        if self._pending_requests:
-            outputs.extend(self._process_pending_requests())
-        
-        # Clean up completed requests
-        completed_ids = [o.request_id for o in outputs if o.finished]
-        for req_id in completed_ids:
-            if req_id in self._pending_requests:
-                del self._pending_requests[req_id]
-        
-        return outputs
+        if self._execution_mode == self.MODE_ENGINE_CORE and self._engine_core_initialized:
+            return self._step_via_engine_core()
+        else:
+            return self._step_via_gr_native()
     
-    def _process_pending_requests(self) -> List[GRRequestOutput]:
-        """Process pending requests (internal method)."""
-        outputs = []
+    def _step_via_engine_core(self) -> List[GRRequestOutput]:
+        """
+        Execute step through vLLM's EngineCore.
         
-        for request_id, req_info in list(self._pending_requests.items()):
-            gr_request = req_info["request"]
-            prompt = req_info["prompt"]
+        Uses self.engine_core.get_output() and converts results to GRRequestOutput.
+        """
+        # Get outputs from EngineCore (parent's step logic)
+        try:
+            # This calls engine_core.get_output() internally
+            engine_outputs = super().step()
+        except Exception as e:
+            logger.error(f"EngineCore step failed: {e}")
+            return []
+        
+        # Convert to GRRequestOutput
+        gr_outputs = []
+        for output in engine_outputs:
+            request_id = output.request_id
             
-            scores = None
-            
-            # Use GRModelRunner for inference
-            if self._model_runner is not None:
-                try:
-                    scores = self._model_runner.run_inference(gr_request, prompt)
-                except Exception as e:
-                    logger.error(f"GRModelRunner inference failed: {e}")
-                    raise RuntimeError(f"Model inference failed: {e}") from e
-            
-            # Fallback: use legacy _model interface (for compatibility)
-            elif self._model is not None and hasattr(self._model, 'forward'):
-                try:
-                    scores = self._model.forward(gr_request.gr_inputs)
-                except Exception as e:
-                    logger.error(f"Model forward failed: {e}")
-                    raise RuntimeError(f"Model forward failed: {e}") from e
-            
-            # No model available - raise error
+            if request_id in self._gr_request_metadata:
+                gr_output = self._convert_engine_output_to_gr(request_id, output)
+                if gr_output is not None:
+                    gr_outputs.append(gr_output)
+                    self._num_gr_requests_processed += 1
+                    # Clean up metadata
+                    del self._gr_request_metadata[request_id]
+        
+        return gr_outputs
+    
+    def _convert_engine_output_to_gr(
+        self,
+        request_id: str,
+        engine_output: Union[RequestOutput, PoolingRequestOutput],
+    ) -> Optional[GRRequestOutput]:
+        """Convert EngineCore output to GRRequestOutput."""
+        metadata = self._gr_request_metadata.get(request_id)
+        if metadata is None:
+            return None
+        
+        candidates = metadata["candidates"]
+        num_recs = metadata["num_recommendations"]
+        
+        # Extract scores from engine output
+        # For pooling output, scores are in the outputs
+        if hasattr(engine_output, 'outputs') and engine_output.outputs:
+            # Get the embedding/pooling output
+            output_data = engine_output.outputs[0]
+            if hasattr(output_data, 'data'):
+                scores = output_data.data
             else:
-                raise RuntimeError(
-                    "No model available for inference. "
-                    "Please provide a valid model path or set load_model=True."
-                )
-            
-            if scores is not None:
-                output = self.output_processor.create_output_from_scores(
+                # Fallback: generate placeholder scores
+                scores = list(range(len(candidates), 0, -1))
+        else:
+            scores = list(range(len(candidates), 0, -1))
+        
+        # Create recommendations
+        recommendations = self._create_recommendations(
+            candidates=candidates,
+            scores=scores,
+            num_recommendations=num_recs,
+        )
+        
+        return GRRequestOutput(
+            request_id=request_id,
+            recommendations=recommendations,
+            finished=True,
+            user_id=metadata.get("user_id"),
+        )
+    
+    def _step_via_gr_native(self) -> List[GRRequestOutput]:
+        """Execute step through GR-native components."""
+        if self.gr_scheduler is None or self.gr_worker is None:
+            return []
+        
+        # Schedule next batch
+        scheduler_output = self.gr_scheduler.schedule()
+        
+        if scheduler_output.is_empty:
+            return []
+        
+        # Execute model
+        model_output = self.gr_worker.execute_model(scheduler_output)
+        
+        # Update scheduler state
+        completed_ids = self.gr_scheduler.update_from_output(
+            scheduler_output, model_output.predictions
+        )
+        
+        # Create outputs
+        request_outputs = []
+        for i, request_id in enumerate(model_output.request_ids):
+            if i < len(model_output.predictions):
+                scores = model_output.predictions[i]
+                gr_output = self.gr_output_processor.create_output_from_scores(
                     request_id=request_id,
                     scores=scores,
                 )
-                if output is not None:
-                    outputs.append(output)
+                if gr_output is not None:
+                    request_outputs.append(gr_output)
+                    self._num_gr_requests_processed += 1
+                    # Clean up metadata
+                    if request_id in self._gr_request_metadata:
+                        del self._gr_request_metadata[request_id]
         
-        return outputs
-    
-    def set_model(self, model: Any) -> None:
-        """Set model (for direct inference)."""
-        self._model = model
-    
-    def abort_request(self, request_id: str) -> None:
-        """Abort a request."""
-        if request_id in self._pending_requests:
-            del self._pending_requests[request_id]
-        self.output_processor.remove_request(request_id)
+        if self.log_stats and request_outputs:
+            logger.debug(
+                f"GR-native step: {len(request_outputs)} outputs, "
+                f"{self.gr_scheduler.get_num_waiting_requests()} waiting"
+            )
         
-        # Also remove from engine_core if available
-        if hasattr(self, 'engine_core') and self.engine_core is not None:
-            try:
-                self.engine_core.abort_request(request_id)
-            except Exception:
-                pass
+        return request_outputs
+    
+    def _create_recommendations(
+        self,
+        candidates: List[Dict[str, Any]],
+        scores: Union[List[float], torch.Tensor],
+        num_recommendations: int,
+    ) -> List[RecommendedItem]:
+        """Create sorted recommendations from candidates and scores."""
+        if isinstance(scores, torch.Tensor):
+            scores = scores.cpu().tolist()
+        
+        # Pair candidates with scores
+        scored_items = []
+        for i, (candidate, score) in enumerate(zip(candidates, scores)):
+            if i < len(scores):
+                scored_items.append((candidate, float(score)))
+        
+        # Sort by score descending
+        scored_items.sort(key=lambda x: x[1], reverse=True)
+        
+        # Create recommendations
+        recommendations = []
+        for rank, (candidate, score) in enumerate(scored_items[:num_recommendations], 1):
+            recommendations.append(RecommendedItem(
+                item_id=candidate.get("item_id"),
+                score=score,
+                rank=rank,
+                metadata=candidate,
+            ))
+        
+        return recommendations
+    
+    # =========================================================================
+    # State Queries
+    # =========================================================================
+    
+    def has_unfinished_requests(self) -> bool:
+        """Check if there are unfinished requests."""
+        if self._execution_mode == self.MODE_ENGINE_CORE and self._engine_core_initialized:
+            return super().has_unfinished_requests()
+        elif self.gr_scheduler is not None:
+            return self.gr_scheduler.has_unfinished_requests()
+        return False
+    
+    def get_num_unfinished_requests(self) -> int:
+        """Get number of unfinished requests."""
+        if self._execution_mode == self.MODE_ENGINE_CORE and self._engine_core_initialized:
+            return super().get_num_unfinished_requests()
+        elif self.gr_scheduler is not None:
+            return self.gr_scheduler.get_num_unfinished_requests()
+        return 0
+    
+    def abort_request(self, request_ids: Union[str, List[str]]) -> None:
+        """Abort requests."""
+        if isinstance(request_ids, str):
+            request_ids = [request_ids]
+        
+        if self._execution_mode == self.MODE_ENGINE_CORE and self._engine_core_initialized:
+            super().abort_request(request_ids)
+        elif self.gr_scheduler is not None:
+            for request_id in request_ids:
+                self.gr_scheduler.abort_request(request_id)
+        
+        # Clean up metadata
+        for request_id in request_ids:
+            if request_id in self._gr_request_metadata:
+                del self._gr_request_metadata[request_id]
+    
+    # =========================================================================
+    # Statistics and Lifecycle
+    # =========================================================================
+    
+    def get_execution_mode(self) -> str:
+        """Get current execution mode."""
+        return self._execution_mode
+    
+    def get_gr_stats(self) -> Dict[str, Any]:
+        """Get GR-specific statistics."""
+        elapsed = time.time() - self._start_time
+        stats = {
+            "execution_mode": self._execution_mode,
+            "engine_core_initialized": self._engine_core_initialized,
+            "num_gr_requests_processed": self._num_gr_requests_processed,
+            "elapsed_time": elapsed,
+            "gr_throughput": self._num_gr_requests_processed / max(elapsed, 1e-6),
+            "pending_requests": len(self._gr_request_metadata),
+        }
+        
+        if self.gr_scheduler is not None:
+            stats.update(self.gr_scheduler.get_stats())
+        
+        return stats
     
     def shutdown(self) -> None:
         """Shutdown the engine."""
-        self._pending_requests.clear()
+        # Shutdown GR worker if exists
+        if self.gr_worker is not None:
+            self.gr_worker.shutdown()
         
-        # Shutdown model runner
-        if self._model_runner is not None:
-            try:
-                self._model_runner.shutdown()
-            except Exception:
-                pass
-            self._model_runner = None
+        # Clear metadata
+        self._gr_request_metadata.clear()
         
-        # Call parent's shutdown method
-        if hasattr(super(), 'shutdown'):
-            try:
-                super().shutdown()
-            except Exception:
-                pass
-        
-        logger.info("GRLLMEngine shutdown complete")
+        logger.info(
+            f"GRLLMEngine shutdown: mode={self._execution_mode}, "
+            f"processed={self._num_gr_requests_processed}"
+        )
+    
+    def __del__(self):
+        """Destructor."""
+        try:
+            self.shutdown()
+        except Exception:
+            pass

@@ -4,14 +4,19 @@
 """
 GRProcessor: Input processor for generative recommendation.
 
-Converts GRPrompt to GRRequest with KeyedJaggedTensor format inputs.
+Converts GRPrompt to GRRequest with item ID and candidate information.
+Designed to work with GRLLMEngine and GRScheduler.
+
+Inherits from vLLM's Processor to maintain API compatibility.
 """
 
-from typing import Any, Optional, Union, List, Dict
+from typing import Any, Optional, Union, List, Dict, Tuple
 import time
+import logging
 
-# Required imports - these are mandatory dependencies
 import torch
+
+from vllm.v1.engine.processor import Processor
 
 # TorchRec import - optional for KeyedJaggedTensor
 try:
@@ -24,23 +29,25 @@ except ImportError:
 from vllm_gr.inputs.data import GRPrompt, GRInputs
 from vllm_gr.request import GRRequest
 
+logger = logging.getLogger("vllm_gr.processor")
 
-class GRProcessor:
+
+class GRProcessor(Processor):
     """
-    GR Unified Input Processor.
+    GR Input Processor - Inherits from vLLM Processor.
     
     Responsibilities:
-    1. Convert GRPrompt to GRInputs (containing KJT)
-    2. Create GRRequest
+    1. Convert GRPrompt to GRInputs (containing item IDs)
+    2. Create GRRequest for scheduling
+    3. Adapt inputs for recommendation model format
     
     Data format correspondence with generative-recommenders:
-    - GRPrompt.user_history -> uih_features_kjt
-    - GRPrompt.candidates -> candidates_features_kjt
+    - GRPrompt.user_history -> uih_features (user interaction history)
+    - GRPrompt.candidates -> candidate_features
     
     Notes:
     - Created and managed by GRLLMEngine
     - GRLLM does not directly create this processor
-    - torch is a required dependency
     - TorchRec is optional; uses simplified format when unavailable
     """
     

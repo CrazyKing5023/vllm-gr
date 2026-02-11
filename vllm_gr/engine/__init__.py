@@ -4,12 +4,18 @@
 """
 Engine components for generative recommendation.
 
-Includes:
-- GRLLMEngine: Main engine class
+Core Components:
+- GRLLMEngine: Main engine orchestrating inference
+- GRScheduler: Request scheduling and batching
+- GRWorker: Model execution worker
+- GRModelRunner: Model inference execution
+
+Processing Components:
 - GRProcessor: Input processor (GRPrompt -> GRRequest)
-- GROutputProcessor: Output processor (model output -> GRRequestOutput)
-- GREngineArgs: Engine arguments
-- GRModelRunner: Model runner for real HSTU inference
+- GROutputProcessor: Output processor (predictions -> GRRequestOutput)
+
+Configuration:
+- GREngineArgs: Engine configuration arguments
 """
 
 # Processors
@@ -22,19 +28,15 @@ from vllm_gr.engine.arg_utils import GREngineArgs
 # Main engine
 from vllm_gr.engine.gr_engine import GRLLMEngine
 
-# Model runner (requires torch, which is a mandatory dependency)
-from vllm_gr.engine.model_runner import GRModelRunner
-
 __all__ = [
     # Processors
     "GRProcessor",
     "GROutputProcessor",
     "GRProcessedOutputs",
     
-    # Engine
+    # Engine arguments
     "GREngineArgs",
-    "GRLLMEngine",
     
-    # Model runner
-    "GRModelRunner",
+    # Main engine
+    "GRLLMEngine",
 ]

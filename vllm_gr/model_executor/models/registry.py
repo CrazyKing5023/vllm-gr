@@ -50,7 +50,11 @@ except ImportError:
 
 # GR-specific models: architecture -> (module_name, class_name)
 # Module path is relative to vllm_gr.model_executor.models
+# Note: We register multiple architecture names for flexibility:
+# - HSTUEmbeddingModel: Follows vLLM's naming convention for embedding models
+# - HSTUForRecommendation: Original name for backwards compatibility
 _GR_MODELS: Dict[str, Tuple[str, str]] = {
+    "HSTUEmbeddingModel": ("hstu_vllm", "HSTUForRecommendation"),
     "HSTUForRecommendation": ("hstu_vllm", "HSTUForRecommendation"),
 }
 

@@ -46,7 +46,17 @@ class GRLLM(LLM):
         default_top_k: Default number of recommendations, default 10
         tensor_parallel_size: Tensor parallelism degree, default 1
         gpu_memory_utilization: GPU memory utilization, default 0.9
-        **kwargs: Additional arguments passed to LLM
+        device: Inference device (cuda/cpu), None for auto-selection
+        embedding_dim: Embedding vector dimension, default 192
+        hash_size: Embedding table hash size, default 10_000_000
+        load_model: Whether to load and initialize the HSTU model
+        num_layers: Number of HSTU layers (used without pretrained weights)
+        num_heads: Number of attention heads (used without pretrained weights)
+        hidden_dim: Hidden layer dimension (used without pretrained weights)
+        attention_dim: Attention dimension (used without pretrained weights)
+        use_scheduler: Whether to use scheduler for batching, default True
+        max_batch_size: Maximum batch size for scheduler, default 32
+        scheduling_policy: Scheduling policy ('fcfs' or 'priority'), default 'fcfs'
     
     Example:
         >>> from vllm_gr import GRLLM
@@ -128,10 +138,12 @@ class GRLLM(LLM):
             **kwargs: Additional arguments
         """
         # 1. Build GR-specific engine arguments
-        excluded_keys = [
-            'model', 'embedding_path', 'device', 'embedding_dim', 'hash_size', 
-            'load_model', 'num_layers', 'num_heads', 'hidden_dim', 'attention_dim'
-        ]
+        # Extract scheduler-related kwargs
+        use_scheduler = kwargs.pop('use_scheduler', True)
+        max_batch_size = kwargs.pop('max_batch_size', 32)
+        scheduling_policy = kwargs.pop('scheduling_policy', 'fcfs')
+        force_gr_native = kwargs.pop('force_gr_native', False)
+        
         engine_args = GREngineArgs(
             model=model,
             embedding_path=embedding_path,
@@ -148,7 +160,12 @@ class GRLLM(LLM):
             num_heads=num_heads,
             hidden_dim=hidden_dim,
             attention_dim=attention_dim,
-            **{k: v for k, v in kwargs.items() if k not in excluded_keys}
+            # Scheduler configuration
+            use_scheduler=use_scheduler,
+            gr_max_batch_size=max_batch_size,
+            scheduling_policy=scheduling_policy,
+            # Execution mode
+            force_gr_native=force_gr_native,
         )
         
         # 2. Initialize engine (GRLLMEngine internally initializes processors)

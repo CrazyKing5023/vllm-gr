@@ -5,16 +5,21 @@
 GROutputProcessor: Output processor for generative recommendation.
 
 Converts model predictions to GRRequestOutput with Top-K sampling.
+Inherits from vLLM's OutputProcessor to maintain API compatibility.
 """
 
 from dataclasses import dataclass
 from typing import Any, Optional, Union, List, Dict
+import logging
 
-# Required imports - these are mandatory dependencies
 import torch
+
+from vllm.v1.engine.output_processor import OutputProcessor
 
 from vllm_gr.outputs import GRRequestOutput, RecommendedItem
 from vllm_gr.request import GRRequest
+
+logger = logging.getLogger("vllm_gr.output_processor")
 
 
 @dataclass
@@ -24,19 +29,18 @@ class GRProcessedOutputs:
     iteration_stats: Optional[Any] = None
 
 
-class GROutputProcessor:
+class GROutputProcessor(OutputProcessor):
     """
-    GR Output Processor.
+    GR Output Processor - Inherits from vLLM OutputProcessor.
     
     Responsibilities:
     1. Track active requests (save original_candidates for output mapping)
-    2. Convert model output to GRRequestOutput
-    3. Top-K sampling (sort by score)
+    2. Convert model prediction scores to GRRequestOutput
+    3. Top-K sampling (sort by score, select best recommendations)
     
     Notes:
     - Created and managed by GRLLMEngine
     - GRLLM does not directly create this processor
-    - torch is a required dependency
     """
     
     def __init__(

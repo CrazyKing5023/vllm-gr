@@ -8,6 +8,11 @@ Batch inference example for vllm-GR
 This example demonstrates how to use GRLLM for batch recommendation.
 It runs the full HSTU model forward pass. When no pretrained weights are provided,
 the model uses randomly initialized weights for demonstration purposes.
+
+Demo Mode:
+- Uses 'demo-model' directory which contains config.json with model architecture
+- No actual weights file exists, so the model uses randomly initialized weights
+- This allows testing the full inference pipeline without real model weights
 """
 
 import sys
@@ -20,6 +25,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(SCRIPT_DIR))
 
 from vllm_gr import GRLLM, GRPrompt, GRRequestOutput
+
+# Demo model path - relative to examples directory
+DEMO_MODEL_PATH = os.path.join(SCRIPT_DIR, "demo-model")
 
 
 def generate_sample_prompts(num_users: int, seq_length: int, num_candidates: int) -> List[GRPrompt]:
@@ -61,25 +69,39 @@ def main():
     print("=" * 60)
     
     # 1. Initialize GRLLM
-    # - model=None: No pretrained weights, creates model with random initialization
-    # - Runs actual DlrmHSTU forward pass
+    # 
+    # Model Loading Modes:
+    # - Production: GRLLM(model="path/to/pretrained_model")
+    #   -> Loads config.json and weights from the directory
+    # 
+    # - Demo mode: GRLLM(model="path/to/demo-model")
+    #   -> Loads config.json for architecture parameters
+    #   -> Uses randomly initialized weights (no weights file present)
+    #   -> Useful for validating the complete inference pipeline
+    
+    print(f"\n[Model Path]")
+    print(f"   Using demo model: {DEMO_MODEL_PATH}")
+    
     llm = GRLLM(
-        model=None,  # No pretrained model path
-        max_seq_len=64,
+        model=DEMO_MODEL_PATH,  # Demo model with config but no weights
+        max_seq_len=64,         # Override config for demo (smaller for speed)
         max_candidates=50,
         default_top_k=5,
-        # Model architecture parameters
+        # Override architecture for demo (smaller for speed)
         embedding_dim=64,
         hash_size=10000,
         num_layers=2,
         num_heads=2,
         hidden_dim=64,
         attention_dim=32,
+        # Scheduler configuration
+        max_batch_size=8,
+        scheduling_policy="fcfs",
     )
     
     print(f"\n[GRLLM Initialized]")
     print(f"   Engine: {llm.engine_class.__name__}")
-    print(f"   Model: Randomly initialized HSTU")
+    print(f"   Model: HSTU with randomly initialized weights (demo mode)")
     
     # 2. Test parameters
     num_users = 10

@@ -33,6 +33,76 @@ class HSTUModelOutput:
     item_embeddings: torch.Tensor   # (num_candidates, hidden_dim)
 
 
+class HSTUPooler(nn.Module):
+    """
+    Pooler module for HSTU model - provides vLLM pooling model compatibility.
+    
+    For recommendation models, the "pooling" operation is essentially
+    returning the item scores/predictions rather than text embeddings.
+    
+    Implements vLLM Pooler interface methods:
+    - get_supported_tasks(): Returns supported pooling tasks
+    - forward(): Returns pooled output
+    """
+    
+    def __init__(self, hidden_size: int):
+        super().__init__()
+        self.hidden_size = hidden_size
+        # Simple identity layer - actual pooling is done in HSTU forward
+        self.dense = nn.Identity()
+    
+    def get_supported_tasks(self) -> set:
+        """
+        Return supported pooling tasks.
+        
+        For recommendation models, we support 'embed' and 'encode' tasks
+        which are appropriate for embedding/scoring models.
+        
+        Returns:
+            Set of supported task names
+        """
+        # Support embedding/encoding tasks for recommendation
+        return {"embed", "encode", "score"}
+    
+    def get_pooling_updates(self, task: str) -> Any:
+        """
+        Return pooling parameter updates for a task.
+        
+        Args:
+            task: The pooling task
+            
+        Returns:
+            PoolingParamsUpdate or compatible object
+        """
+        # Return a simple object that has the required interface
+        # For GR models, we don't need special pooling updates
+        class SimplePoolingUpdate:
+            requires_token_ids = False
+            def apply(self, params): pass
+        return SimplePoolingUpdate()
+    
+    def forward(
+        self,
+        hidden_states: Union[torch.Tensor, List[torch.Tensor]],
+        pooling_metadata: Optional[Any] = None,
+    ) -> Union[torch.Tensor, List[torch.Tensor]]:
+        """
+        Pool hidden states for recommendation output.
+        
+        Args:
+            hidden_states: Model hidden states (predictions/scores)
+            pooling_metadata: Optional metadata (unused for recommendation)
+            
+        Returns:
+            Pooled output (same as input for recommendation models)
+        """
+        # For recommendation models, we return the predictions directly
+        # The actual pooling/scoring is done in the HSTU forward pass
+        if isinstance(hidden_states, list):
+            return [self.dense(h) for h in hidden_states]
+        return self.dense(hidden_states)
+
+
 class HSTUForRecommendation(nn.Module):
     """
     Unified HSTU model for recommendation.
@@ -40,27 +110,37 @@ class HSTUForRecommendation(nn.Module):
     This class provides:
     1. vLLM-compatible interface (forward, load_weights)
     2. GR inference interface (run_inference, run_recommendation)
-    3. Support for both HSTUConfig and HSTUModelConfig
+    3. Support for both HSTUConfig, HSTUModelConfig, and VllmConfig
     
     Usage:
+        # With vllm_config (vLLM standard interface)
+        model = HSTUForRecommendation(vllm_config=vllm_config, prefix="")
+        
         # With HSTUConfig (HuggingFace-compatible)
-        model = HSTUForRecommendation(config)
+        model = HSTUForRecommendation(config=config)
         
         # With HSTUModelConfig (internal)
         model = HSTUForRecommendation.from_model_config(model_config, device)
     """
     
-    # vLLM compatibility flags
+    # vLLM model interface flags - CRITICAL for vLLM validation
+    # Use plain class attributes (no type annotations) for compatibility
     supports_multimodal = False
     supports_pp = False
+    is_pooling_model = True  # Mark as pooling model for vLLM
+    is_text_generation_model = False  # Not a generative model
+    is_attention_free = True  # No KV cache needed (recommendation model)
     
     def __init__(
         self,
-        config: Any,  # HSTUConfig or HSTUModelConfig
-        cache_config: Optional[Any] = None,
-        quant_config: Optional[Any] = None,
-        lora_config: Optional[Any] = None,
+        *,  # Force keyword-only arguments (vLLM standard)
+        vllm_config: Any = None,
         prefix: str = "",
+        # Legacy interface for backward compatibility
+        config: Any = None,
+        cache_config: Any = None,
+        quant_config: Any = None,
+        lora_config: Any = None,
         device: Optional[torch.device] = None,
         **kwargs,
     ):
@@ -68,20 +148,59 @@ class HSTUForRecommendation(nn.Module):
         self.prefix = prefix
         self._device = device
         
+        logger.info(f"HSTUForRecommendation.__init__ starting, device={device}")
+        
+        # Handle vllm_config (vLLM standard interface)
+        if vllm_config is not None:
+            logger.info("Processing vllm_config...")
+            # Extract model config from VllmConfig
+            if hasattr(vllm_config, 'model_config'):
+                config = vllm_config.model_config.hf_config
+                logger.info(f"Extracted hf_config: {type(config).__name__}")
+            else:
+                config = vllm_config
+        
         # Normalize config to common attributes
+        logger.info("Normalizing config...")
         self.config = self._normalize_config(config)
+        logger.info(
+            f"Config: hash_size={self.config.hash_size}, "
+            f"embedding_dim={self.config.embedding_dim}, "
+            f"num_layers={self.config.num_layers}"
+        )
         
         # Create the underlying HSTU model
-        self._create_hstu_model()
+        logger.info("Creating HSTU model...")
+        try:
+            self._create_hstu_model()
+            logger.info("HSTU model created successfully")
+        except Exception as e:
+            logger.error(f"Failed to create HSTU model: {e}")
+            raise
         
         # Create embedding tables
-        self._create_embedding_tables()
+        logger.info("Creating embedding tables...")
+        try:
+            self._create_embedding_tables()
+            logger.info("Embedding tables created successfully")
+        except Exception as e:
+            logger.error(f"Failed to create embedding tables: {e}")
+            raise
+        
+        # Create pooler for vLLM pooling model compatibility
+        logger.info("Creating pooler...")
+        self._pooler = HSTUPooler(self.config.embedding_dim)
         
         logger.info(
             f"HSTUForRecommendation initialized: "
             f"layers={self.config.num_layers}, heads={self.config.num_heads}, "
             f"dim={self.config.embedding_dim}"
         )
+    
+    @property
+    def pooler(self):
+        """Return pooler for vLLM pooling model interface."""
+        return self._pooler
     
     def _normalize_config(self, config: Any) -> Any:
         """Normalize config to ensure required attributes exist."""
@@ -220,12 +339,11 @@ class HSTUForRecommendation(nn.Module):
     
     def forward(
         self,
-        input_ids: Optional[torch.Tensor] = None,
-        positions: Optional[torch.Tensor] = None,
-        kv_caches: Optional[List] = None,
-        attn_metadata: Optional[Any] = None,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
         intermediate_tensors: Optional[Any] = None,
-        # GR-specific inputs
+        inputs_embeds: Optional[torch.Tensor] = None,
+        # GR-specific inputs (passed via kwargs or directly)
         uih_embeddings: Optional[torch.Tensor] = None,
         uih_lengths: Optional[torch.Tensor] = None,
         candidate_embeddings: Optional[torch.Tensor] = None,
@@ -235,12 +353,39 @@ class HSTUForRecommendation(nn.Module):
         """
         Forward pass (vLLM compatible interface).
         
+        For recommendation models, input_ids and positions are provided for 
+        vLLM compatibility but the actual computation uses GR-specific inputs
+        (uih_embeddings, candidate_embeddings, etc.).
+        
+        When called by vLLM during dummy runs (without GR inputs), returns a
+        dummy tensor with the expected shape (total_tokens, hidden_dim).
+        
+        Args:
+            input_ids: Token IDs (vLLM compatibility, shape: total_tokens)
+            positions: Position IDs (vLLM compatibility)
+            intermediate_tensors: For pipeline parallelism
+            inputs_embeds: Optional input embeddings
+            uih_embeddings: User interaction history embeddings
+            uih_lengths: Lengths of user histories
+            candidate_embeddings: Candidate item embeddings
+            num_candidates: Number of candidates per request
+            
         Returns:
-            Ranking scores (num_tasks, total_candidates)
+            For GR inference: Ranking scores (num_tasks, total_candidates)
+            For vLLM dummy run: Hidden states (total_tokens, hidden_dim)
         """
         if uih_embeddings is None or candidate_embeddings is None:
-            logger.warning("forward() called without GR inputs, returning dummy")
-            return torch.zeros(1, device=self._get_device())
+            # If GR inputs not provided, return dummy output with correct shape
+            # This happens during vLLM's dummy run for model warm-up
+            # vLLM expects shape: (total_tokens, hidden_dim)
+            total_tokens = input_ids.numel() if input_ids is not None else 1
+            hidden_dim = self.config.embedding_dim
+            device = input_ids.device if input_ids is not None else self._get_device()
+            logger.debug(
+                f"forward() called without GR inputs, returning dummy "
+                f"hidden_states shape: ({total_tokens}, {hidden_dim})"
+            )
+            return torch.zeros(total_tokens, hidden_dim, device=device)
         
         output = self._forward_impl(
             uih_embeddings, uih_lengths, candidate_embeddings, num_candidates
@@ -357,11 +502,59 @@ class HSTUForRecommendation(nn.Module):
         candidate_embeddings: torch.Tensor,
         num_candidates: torch.Tensor,
     ) -> HSTUModelOutput:
-        """Internal forward implementation."""
+        """
+        Internal forward implementation.
+        
+        Args:
+            uih_embeddings: User interaction history embeddings
+                - If 3D (batch_size, seq_len, dim): batched padded format
+                - If 2D (total_len, dim): jagged/concatenated format
+            uih_lengths: Sequence lengths per batch item (batch_size,)
+            candidate_embeddings: Candidate item embeddings
+                - If 3D (batch_size, num_candidates, dim): batched padded format
+                - If 2D (total_candidates, dim): jagged/concatenated format
+            num_candidates: Number of candidates per batch item (batch_size,)
+        
+        Returns:
+            HSTUModelOutput with predictions, user_embeddings, item_embeddings
+        """
         from vllm_gr.models.dlrm_v3.modules.dlrm_hstu import SequenceEmbedding
         
-        # Combine UIH and candidate embeddings
-        total_embeddings = torch.cat([uih_embeddings, candidate_embeddings], dim=0)
+        # Convert batched 3D tensors to jagged 2D format if needed
+        # DlrmHSTU expects jagged format: (total_seq_len, embedding_dim)
+        
+        if uih_embeddings.dim() == 3:
+            # Shape: (batch_size, max_seq_len, embedding_dim)
+            batch_size = uih_embeddings.size(0)
+            
+            # Extract actual sequences based on lengths and concatenate
+            uih_list = []
+            for i in range(batch_size):
+                seq_len = int(uih_lengths[i].item())
+                uih_list.append(uih_embeddings[i, :seq_len, :])
+            uih_embeddings_jagged = torch.cat(uih_list, dim=0)  # (total_uih_len, dim)
+        else:
+            # Already 2D jagged format
+            uih_embeddings_jagged = uih_embeddings
+        
+        if candidate_embeddings.dim() == 3:
+            # Shape: (batch_size, max_candidates, embedding_dim)
+            batch_size = candidate_embeddings.size(0)
+            
+            # Extract actual candidates based on num_candidates and concatenate
+            cand_list = []
+            for i in range(batch_size):
+                n_cand = int(num_candidates[i].item())
+                cand_list.append(candidate_embeddings[i, :n_cand, :])
+            candidate_embeddings_jagged = torch.cat(cand_list, dim=0)  # (total_cand, dim)
+        else:
+            # Already 2D jagged format
+            candidate_embeddings_jagged = candidate_embeddings
+        
+        # Combine UIH and candidate embeddings along sequence dimension (dim=0)
+        # For HSTU: [uih_seq_1, cand_seq_1, uih_seq_2, cand_seq_2, ...]
+        # But DlrmHSTU expects: [all_uih, all_candidates] separated
+        total_embeddings = torch.cat([uih_embeddings_jagged, candidate_embeddings_jagged], dim=0)
         total_lengths = uih_lengths + num_candidates
         
         # Build seq_embeddings dict
@@ -376,7 +569,7 @@ class HSTUForRecommendation(nn.Module):
         for name in self.config.item_embedding_feature_names:
             seq_embeddings[name] = SequenceEmbedding(
                 lengths=num_candidates,
-                embedding=candidate_embeddings,
+                embedding=candidate_embeddings_jagged,
             )
         
         # Ensure uih_post_id_feature_name is available

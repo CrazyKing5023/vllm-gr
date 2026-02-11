@@ -8,16 +8,31 @@ Simple inference example for vllm-GR
 This example demonstrates how to use the GRLLM class for offline recommendation.
 It runs the full HSTU model forward pass. When no pretrained weights are provided,
 the model uses randomly initialized weights for demonstration purposes.
+
+Demo Mode:
+- Uses 'demo-model' directory which contains config.json with model architecture
+- No actual weights file exists, so the model uses randomly initialized weights
+- This allows testing the full inference pipeline without real model weights
 """
 
 import sys
 import os
+
+# Enable CUDA debugging - this makes CUDA errors synchronous and provides better error messages
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
+# Enable verbose logging
+import logging
+logging.basicConfig(level=logging.INFO, format='%(name)s - %(levelname)s - %(message)s')
 
 # Add parent directory to path
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(SCRIPT_DIR))
 
 from vllm_gr import GRLLM, GRPrompt
+
+# Demo model path - relative to examples directory
+DEMO_MODEL_PATH = os.path.join(SCRIPT_DIR, "demo-model")
 
 
 def main():
@@ -28,25 +43,39 @@ def main():
     print("=" * 60)
     
     # 1. Initialize GRLLM
-    # - For production: GRLLM(model="path/to/pretrained_hstu_model")
-    # - For demo: model=None creates model with randomly initialized weights
+    # 
+    # Model Loading Modes:
+    # - Production: GRLLM(model="path/to/pretrained_model")
+    #   -> Loads config.json and weights from the directory
+    # 
+    # - Demo mode: GRLLM(model="path/to/demo-model")
+    #   -> Loads config.json for architecture parameters
+    #   -> Uses randomly initialized weights (no weights file present)
+    #   -> Useful for validating the complete inference pipeline
     #
-    # When model=None:
-    # - Creates HSTUForRecommendation with randomly initialized weights
-    # - Runs actual DlrmHSTU forward pass
-    # - Useful for validating the complete inference pipeline
+    # The demo-model directory contains:
+    # - config.json: Model architecture configuration
+    # - README.md: Documentation
+    # (No weights file - model will be randomly initialized)
+    
+    print(f"\n[Model Path]")
+    print(f"   Using demo model: {DEMO_MODEL_PATH}")
+    
     llm = GRLLM(
-        model=None,  # No pretrained model path
-        max_seq_len=64,
+        model=DEMO_MODEL_PATH,  # Demo model with config but no weights
+        max_seq_len=64,         # Override config for demo (smaller for speed)
         max_candidates=50,
         default_top_k=10,
-        # Model architecture parameters
+        # Override architecture for demo (smaller for speed)
         embedding_dim=64,
         hash_size=10000,
         num_layers=2,
         num_heads=2,
         hidden_dim=64,
         attention_dim=32,
+        # Scheduler configuration
+        max_batch_size=16,
+        scheduling_policy="fcfs",
     )
     
     print(f"\n[Configuration]")
@@ -54,7 +83,7 @@ def main():
     print(f"   Max candidates: {llm.max_candidates}")
     print(f"   Default top-k: {llm.default_top_k}")
     print(f"   Engine: {llm.engine_class.__name__}")
-    print(f"   Model: Randomly initialized HSTU (no pretrained weights)")
+    print(f"   Model: HSTU with randomly initialized weights (demo mode)")
     
     # 2. Prepare a recommendation request using GRPrompt format
     # GRPrompt is the standard input format for vllm-GR
