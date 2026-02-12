@@ -3,7 +3,7 @@
 
 """Entry points for vllm-GR"""
 
-from vllm_gr.entrypoint.gr import GRLLM, RecommendationResponse
+from vllm_gr.entrypoint.gr import GRLLM
 
-__all__ = ["GRLLM", "RecommendationResponse"]
+__all__ = ["GRLLM"]
 

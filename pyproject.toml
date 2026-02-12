@@ -26,21 +26,28 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
+# Core dependencies - required for vllm-GR to function
 dependencies = [
     "torch>=2.0.0",
+    "tqdm>=4.60.0",
+    "vllm==0.11.0",
 ]
 
 [project.optional-dependencies]
+# Development dependencies
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
 ]
+# TorchRec for distributed embeddings
 torchrec = [
     "torchrec>=0.6.0",
 ]
+# SafeTensors for model loading
 safetensors = [
     "safetensors>=0.4.0",
 ]
+# Full installation with all optional dependencies
 all = [
     "vllm-gr[dev,safetensors]",
 ]
@@ -71,4 +78,3 @@ target-version = ['py38', 'py39', 'py310', 'py311']
 [tool.isort]
 profile = "black"
 line_length = 100
-

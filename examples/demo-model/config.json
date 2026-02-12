@@ -1,0 +1,37 @@
+{
+  "model_type": "hstu",
+  "architectures": ["HSTUEmbeddingModel"],
+  
+  "is_text_encoder": true,
+  "is_encoder_decoder": false,
+  "is_attention_free": true,
+  
+  "num_layers": 2,
+  "num_heads": 2,
+  "embedding_dim": 64,
+  "attention_dim": 32,
+  "hidden_dim": 64,
+  "embedding_table_dim": 64,
+  "preprocessor_hidden_dim": 128,
+  
+  "max_seq_len": 128,
+  "max_num_candidates": 50,
+  "hash_size": 10000,
+  
+  "feature_names": ["user_id", "item_id", "item_candidate_id"],
+  "user_embedding_feature_names": ["item_id"],
+  "item_embedding_feature_names": ["item_candidate_id"],
+  "uih_post_id_feature_name": "item_id",
+  
+  "task_names": ["is_click"],
+  "is_inference": true,
+  
+  "embedding_tables": [
+    {
+      "name": "item_embedding",
+      "embedding_dim": 64,
+      "num_embeddings": 10000,
+      "feature_names": ["item_id", "item_candidate_id"]
+    }
+  ]
+}

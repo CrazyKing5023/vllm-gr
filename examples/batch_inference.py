@@ -6,38 +6,59 @@
 Batch inference example for vllm-GR
 
 This example demonstrates how to use GRLLM for batch recommendation.
+It runs the full HSTU model forward pass. When no pretrained weights are provided,
+the model uses randomly initialized weights for demonstration purposes.
+
+Demo Mode:
+- Uses 'demo-model' directory which contains config.json with model architecture
+- No actual weights file exists, so the model uses randomly initialized weights
+- This allows testing the full inference pipeline without real model weights
 """
 
 import sys
 import os
 import time
+from typing import List
 
 # Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(SCRIPT_DIR))
 
-from vllm_gr import GRLLM
-from vllm_gr.config.hstu_config import HSTUModelConfig
+from vllm_gr import GRLLM, GRPrompt, GRRequestOutput
+
+# Demo model path - relative to examples directory
+DEMO_MODEL_PATH = os.path.join(SCRIPT_DIR, "demo-model")
 
 
-def generate_sample_requests(num_users: int, seq_length: int, num_candidates: int):
-    """Generate sample requests for testing."""
-    requests = []
+def generate_sample_prompts(num_users: int, seq_length: int, num_candidates: int) -> List[GRPrompt]:
+    """
+    Generate sample GRPrompt requests for testing.
+    
+    Args:
+        num_users: Number of users/requests to generate
+        seq_length: Length of user history per user
+        num_candidates: Number of candidates per user
+    
+    Returns:
+        List of GRPrompt dictionaries
+    """
+    prompts: List[GRPrompt] = []
     
     for i in range(num_users):
-        request = {
+        prompt: GRPrompt = {
             "user_id": f"user_{i:05d}",
-            "sequence": [
-                {"item_id": f"item_{i}_{j}", "timestamp": 1609459200 + j * 3600}
+            "user_history": [
+                {"item_id": i * 1000 + j, "timestamp": 1609459200 + j * 3600}
                 for j in range(seq_length)
             ],
             "candidates": [
-                {"item_id": f"candidate_{i}_{k}"}
+                {"item_id": i * 10000 + k}
                 for k in range(num_candidates)
             ],
         }
-        requests.append(request)
+        prompts.append(prompt)
     
-    return requests
+    return prompts
 
 
 def main():
@@ -47,75 +68,121 @@ def main():
     print(" vllm-GR Batch Inference Example")
     print("=" * 60)
     
-    # Configuration
-    config = HSTUModelConfig(
+    # 1. Initialize GRLLM
+    # 
+    # Model Loading Modes:
+    # - Production: GRLLM(model="path/to/pretrained_model")
+    #   -> Loads config.json and weights from the directory
+    # 
+    # - Demo mode: GRLLM(model="path/to/demo-model")
+    #   -> Loads config.json for architecture parameters
+    #   -> Uses randomly initialized weights (no weights file present)
+    #   -> Useful for validating the complete inference pipeline
+    
+    print(f"\n[Model Path]")
+    print(f"   Using demo model: {DEMO_MODEL_PATH}")
+    
+    llm = GRLLM(
+        model=DEMO_MODEL_PATH,  # Demo model with config but no weights
+        max_seq_len=64,         # Override config for demo (smaller for speed)
+        max_candidates=50,
+        default_top_k=5,
+        # Override architecture for demo (smaller for speed)
+        embedding_dim=64,
+        hash_size=10000,
         num_layers=2,
         num_heads=2,
-        embedding_dim=128,
-        attention_dim=32,
         hidden_dim=64,
-        embedding_table_dim=64,
-        max_seq_len=128,
-        max_num_candidates=50,
-        hash_size=10000,
-        task_names=["click", "purchase"],
+        attention_dim=32,
+        # Scheduler configuration
+        max_batch_size=8,
+        scheduling_policy="fcfs",
     )
     
-    # Initialize GRLLM
-    llm = GRLLM(config=config, device="cuda")
-    print(f"\n🚀 GRLLM initialized on {llm.device}")
+    print(f"\n[GRLLM Initialized]")
+    print(f"   Engine: {llm.engine_class.__name__}")
+    print(f"   Model: HSTU with randomly initialized weights (demo mode)")
     
-    # Test parameters
+    # 2. Test parameters
     num_users = 10
     seq_length = 20
     num_candidates = 30
     top_k = 5
     
-    print(f"\n📋 Batch Test Parameters:")
+    print(f"\n[Batch Test Parameters]")
     print(f"   Number of users: {num_users}")
     print(f"   Sequence length: {seq_length}")
     print(f"   Candidates per user: {num_candidates}")
     print(f"   Top-K: {top_k}")
     
-    # Generate requests
-    requests = generate_sample_requests(num_users, seq_length, num_candidates)
-    print(f"\n📝 Generated {len(requests)} requests")
+    # 3. Generate GRPrompt requests
+    prompts = generate_sample_prompts(num_users, seq_length, num_candidates)
+    print(f"\n[Generated {len(prompts)} GRPrompt requests]")
     
-    # Run batch inference
-    print(f"\n⏳ Running batch inference...")
+    # 4. Method 1: Use recommend() with all prompts at once
+    print(f"\n[Method 1: recommend() with all prompts]")
+    print(f"   Running HSTU model inference...")
     start_time = time.time()
-    responses = llm.recommend_batch(requests, top_k=top_k)
-    total_time = (time.time() - start_time) * 1000
+    outputs: List[GRRequestOutput] = llm.recommend(
+        prompts=prompts,
+        use_tqdm=False,
+        top_k=top_k,
+    )
+    method1_time = (time.time() - start_time) * 1000
+    print(f"   Time: {method1_time:.2f}ms")
+    print(f"   Outputs: {len(outputs)}")
     
-    # Display results
-    print(f"\n📊 Batch Results:")
-    print(f"   Total time: {total_time:.2f}ms")
-    print(f"   Avg time per request: {total_time / num_users:.2f}ms")
-    print(f"   Throughput: {num_users / (total_time / 1000):.2f} requests/sec")
+    # 5. Method 2: Use recommend_batch() for large batches
+    print(f"\n[Method 2: recommend_batch() with batch_size=4]")
+    start_time = time.time()
+    outputs_batch: List[GRRequestOutput] = llm.recommend_batch(
+        prompts=prompts,
+        batch_size=4,
+        top_k=top_k,
+    )
+    method2_time = (time.time() - start_time) * 1000
+    print(f"   Time: {method2_time:.2f}ms")
+    print(f"   Outputs: {len(outputs_batch)}")
     
-    print(f"\n   Sample results (first 3 users):")
-    for i, response in enumerate(responses[:3]):
-        print(f"\n   User {i}:")
-        print(f"     Request ID: {response.request_id}")
-        print(f"     Latency: {response.latency_ms:.2f}ms")
-        print(f"     Top-{top_k}: {[r['item_id'] for r in response.recommendations[:3]]}...")
+    # 6. Display sample results
+    print(f"\n[Sample Results (first 3 users)]")
+    print(f"   (Note: Scores are from randomly initialized model)")
+    for i, output in enumerate(outputs[:3]):
+        top_items = [item.item_id for item in output.recommendations[:3]]
+        top_scores = [f"{item.score:.3f}" for item in output.recommendations[:3]]
+        print(f"\n   User {i}: {output.user_id}")
+        print(f"     Request ID: {output.request_id}")
+        print(f"     Top items: {top_items}")
+        print(f"     Top scores: {top_scores}")
     
-    # Summary statistics
-    latencies = [r.latency_ms for r in responses]
-    avg_latency = sum(latencies) / len(latencies)
-    max_latency = max(latencies)
-    min_latency = min(latencies)
+    # 7. Summary statistics
+    print(f"\n[Performance Summary]")
+    print(f"   Method 1 (recommend):       {method1_time:.2f}ms total, {method1_time/num_users:.2f}ms/request")
+    print(f"   Method 2 (recommend_batch): {method2_time:.2f}ms total, {method2_time/num_users:.2f}ms/request")
+    print(f"   Throughput: {num_users / (method1_time / 1000):.2f} requests/sec")
     
-    print(f"\n📈 Latency Statistics:")
-    print(f"   Average: {avg_latency:.2f}ms")
-    print(f"   Min: {min_latency:.2f}ms")
-    print(f"   Max: {max_latency:.2f}ms")
+    # 8. Verify output structure
+    print(f"\n[Output Structure Verification]")
+    sample = outputs[0]
+    print(f"   Type: {type(sample).__name__}")
+    print(f"   Attributes: request_id, user_id, recommendations, finished, metrics")
+    print(f"   Recommendation type: {type(sample.recommendations[0]).__name__}")
+    print(f"   Item attributes: item_id, score, rank, features")
+    
+    # 9. Serialization example
+    print(f"\n[Serialization Example]")
+    output_dict = outputs[0].to_dict()
+    print(f"   Keys: {list(output_dict.keys())}")
+    print(f"   First recommendation: {output_dict['recommendations'][0]}")
+    
+    # 10. Cleanup
+    llm.shutdown()
     
     print("\n" + "=" * 60)
     print(" Batch example completed successfully!")
+    print(" Full HSTU model forward pass was executed.")
     print("=" * 60)
 
 
 if __name__ == "__main__":
     main()
-

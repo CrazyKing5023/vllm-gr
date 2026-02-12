@@ -23,9 +23,8 @@ import torch
 def create_test_model(output_dir: str, config_override: dict = None):
     """Create a test model checkpoint."""
     
-    from vllm_gr.config.hstu_config import HSTUModelConfig
-    from vllm_gr.model_executor.embedding_manager import EmbeddingManager
-    from vllm_gr.model_executor.models.hstu import HSTUModelWrapper
+    from vllm_gr.config.hstu_config import HSTUModelConfig, EmbeddingTableConfig
+    from vllm_gr.model_executor.models.hstu_vllm import HSTUForRecommendation
     
     print(f"Creating test model in: {output_dir}")
     os.makedirs(output_dir, exist_ok=True)
@@ -56,42 +55,33 @@ def create_test_model(output_dir: str, config_override: dict = None):
     config_path = os.path.join(output_dir, "config.json")
     with open(config_path, "w") as f:
         json.dump(config.to_dict(), f, indent=2)
-    print(f"  ✓ Config saved to: {config_path}")
+    print(f"  Config saved to: {config_path}")
     
-    # Create model
-    device = torch.device("cpu")  # Create on CPU for portability
-    embedding_manager = EmbeddingManager(config, device)
-    model = HSTUModelWrapper(config, embedding_manager, device)
+    # Create model using unified HSTUForRecommendation
+    device = torch.device("cpu")
+    model = HSTUForRecommendation.from_model_config(config, device)
     
     # Collect all weights
     state_dict = {}
-    
-    # Add model weights
     for name, param in model.named_parameters():
         state_dict[name] = param.data.clone()
-    
-    # Add embedding weights
-    for table_name, table in embedding_manager.embedding_tables.items():
-        for param_name, param in table.named_parameters():
-            key = f"embedding_tables.{table_name}.{param_name}"
-            state_dict[key] = param.data.clone()
     
     # Save weights
     weights_path = os.path.join(output_dir, "model.pt")
     torch.save(state_dict, weights_path)
-    print(f"  ✓ Weights saved to: {weights_path}")
+    print(f"  Weights saved to: {weights_path}")
     
     # Print summary
     total_params = sum(p.numel() for p in state_dict.values())
-    print(f"\n  📊 Model Summary:")
+    print(f"\n  Model Summary:")
     print(f"     Total parameters: {total_params:,}")
     print(f"     Layers: {config.num_layers}")
     print(f"     Heads: {config.num_heads}")
     print(f"     Embedding dim: {config.embedding_dim}")
     print(f"     Tasks: {config.task_names}")
     
-    print(f"\n✅ Test model created successfully!")
-    print(f"   Use with: GRLLM(model_path='{output_dir}')")
+    print(f"\n  Test model created successfully!")
+    print(f"   Use with: GRLLM(model='{output_dir}')")
     
     return output_dir
 
@@ -136,4 +126,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
