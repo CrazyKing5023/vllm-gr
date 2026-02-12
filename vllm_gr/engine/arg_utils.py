@@ -107,6 +107,12 @@ class GREngineArgs(EngineArgs):
             # Use eager mode for GR models (no CUDA graph optimization needed)
             self.enforce_eager = True
             
+            # CRITICAL: Disable prefix caching for attention-free models
+            # HSTU models don't use KV cache, so prefix caching must be disabled.
+            # Without this, vLLM's KVCacheManager will fail with assertion error
+            # when kv_cache_groups is empty but enable_caching is True.
+            self.enable_prefix_caching = False
+            
             # Check if model has real weights, if not use dummy loader
             # This allows EngineCore to work without real weight files
             if not self._has_model_weights():

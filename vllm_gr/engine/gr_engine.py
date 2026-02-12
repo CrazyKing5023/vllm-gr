@@ -366,10 +366,14 @@ class GRLLMEngine(LLMEngine):
             item.get("item_id", 0) for item in candidates
         ][:self.max_candidates]
         
-        # Store metadata for output processing
+        # Store metadata for output processing and model execution
+        # Note: candidate_item_ids is stored here since EngineCoreRequest is
+        # immutable and we cannot attach extra data to it.
         self._gr_request_metadata[request_id] = {
             "user_id": user_id,
             "candidates": candidates[:self.max_candidates],
+            "candidate_item_ids": candidate_item_ids,  # For model execution
+            "prompt_token_ids": prompt_token_ids,  # User history item IDs
             "num_recommendations": num_recs,
             "arrival_time": arrival_time,
         }
@@ -412,18 +416,19 @@ class GRLLMEngine(LLMEngine):
         
         Maps GR data to EngineCore format:
         - prompt_token_ids: User history item IDs (as "tokens")
-        - mm_inputs: Contains candidate_item_ids
+        - candidate_item_ids: Stored in _gr_request_metadata for retrieval
         - Uses PoolingParams for recommendation (single output)
+        
+        Note: EngineCoreRequest is immutable (msgspec.Struct), so we store
+        GR-specific data (candidate_item_ids) in _gr_request_metadata instead.
         """
         # Create PoolingParams for recommendation task
         # We use pooling_params since recommendation is similar to embedding/pooling
-        pooling_params = PoolingParams()
+        # task="embed" is required - EngineCore validates that task is in supported_pooling_tasks
+        pooling_params = PoolingParams(task="embed")
         
-        # Create multimodal inputs to carry candidate data
-        mm_inputs = {
-            "candidate_item_ids": candidate_item_ids,
-            "num_recommendations": num_recommendations,
-        }
+        # Note: candidate_item_ids is already stored in _gr_request_metadata
+        # by add_gr_request(). The model runner will retrieve it using request_id.
         
         # Use the parent class processor to create EngineCoreRequest
         # Note: We're treating item IDs as "tokens" for compatibility
@@ -446,8 +451,9 @@ class GRLLMEngine(LLMEngine):
                 priority=priority,
             )
             
-            # Attach mm_inputs for candidates
-            request.mm_inputs = mm_inputs
+            # Note: EngineCoreRequest is immutable (msgspec.Struct), so we cannot
+            # add mm_inputs directly. Candidate data is stored in _gr_request_metadata
+            # and will be retrieved by request_id during model execution.
             
             # Add to output processor
             self.output_processor.add_request(request, prompt_str, None, 0)
@@ -566,12 +572,20 @@ class GRLLMEngine(LLMEngine):
         num_recs = metadata["num_recommendations"]
         
         # Extract scores from engine output
-        # For pooling output, scores are in the outputs
-        if hasattr(engine_output, 'outputs') and engine_output.outputs:
-            # Get the embedding/pooling output
-            output_data = engine_output.outputs[0]
+        # For pooling output, scores are in outputs.data
+        # Note: PoolingRequestOutput.outputs is a single PoolingOutput, not a list
+        if hasattr(engine_output, 'outputs') and engine_output.outputs is not None:
+            output_data = engine_output.outputs
             if hasattr(output_data, 'data'):
+                # PoolingOutput.data is the tensor containing embeddings/scores
                 scores = output_data.data
+            elif isinstance(output_data, (list, tuple)) and len(output_data) > 0:
+                # Fallback for list-like outputs (RequestOutput.outputs is a list)
+                first_output = output_data[0]
+                if hasattr(first_output, 'data'):
+                    scores = first_output.data
+                else:
+                    scores = list(range(len(candidates), 0, -1))
             else:
                 # Fallback: generate placeholder scores
                 scores = list(range(len(candidates), 0, -1))
@@ -659,9 +673,9 @@ class GRLLMEngine(LLMEngine):
         for rank, (candidate, score) in enumerate(scored_items[:num_recommendations], 1):
             recommendations.append(RecommendedItem(
                 item_id=candidate.get("item_id"),
-                score=score,
+                score=float(score) if hasattr(score, 'item') else score,
                 rank=rank,
-                metadata=candidate,
+                features=candidate,  # RecommendedItem uses 'features', not 'metadata'
             ))
         
         return recommendations
