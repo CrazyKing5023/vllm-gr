@@ -9,16 +9,12 @@ from vllm_gr.inputs.data import (
     ItemInteraction,
     CandidateItem,
     GRPrompt,
-    GRInputs,
     is_gr_prompt,
-    gr_inputs,
 )
 
 __all__ = [
     "ItemInteraction",
     "CandidateItem",
     "GRPrompt",
-    "GRInputs",
     "is_gr_prompt",
-    "gr_inputs",
 ]

@@ -7,7 +7,7 @@ GRLLM: Generative Recommendation LLM entry point.
 Inherits from vLLM's LLM class and provides a recommendation-specific interface.
 """
 
-from typing import Any, Optional, Union, Sequence, List
+from typing import Any, Optional, Union, Sequence, List, Dict
 import time
 import logging
 
@@ -105,6 +105,9 @@ class GRLLM(LLM):
         num_heads: int = 2,
         hidden_dim: int = 128,
         attention_dim: int = 64,
+        # Feature configuration (controls which fields are extracted from GRPrompt)
+        uih_feature_names: Optional[List[str]] = None,
+        candidate_feature_names: Optional[List[str]] = None,
         **kwargs,
     ):
         """
@@ -142,7 +145,6 @@ class GRLLM(LLM):
         use_scheduler = kwargs.pop('use_scheduler', True)
         max_batch_size = kwargs.pop('max_batch_size', 32)
         scheduling_policy = kwargs.pop('scheduling_policy', 'fcfs')
-        force_gr_native = kwargs.pop('force_gr_native', False)
         
         engine_args = GREngineArgs(
             model=model,
@@ -164,8 +166,9 @@ class GRLLM(LLM):
             use_scheduler=use_scheduler,
             gr_max_batch_size=max_batch_size,
             scheduling_policy=scheduling_policy,
-            # Execution mode
-            force_gr_native=force_gr_native,
+            # Feature configuration
+            uih_feature_names=uih_feature_names or ["item_id", "timestamp", "rating", "action_type"],
+            candidate_feature_names=candidate_feature_names or ["item_id", "category_id"],
         )
         
         # 2. Initialize engine (GRLLMEngine internally initializes processors)

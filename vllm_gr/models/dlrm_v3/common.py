@@ -218,7 +218,9 @@ def jagged_to_padded_dense(
         # Pure PyTorch fallback
         return _pytorch_jagged_to_padded_dense(
             values=values,
-            offsets=offsets[0] if offsets else torch.tensor([0, values.size(0)]),
+            offsets=offsets[0] if offsets else torch.tensor(
+                [0, values.size(0)], dtype=torch.long, device=values.device
+            ),
             max_length=max_lengths[0] if max_lengths else values.size(0),
             padding_value=padding_value,
         )
@@ -271,7 +273,9 @@ def dense_to_jagged(
         # Pure PyTorch fallback
         return _pytorch_dense_to_jagged(
             dense=dense,
-            offsets=x_offsets[0] if x_offsets else torch.tensor([0, dense.size(1)]),
+            offsets=x_offsets[0] if x_offsets else torch.tensor(
+                [0, dense.size(1)], dtype=torch.long, device=dense.device
+            ),
         )
 
 

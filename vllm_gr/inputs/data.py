@@ -4,12 +4,13 @@
 """
 Core data types for generative recommendation.
 
-This module defines the input/output types for the GRLLM API:
+This module defines the input types for the GRLLM API:
 - GRPrompt: User-friendly API input format
-- GRInputs: Processed internal format (with KeyedJaggedTensor)
+- ItemInteraction: User-item interaction record
+- CandidateItem: Candidate item for ranking
 """
 
-from typing import Any, Literal, Optional, Union, List, Dict, TYPE_CHECKING
+from typing import Any, Union, List, Dict
 
 # Python 3.11+ has TypedDict and NotRequired in typing
 # For older versions, fall back to typing_extensions
@@ -17,10 +18,6 @@ try:
     from typing import TypedDict, NotRequired
 except ImportError:
     from typing_extensions import TypedDict, NotRequired
-
-# Required imports - these are mandatory dependencies
-import torch
-
 
 class ItemInteraction(TypedDict):
     """
@@ -111,91 +108,3 @@ def is_gr_prompt(prompt: Any) -> bool:
         and "user_history" in prompt
         and "candidates" in prompt
     )
-
-
-# TorchRec import - optional for KeyedJaggedTensor
-try:
-    from torchrec.sparse.jagged_tensor import KeyedJaggedTensor
-    _TORCHREC_AVAILABLE = True
-except ImportError:
-    _TORCHREC_AVAILABLE = False
-    KeyedJaggedTensor = Any  # type: ignore
-
-
-class GRInputs(TypedDict):
-    """
-    Processed recommendation model input (unified format).
-    
-    Design principles:
-    1. Uses KeyedJaggedTensor format, consistent with generative-recommenders internal format
-    2. Similar to vLLM's TokenInputs/EmbedsInputs, but for recommendation scenarios
-    
-    Note: Requires torchrec library for KeyedJaggedTensor, requires torch for Tensor
-    """
-    
-    type: Literal["gr_inputs"]
-    """Input type identifier"""
-    
-    # ===== Core Tensors (KJT format) =====
-    uih_features_kjt: Any  # KeyedJaggedTensor
-    """User history features (KeyedJaggedTensor)"""
-    
-    candidates_features_kjt: Any  # KeyedJaggedTensor
-    """Candidate item features (KeyedJaggedTensor)"""
-    
-    # ===== Length Information =====
-    sequence_lengths: torch.Tensor
-    """Valid sequence lengths [batch_size], int32"""
-    
-    candidate_counts: torch.Tensor
-    """Candidate counts [batch_size], int32"""
-    
-    # ===== Metadata =====
-    user_id: Union[str, int]
-    """Original user ID"""
-    
-    num_recommendations: int
-    """Number of recommendations requested"""
-    
-    context: NotRequired[Dict[str, Any]]
-    """Context features (optional)"""
-
-
-def gr_inputs(
-    uih_features_kjt: Any,  # KeyedJaggedTensor
-    candidates_features_kjt: Any,  # KeyedJaggedTensor
-    sequence_lengths: torch.Tensor,
-    candidate_counts: torch.Tensor,
-    user_id: Union[str, int],
-    num_recommendations: int = 10,
-    context: Optional[Dict[str, Any]] = None,
-) -> GRInputs:
-    """
-    Factory function to construct GRInputs.
-    
-    Args:
-        uih_features_kjt: User history features KJT
-        candidates_features_kjt: Candidate item features KJT
-        sequence_lengths: Sequence length tensor
-        candidate_counts: Candidate count tensor
-        user_id: User ID
-        num_recommendations: Number of recommendations
-        context: Context features (optional)
-        
-    Returns:
-        GRInputs: Constructed input object
-    """
-    inputs: GRInputs = {
-        "type": "gr_inputs",
-        "uih_features_kjt": uih_features_kjt,
-        "candidates_features_kjt": candidates_features_kjt,
-        "sequence_lengths": sequence_lengths,
-        "candidate_counts": candidate_counts,
-        "user_id": user_id,
-        "num_recommendations": num_recommendations,
-    }
-    
-    if context is not None:
-        inputs["context"] = context
-    
-    return inputs

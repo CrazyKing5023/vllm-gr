@@ -4,8 +4,12 @@
 """
 GROutputProcessor: Output processor for generative recommendation.
 
-Converts model predictions to GRRequestOutput with Top-K sampling.
-Inherits from vLLM's OutputProcessor to maintain API compatibility.
+Converts vLLM's PoolingRequestOutput (from EngineCore) into
+GRRequestOutput with Top-K selection and score ranking.
+
+This processor tracks request metadata (original candidates, user_id,
+num_recommendations) and maps model prediction scores back to candidate
+items to produce the final recommendation list.
 """
 
 from dataclasses import dataclass
@@ -14,10 +18,7 @@ import logging
 
 import torch
 
-from vllm.v1.engine.output_processor import OutputProcessor
-
 from vllm_gr.outputs import GRRequestOutput, RecommendedItem
-from vllm_gr.request import GRRequest
 
 logger = logging.getLogger("vllm_gr.output_processor")
 
@@ -29,226 +30,209 @@ class GRProcessedOutputs:
     iteration_stats: Optional[Any] = None
 
 
-class GROutputProcessor(OutputProcessor):
+class GROutputProcessor:
     """
-    GR Output Processor - Inherits from vLLM OutputProcessor.
-    
+    GR Output Processor — converts engine outputs to GRRequestOutput.
+
     Responsibilities:
-    1. Track active requests (save original_candidates for output mapping)
-    2. Convert model prediction scores to GRRequestOutput
-    3. Top-K sampling (sort by score, select best recommendations)
-    
-    Notes:
-    - Created and managed by GRLLMEngine
-    - GRLLM does not directly create this processor
+    1. Track active requests with their metadata (original_candidates,
+       user_id, num_recommendations).
+    2. Convert model prediction scores to Top-K recommendations.
+    3. Map prediction indices back to original candidate items.
+
+    Lifecycle:
+    - add_request(): called by GRLLMEngine when a new request is added
+    - process_outputs(): called by GRLLMEngine.step() to convert outputs
+    - Automatically removes completed requests
     """
-    
+
     def __init__(
         self,
         default_top_k: int = 10,
         log_stats: bool = False,
     ):
-        """
-        Args:
-            default_top_k: Default number of recommendations
-            log_stats: Whether to log statistics
-        """
         self.default_top_k = default_top_k
         self.log_stats = log_stats
-        
-        # Track active requests
-        self._active_requests: Dict[str, Dict] = {}
-    
-    def add_gr_request(
+        # Track active requests: request_id -> metadata dict
+        self._active_requests: Dict[str, Dict[str, Any]] = {}
+
+    def add_request(
         self,
-        gr_request: GRRequest,
+        request_id: str,
+        user_id: Any,
+        num_recommendations: int,
         original_candidates: List[Dict],
     ) -> None:
         """
-        Add request to tracking list.
-        
-        Called by GRLLMEngine.add_gr_request().
-        
+        Register a new request for output tracking.
+
         Args:
-            gr_request: GRRequest object
-            original_candidates: Original candidate list (for output mapping)
+            request_id: Unique request ID
+            user_id: User identifier
+            num_recommendations: Number of Top-K results requested
+            original_candidates: Original candidate dicts for output mapping
         """
-        self._active_requests[gr_request.request_id] = {
-            "request": gr_request,
+        self._active_requests[request_id] = {
+            "user_id": user_id,
+            "num_recommendations": num_recommendations,
             "original_candidates": original_candidates,
         }
-    
+
     def remove_request(self, request_id: str) -> None:
-        """Remove a request."""
-        if request_id in self._active_requests:
-            del self._active_requests[request_id]
-    
+        """Remove a request from tracking."""
+        self._active_requests.pop(request_id, None)
+
+    def has_request(self, request_id: str) -> bool:
+        """Check if a request is being tracked."""
+        return request_id in self._active_requests
+
     def has_unfinished_requests(self) -> bool:
         """Check if there are unfinished requests."""
         return len(self._active_requests) > 0
-    
+
     def get_num_unfinished_requests(self) -> int:
         """Get the number of unfinished requests."""
         return len(self._active_requests)
-    
-    def get_request_info(self, request_id: str) -> Optional[Dict]:
-        """Get request information."""
-        return self._active_requests.get(request_id)
-    
-    def process_gr_outputs(
+
+    def process_outputs(
         self,
         engine_outputs: List[Any],
-        engine_core_timestamp: Optional[float] = None,
     ) -> GRProcessedOutputs:
         """
-        Process EngineCore output to GRRequestOutput.
-        
-        Called by GRLLMEngine.step().
-        
+        Process EngineCore outputs into GRRequestOutputs.
+
+        Handles both PoolingRequestOutput (normal path) and
+        RequestOutput (fallback path).
+
         Args:
-            engine_outputs: Output list returned by EngineCore
-            engine_core_timestamp: Engine timestamp
-            
+            engine_outputs: Outputs from engine_core / super().step()
+
         Returns:
-            GRProcessedOutputs: Processed outputs
+            GRProcessedOutputs with recommendation results
         """
-        request_outputs = []
-        
+        request_outputs: List[GRRequestOutput] = []
+
         for output in engine_outputs:
-            request_id = getattr(output, 'request_id', None)
+            request_id = getattr(output, "request_id", None)
             if request_id is None or request_id not in self._active_requests:
                 continue
-            
-            req_info = self._active_requests[request_id]
-            original_candidates = req_info["original_candidates"]
-            gr_request = req_info["request"]
-            
-            # Get prediction scores
-            predictions = getattr(output, 'predictions', None)
-            if predictions is None:
-                predictions = getattr(output, 'scores', None)
-            
-            if predictions is None:
-                # Skip if no predictions
-                continue
-            
-            # Extract scores from model output and generate recommendations
+
+            metadata = self._active_requests[request_id]
+            user_id = metadata["user_id"]
+            num_recs = metadata["num_recommendations"]
+            candidates = metadata["original_candidates"]
+
+            # Extract prediction scores from the engine output
+            scores = self._extract_scores(output, len(candidates))
+
+            # Create GRRequestOutput with Top-K selection
             gr_output = self._create_gr_output(
                 request_id=request_id,
-                user_id=gr_request.user_id,
-                predictions=predictions,
-                original_candidates=original_candidates,
-                num_recommendations=gr_request.num_recommendations,
+                user_id=user_id,
+                scores=scores,
+                candidates=candidates,
+                num_recommendations=num_recs,
             )
-            
             request_outputs.append(gr_output)
-            
-            # Remove after completion
+
+            # Remove completed request
             if gr_output.finished:
                 del self._active_requests[request_id]
-        
+
         return GRProcessedOutputs(
             request_outputs=request_outputs,
-            iteration_stats=None,
         )
-    
-    def create_output_from_scores(
+
+    def _extract_scores(
         self,
-        request_id: str,
-        scores: Any,
-    ) -> Optional[GRRequestOutput]:
+        output: Any,
+        num_candidates: int,
+    ) -> Union[torch.Tensor, List[float]]:
         """
-        Create output directly from scores (for simplified calls).
-        
-        Args:
-            request_id: Request ID
-            scores: Prediction scores (tensor or list)
-            
-        Returns:
-            GRRequestOutput or None
+        Extract prediction scores from an engine output.
+
+        Tries multiple paths:
+        1. PoolingRequestOutput.outputs.data (tensor)
+        2. RequestOutput.outputs[0].data
+        3. Fallback: descending placeholder scores
         """
-        if request_id not in self._active_requests:
-            return None
-        
-        req_info = self._active_requests[request_id]
-        original_candidates = req_info["original_candidates"]
-        gr_request = req_info["request"]
-        
-        gr_output = self._create_gr_output(
-            request_id=request_id,
-            user_id=gr_request.user_id,
-            predictions=scores,
-            original_candidates=original_candidates,
-            num_recommendations=gr_request.num_recommendations,
+        # PoolingRequestOutput path
+        if hasattr(output, "outputs") and output.outputs is not None:
+            out = output.outputs
+            # PoolingOutput has .data attribute
+            if hasattr(out, "data") and out.data is not None:
+                return out.data
+            # List of outputs (RequestOutput)
+            if isinstance(out, (list, tuple)) and len(out) > 0:
+                first = out[0]
+                if hasattr(first, "data") and first.data is not None:
+                    return first.data
+
+        # Fallback: generate descending placeholder scores
+        logger.warning(
+            f"Could not extract scores from output type "
+            f"{type(output).__name__}, using placeholder scores"
         )
-        
-        # Remove after completion
-        if gr_output.finished:
-            del self._active_requests[request_id]
-        
-        return gr_output
-    
+        return list(range(num_candidates, 0, -1))
+
     def _create_gr_output(
         self,
         request_id: str,
         user_id: Any,
-        predictions: Any,
-        original_candidates: List[Dict],
+        scores: Union[torch.Tensor, List[float]],
+        candidates: List[Dict],
         num_recommendations: int,
     ) -> GRRequestOutput:
         """
-        Create GRRequestOutput from model predictions.
-        
-        Args:
-            request_id: Request ID
-            user_id: User ID
-            predictions: Prediction scores (tensor or list)
-            original_candidates: Original candidate list
-            num_recommendations: Number of recommendations
-            
-        Returns:
-            GRRequestOutput: Recommendation results
+        Create GRRequestOutput from prediction scores and candidates.
+
+        Performs Top-K selection via torch.topk or Python sorting.
         """
-        # Convert predictions to processable format
-        if isinstance(predictions, torch.Tensor):
-            scores = predictions.float()
-            top_k = min(num_recommendations, len(original_candidates), len(scores))
-            top_scores, top_indices = torch.topk(scores, k=top_k)
-            top_scores_list = top_scores.tolist()
-            top_indices_list = top_indices.tolist()
-            all_scores = predictions
-        elif isinstance(predictions, (list, tuple)):
-            # Use Python sorting
-            scores = list(predictions)
-            indexed_scores = [(i, s) for i, s in enumerate(scores)]
-            indexed_scores.sort(key=lambda x: x[1], reverse=True)
-            top_k = min(num_recommendations, len(original_candidates), len(scores))
-            top_indices_list = [idx for idx, _ in indexed_scores[:top_k]]
-            top_scores_list = [s for _, s in indexed_scores[:top_k]]
+        if isinstance(scores, torch.Tensor):
+            scores_float = scores.float()
+            top_k = min(
+                num_recommendations, len(candidates), len(scores_float)
+            )
+            if top_k > 0:
+                top_scores, top_indices = torch.topk(scores_float, k=top_k)
+                top_scores_list = top_scores.tolist()
+                top_indices_list = top_indices.tolist()
+            else:
+                top_scores_list = []
+                top_indices_list = []
+            all_scores = scores
+        elif isinstance(scores, (list, tuple)):
+            indexed = sorted(
+                enumerate(scores), key=lambda x: x[1], reverse=True
+            )
+            top_k = min(num_recommendations, len(candidates), len(scores))
+            top_indices_list = [idx for idx, _ in indexed[:top_k]]
+            top_scores_list = [s for _, s in indexed[:top_k]]
             all_scores = None
         else:
-            # Unprocessable format, return empty result
             return GRRequestOutput(
                 request_id=request_id,
                 user_id=user_id,
                 recommendations=[],
                 finished=True,
             )
-        
+
         # Build recommendation list
         recommendations = []
-        for rank, (idx, score) in enumerate(zip(top_indices_list, top_scores_list)):
-            if idx < len(original_candidates):
-                original_item = original_candidates[idx]
-                item_id = original_item.get("item_id", idx)
-                
-                recommendations.append(RecommendedItem(
-                    item_id=item_id,
-                    score=float(score),
-                    rank=rank + 1,
-                    features=original_item.get("features"),
-                ))
-        
+        for rank, (idx, score) in enumerate(
+            zip(top_indices_list, top_scores_list)
+        ):
+            if idx < len(candidates):
+                candidate = candidates[idx]
+                recommendations.append(
+                    RecommendedItem(
+                        item_id=candidate.get("item_id", idx),
+                        score=float(score),
+                        rank=rank + 1,
+                        features=candidate,
+                    )
+                )
+
         return GRRequestOutput(
             request_id=request_id,
             user_id=user_id,

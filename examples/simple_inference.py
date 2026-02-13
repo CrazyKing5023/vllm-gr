@@ -131,7 +131,7 @@ def main():
     
     # 3. Get recommendations
     # This runs the full HSTU model forward pass:
-    # GRLLM.recommend() -> GRLLMEngine -> GRModelRunner -> HSTUForRecommendation -> DlrmHSTU
+    # GRLLM.recommend() -> GRLLMEngine -> EngineCore -> HSTUForRecommendation -> DlrmHSTU
     print(f"\n[Running HSTU model inference...]")
     outputs = llm.recommend(
         prompts=[prompt],

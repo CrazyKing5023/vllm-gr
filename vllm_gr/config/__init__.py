@@ -7,7 +7,6 @@ Configuration module for vllm-GR.
 Provides:
 - HSTUModelConfig: Internal dataclass configuration (detailed fields)
 - HSTUConfig: HuggingFace-compatible PretrainedConfig subclass
-- GRModelConfig: vLLM ModelConfig extension with GRModelRegistry
 """
 
 from vllm_gr.config.hstu_config import (
@@ -17,7 +16,6 @@ from vllm_gr.config.hstu_config import (
     MultitaskTaskType,
 )
 from vllm_gr.config.hstu_hf_config import HSTUConfig
-from vllm_gr.config.model_config import GRModelConfig
 
 __all__ = [
     # Internal configuration (detailed dataclass)
@@ -27,6 +25,4 @@ __all__ = [
     "MultitaskTaskType",
     # HuggingFace-compatible configuration (for config.json parsing)
     "HSTUConfig",
-    # vLLM ModelConfig extension
-    "GRModelConfig",
 ]

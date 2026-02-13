@@ -2,9 +2,9 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-GRModelRunner Tests
+Model and Inference Tests
 
-Tests the real model inference flow using GRModelRunner.
+Tests for HSTU model components and end-to-end inference via EngineCore.
 """
 
 import os
@@ -13,180 +13,6 @@ import unittest
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
-class TestGRModelRunner(unittest.TestCase):
-    """Tests for GRModelRunner."""
-    
-    def setUp(self):
-        """Check if torch is available."""
-        try:
-            import torch
-            self.torch = torch
-            self.has_torch = True
-        except ImportError:
-            self.has_torch = False
-    
-    def test_model_runner_initialization(self):
-        """Test GRModelRunner initialization."""
-        if not self.has_torch:
-            self.skipTest("torch not available")
-        
-        from vllm_gr.engine.model_runner import GRModelRunner
-        
-        runner = GRModelRunner(
-            model_path=None,  # Use default initialization
-            max_seq_len=64,
-            max_candidates=20,
-            embedding_dim=64,
-            hash_size=1000,
-        )
-        
-        self.assertIsNotNone(runner)
-        self.assertEqual(runner.max_seq_len, 64)
-        self.assertEqual(runner.max_candidates, 20)
-    
-    def test_model_runner_config_based_inference(self):
-        """Test GRModelRunner config-based inference (randomly initialized model)."""
-        if not self.has_torch:
-            self.skipTest("torch not available")
-        
-        from vllm_gr.engine.model_runner import GRModelRunner
-        from vllm_gr.request import GRRequest
-        
-        runner = GRModelRunner(
-            model_path=None,  # No pretrained weights - use config
-            max_seq_len=64,
-            max_candidates=20,
-            embedding_dim=64,
-            hash_size=1000,
-            num_layers=2,
-            num_heads=2,
-            hidden_dim=64,
-            attention_dim=32,
-        )
-        
-        # Initialize runner
-        runner.initialize()
-        
-        # Create a mock GRRequest
-        gr_request = GRRequest(
-            request_id="test-001",
-            gr_inputs={},
-            user_id="user_001",
-            arrival_time=0,
-            num_recommendations=3,
-        )
-        
-        # Create prompt
-        prompt = {
-            "user_id": "user_001",
-            "user_history": [
-                {"item_id": 1},
-                {"item_id": 2},
-                {"item_id": 3},
-            ],
-            "candidates": [
-                {"item_id": 10},
-                {"item_id": 20},
-                {"item_id": 30},
-                {"item_id": 40},
-                {"item_id": 50},
-            ],
-        }
-        
-        # Run inference
-        scores = runner.run_inference(gr_request, prompt)
-        
-        self.assertIsNotNone(scores)
-        # Should have 5 scores for 5 candidates
-        if isinstance(scores, self.torch.Tensor):
-            self.assertEqual(len(scores), 5)
-        else:
-            self.assertEqual(len(scores), 5)
-        
-        runner.shutdown()
-    
-    def test_model_runner_empty_history(self):
-        """Test GRModelRunner with empty user history."""
-        if not self.has_torch:
-            self.skipTest("torch not available")
-        
-        from vllm_gr.engine.model_runner import GRModelRunner
-        from vllm_gr.request import GRRequest
-        
-        runner = GRModelRunner(
-            model_path=None,
-            max_seq_len=64,
-            max_candidates=20,
-            embedding_dim=64,
-            hash_size=1000,
-        )
-        runner.initialize()
-        
-        gr_request = GRRequest(
-            request_id="test-002",
-            gr_inputs={},
-            user_id="new_user",
-            arrival_time=0,
-            num_recommendations=3,
-        )
-        
-        prompt = {
-            "user_id": "new_user",
-            "user_history": [],  # Empty history
-            "candidates": [
-                {"item_id": 100},
-                {"item_id": 200},
-                {"item_id": 300},
-            ],
-        }
-        
-        scores = runner.run_inference(gr_request, prompt)
-        
-        self.assertIsNotNone(scores)
-        if isinstance(scores, self.torch.Tensor):
-            self.assertEqual(len(scores), 3)
-        
-        runner.shutdown()
-    
-    def test_model_runner_empty_candidates(self):
-        """Test GRModelRunner with empty candidates."""
-        if not self.has_torch:
-            self.skipTest("torch not available")
-        
-        from vllm_gr.engine.model_runner import GRModelRunner
-        from vllm_gr.request import GRRequest
-        
-        runner = GRModelRunner(
-            model_path=None,
-            max_seq_len=64,
-            max_candidates=20,
-            embedding_dim=64,
-            hash_size=1000,
-        )
-        runner.initialize()
-        
-        gr_request = GRRequest(
-            request_id="test-003",
-            gr_inputs={},
-            user_id="user_001",
-            arrival_time=0,
-            num_recommendations=3,
-        )
-        
-        prompt = {
-            "user_id": "user_001",
-            "user_history": [{"item_id": 1}],
-            "candidates": [],  # No candidates
-        }
-        
-        scores = runner.run_inference(gr_request, prompt)
-        
-        # Should return empty list for no candidates
-        self.assertEqual(len(scores), 0)
-        
-        runner.shutdown()
 
 
 class TestHSTUModelEmbeddings(unittest.TestCase):
@@ -280,8 +106,17 @@ class TestHSTUModelEmbeddings(unittest.TestCase):
         self.assertEqual(model.embedding_tables["user_embedding"].num_embeddings, 500)
 
 
-class TestEndToEndWithModelRunner(unittest.TestCase):
-    """Test end-to-end inference with GRModelRunner."""
+@unittest.skipUnless(
+    os.environ.get("VLLM_GR_INTEGRATION_TEST"),
+    "Requires vLLM + GPU. Set VLLM_GR_INTEGRATION_TEST=1 to run."
+)
+class TestEndToEndInference(unittest.TestCase):
+    """
+    Test end-to-end inference via EngineCore.
+
+    These tests require a working vLLM installation with GPU.
+    Set VLLM_GR_INTEGRATION_TEST=1 to enable.
+    """
     
     def setUp(self):
         """Check if torch is available."""
@@ -291,8 +126,8 @@ class TestEndToEndWithModelRunner(unittest.TestCase):
         except ImportError:
             self.has_torch = False
     
-    def test_grllm_with_model_runner(self):
-        """Test GRLLM with GRModelRunner enabled."""
+    def test_grllm_inference(self):
+        """Test GRLLM end-to-end inference."""
         if not self.has_torch:
             self.skipTest("torch not available")
         
@@ -305,7 +140,7 @@ class TestEndToEndWithModelRunner(unittest.TestCase):
             default_top_k=5,
             embedding_dim=64,
             hash_size=1000,
-            load_model=True,  # Enable model loading
+            load_model=True,
         )
         
         prompt: GRPrompt = {
@@ -332,10 +167,9 @@ class TestEndToEndWithModelRunner(unittest.TestCase):
         self.assertTrue(output.finished)
         self.assertLessEqual(len(output.recommendations), 3)
         
-        # Verify scores are meaningful (not all same)
+        # Verify scores are sorted (descending)
         if len(output.recommendations) > 1:
             scores = [r.score for r in output.recommendations]
-            # Scores should be sorted (descending)
             self.assertEqual(scores, sorted(scores, reverse=True))
         
         llm.shutdown()
@@ -357,8 +191,6 @@ class TestEndToEndWithModelRunner(unittest.TestCase):
             load_model=True,
         )
         
-        # User has interacted with items 1, 2, 3
-        # Candidates include items 1, 2 (already seen) and 100, 200 (new)
         prompt: GRPrompt = {
             "user_id": "user_001",
             "user_history": [
@@ -367,17 +199,16 @@ class TestEndToEndWithModelRunner(unittest.TestCase):
                 {"item_id": 3},
             ],
             "candidates": [
-                {"item_id": 1},   # Same as history
-                {"item_id": 2},   # Same as history
-                {"item_id": 100}, # New item
-                {"item_id": 200}, # New item
+                {"item_id": 1},
+                {"item_id": 2},
+                {"item_id": 100},
+                {"item_id": 200},
             ],
         }
         
         outputs = llm.recommend([prompt], use_tqdm=False)
         
         self.assertEqual(len(outputs), 1)
-        # Just verify we get valid output
         self.assertTrue(outputs[0].finished)
         self.assertGreater(len(outputs[0].recommendations), 0)
         
@@ -387,15 +218,14 @@ class TestEndToEndWithModelRunner(unittest.TestCase):
 def run_all_tests():
     """Run all tests."""
     print("=" * 60)
-    print(" GRModelRunner Test Suite")
+    print(" Model & Inference Test Suite")
     print("=" * 60)
     
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
     
-    suite.addTests(loader.loadTestsFromTestCase(TestGRModelRunner))
     suite.addTests(loader.loadTestsFromTestCase(TestHSTUModelEmbeddings))
-    suite.addTests(loader.loadTestsFromTestCase(TestEndToEndWithModelRunner))
+    suite.addTests(loader.loadTestsFromTestCase(TestEndToEndInference))
     
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)

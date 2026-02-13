@@ -2,156 +2,86 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-GRRequest: Extended request class for generative recommendation.
+GRRequest: Extended vLLM Request with GR feature data.
 
-This module defines GRRequest which extends vLLM's Request class
-with recommendation-specific fields.
+Follows the vllm-omni OmniRequest pattern: extends vLLM's Request class
+to carry GR-specific data (gr_features) through the EngineCore pipeline.
 """
 
-from typing import Any, Optional, Union, List, Dict
-from dataclasses import dataclass, field
+from typing import Any, Optional
+from collections.abc import Callable
+
+from vllm.v1.request import Request
+
+from vllm_gr.engine import GRFeaturesPayload, GREngineCoreRequest
 
 
-@dataclass
-class GRRequest:
+class GRRequest(Request):
     """
-    Generative recommendation request.
-    
-    Design principles:
-    1. Contains recommendation-specific fields (gr_inputs, original_candidates, etc.)
-    2. When vLLM is available, replaces vLLM's Request class via Monkey Patch
-    3. When vLLM is unavailable, used as a standalone request class
-    
-    Key fields:
-    - gr_inputs: Processed input (KJT format)
-    - original_candidates: Original candidate list (for output mapping)
-    
-    Attributes:
-        request_id: Unique request identifier
-        gr_inputs: Processed GRInputs
-        user_id: User ID
-        num_recommendations: Number of recommendations
-        original_candidates: Original candidate list
-        arrival_time: Request arrival time
-        priority: Request priority
+    Extended Request that carries GR features through the pipeline.
+
+    When monkey-patched via patch.py, vLLM's EngineCore uses this class
+    instead of the base Request, so gr_features flows naturally through
+    Scheduler → NewRequestData → ModelRunner.
     """
-    
-    request_id: str
-    """Unique request identifier"""
-    
-    gr_inputs: Optional[Any] = None  # GRInputs type, use Any to avoid circular import
-    """Processed recommendation model input"""
-    
-    user_id: Optional[Union[str, int]] = None
-    """User ID"""
-    
-    num_recommendations: int = 10
-    """Number of recommendations requested"""
-    
-    original_candidates: List[Dict[str, Any]] = field(default_factory=list)
-    """Original candidate list (for output mapping)"""
-    
-    arrival_time: Optional[float] = None
-    """Request arrival time (Unix timestamp)"""
-    
-    priority: int = 0
-    """Request priority (higher value = higher priority)"""
-    
-    # vLLM Request compatibility fields
-    prompt: Optional[str] = None
-    """Original prompt (compatibility field, not used for recommendation tasks)"""
-    
-    prompt_token_ids: Optional[List[int]] = None
-    """Token IDs (compatibility field, not used for recommendation tasks)"""
-    
-    @property
-    def is_gr_request(self) -> bool:
-        """Check if this is a recommendation request."""
-        return self.gr_inputs is not None
-    
-    @property
-    def num_candidates(self) -> int:
-        """Get the number of candidates."""
-        return len(self.original_candidates)
-    
-    def __repr__(self) -> str:
-        return (
-            f"GRRequest(request_id={self.request_id!r}, "
-            f"user_id={self.user_id!r}, "
-            f"num_recommendations={self.num_recommendations}, "
-            f"num_candidates={self.num_candidates})"
+
+    def __init__(
+        self,
+        gr_features: Optional[GRFeaturesPayload] = None,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.gr_features: Optional[GRFeaturesPayload] = gr_features
+
+    @classmethod
+    def from_engine_core_request(
+        cls,
+        request: GREngineCoreRequest,
+        block_hasher: Optional[Callable] = None,
+    ) -> "GRRequest":
+        """
+        Create GRRequest from GREngineCoreRequest.
+
+        Passes gr_features from the engine core request to the internal
+        request object, ensuring data flows through the scheduler.
+
+        Must match the base Request.from_engine_core_request signature
+        and include all fields that vLLM's scheduler depends on.
+        """
+        # Build structured_output_request if sampling_params present
+        structured_output_request = None
+        if request.sampling_params:
+            try:
+                from vllm.v1.request import StructuredOutputRequest
+                structured_output_request = StructuredOutputRequest(
+                    sampling_params=request.sampling_params
+                )
+            except (ImportError, Exception):
+                pass
+
+        return cls(
+            # GR-specific field
+            gr_features=getattr(request, "gr_features", None),
+            # Standard vLLM Request fields
+            request_id=request.request_id,
+            client_index=getattr(request, "client_index", 0),
+            prompt_token_ids=request.prompt_token_ids,
+            prompt_embeds=getattr(request, "prompt_embeds", None),
+            mm_features=request.mm_features,
+            sampling_params=request.sampling_params,
+            pooling_params=request.pooling_params,
+            eos_token_id=request.eos_token_id,
+            arrival_time=request.arrival_time,
+            lora_request=request.lora_request,
+            structured_output_request=structured_output_request,
+            cache_salt=request.cache_salt,
+            priority=request.priority,
+            trace_headers=request.trace_headers,
+            block_hasher=block_hasher,
         )
 
 
-# Try to inherit from vLLM's Request class (if available)
-_VLLM_REQUEST_AVAILABLE = False
-
-try:
-    from vllm.v1.request import Request as VLLMRequest
-    _VLLM_REQUEST_AVAILABLE = True
-    
-    class GRRequestWithVLLM(VLLMRequest):
-        """
-        GRRequest that inherits from vLLM Request.
-        
-        Used when vLLM is available for full vLLM compatibility.
-        """
-        
-        def __init__(
-            self,
-            request_id: str,
-            # GR-specific fields
-            gr_inputs: Optional[Any] = None,
-            user_id: Optional[Union[str, int]] = None,
-            num_recommendations: int = 10,
-            original_candidates: Optional[List[Dict]] = None,
-            arrival_time: Optional[float] = None,
-            priority: int = 0,
-            # vLLM Request fields
-            **kwargs,
-        ):
-            # Call parent constructor (if needed)
-            # Note: vLLM v1 Request signature may differ, needs adaptation
-            try:
-                super().__init__(request_id=request_id, **kwargs)
-            except TypeError:
-                # If parent signature doesn't match, only set request_id
-                self.request_id = request_id
-            
-            # GR-specific fields
-            self.gr_inputs = gr_inputs
-            self.user_id = user_id
-            self.num_recommendations = num_recommendations
-            self.original_candidates = original_candidates or []
-            self.arrival_time = arrival_time
-            self.priority = priority
-        
-        @property
-        def is_gr_request(self) -> bool:
-            """Check if this is a recommendation request."""
-            return self.gr_inputs is not None
-        
-        @property
-        def num_candidates(self) -> int:
-            """Get the number of candidates."""
-            return len(self.original_candidates)
-    
-    # Export inherited version
-    GRRequest = GRRequestWithVLLM  # type: ignore
-
-except ImportError:
-    # vLLM unavailable, use standalone version
-    pass
-
-
 def is_gr_request(request: Any) -> bool:
-    """
-    Check if the request is a GRRequest.
-    
-    Args:
-        request: Request object to check
-        
-    Returns:
-        bool: Whether it is a GRRequest
-    """
-    return hasattr(request, "is_gr_request") and request.is_gr_request
+    """Check if the request is a GRRequest with GR features."""
+    return isinstance(request, GRRequest) and request.gr_features is not None
