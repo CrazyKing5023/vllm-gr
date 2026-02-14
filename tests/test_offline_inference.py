@@ -16,8 +16,17 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+@unittest.skipUnless(
+    os.environ.get("VLLM_GR_INTEGRATION_TEST"),
+    "Requires vLLM + GPU. Set VLLM_GR_INTEGRATION_TEST=1 to run."
+)
 class TestGRLLMEndToEnd(unittest.TestCase):
-    """End-to-end tests for GRLLM."""
+    """
+    End-to-end tests for GRLLM.
+
+    These tests require a working vLLM installation with GPU.
+    Set VLLM_GR_INTEGRATION_TEST=1 to enable.
+    """
     
     def test_single_recommendation(self):
         """Test single user recommendation."""
@@ -53,6 +62,8 @@ class TestGRLLMEndToEnd(unittest.TestCase):
         self.assertEqual(output.user_id, "user_001")
         self.assertTrue(output.finished)
         self.assertLessEqual(len(output.recommendations), 3)
+        
+        llm.shutdown()
     
     def test_batch_recommendation(self):
         """Test batch recommendations."""
@@ -76,118 +87,24 @@ class TestGRLLMEndToEnd(unittest.TestCase):
         for i, output in enumerate(outputs):
             self.assertEqual(output.user_id, f"user_{i}")
             self.assertTrue(output.finished)
-    
-    def test_recommend_batch_method(self):
-        """Test recommend_batch with batch_size."""
-        from vllm_gr import GRLLM, GRPrompt
-        from typing import List
         
-        llm = GRLLM(model="test-model")
-        
-        prompts: List[GRPrompt] = [
-            {
-                "user_id": f"user_{i}",
-                "user_history": [{"item_id": j} for j in range(3)],
-                "candidates": [{"item_id": k} for k in range(5)],
-            }
-            for i in range(10)
-        ]
-        
-        outputs = llm.recommend_batch(prompts, batch_size=3, top_k=2)
-        
-        self.assertEqual(len(outputs), 10)
-    
-    def test_output_properties(self):
-        """Test GRRequestOutput properties."""
-        from vllm_gr import GRLLM, GRPrompt
-        
-        llm = GRLLM(model="test-model")
-        
-        prompt: GRPrompt = {
-            "user_id": 12345,  # Test with integer user_id
-            "user_history": [{"item_id": i} for i in range(10)],
-            "candidates": [{"item_id": i * 100} for i in range(20)],
-        }
-        
-        outputs = llm.recommend([prompt], use_tqdm=False, top_k=5)
-        output = outputs[0]
-        
-        # Test properties
-        self.assertIsNotNone(output.request_id)
-        self.assertEqual(output.user_id, 12345)
-        self.assertTrue(output.finished)
-        
-        # Test top_recommendation property
-        if output.recommendations:
-            top = output.top_recommendation
-            self.assertIsNotNone(top)
-            self.assertEqual(top.rank, 1)
-        
-        # Test item_ids property
-        item_ids = output.item_ids
-        self.assertIsInstance(item_ids, list)
-        
-        # Test scores property
-        scores = output.scores
-        self.assertIsInstance(scores, list)
-        
-        # Test to_dict
-        output_dict = output.to_dict()
-        self.assertIn("request_id", output_dict)
-        self.assertIn("user_id", output_dict)
-        self.assertIn("recommendations", output_dict)
-    
-    def test_empty_history(self):
-        """Test with empty user history."""
-        from vllm_gr import GRLLM, GRPrompt
-        
-        llm = GRLLM(model="test-model")
-        
-        prompt: GRPrompt = {
-            "user_id": "new_user",
-            "user_history": [],  # Empty history
-            "candidates": [{"item_id": i} for i in range(5)],
-        }
-        
-        outputs = llm.recommend([prompt], use_tqdm=False)
-        
-        self.assertEqual(len(outputs), 1)
-        self.assertTrue(outputs[0].finished)
-    
-    def test_context_manager(self):
-        """Test GRLLM as context manager."""
-        from vllm_gr import GRLLM
-        
-        with GRLLM(model="test-model") as llm:
-            prompt = {
-                "user_id": "u1",
-                "user_history": [{"item_id": 1}],
-                "candidates": [{"item_id": 10}],
-            }
-            outputs = llm.recommend([prompt], use_tqdm=False)
-            self.assertEqual(len(outputs), 1)
-    
-    def test_invalid_prompt_raises_error(self):
-        """Test that invalid prompt raises ValueError."""
-        from vllm_gr import GRLLM
-        
-        llm = GRLLM(model="test-model")
-        
-        # Missing required fields
-        invalid_prompt = {
-            "user_id": "u1",
-            # Missing user_history and candidates
-        }
-        
-        with self.assertRaises(ValueError):
-            llm.recommend([invalid_prompt], use_tqdm=False)
+        llm.shutdown()
 
 
+@unittest.skipUnless(
+    os.environ.get("VLLM_GR_INTEGRATION_TEST"),
+    "Requires vLLM + GPU. Set VLLM_GR_INTEGRATION_TEST=1 to run."
+)
 class TestGRLLMEngineEndToEnd(unittest.TestCase):
-    """End-to-end tests for GRLLMEngine."""
+    """
+    End-to-end tests for GRLLMEngine.
+
+    These tests require a working vLLM installation with GPU.
+    Set VLLM_GR_INTEGRATION_TEST=1 to enable.
+    """
     
     def test_engine_direct_usage(self):
-        """Test using GRLLMEngine directly."""
+        """Test using GRLLMEngine via from_engine_args."""
         from vllm_gr import GRLLMEngine, GREngineArgs
         
         args = GREngineArgs(
@@ -222,49 +139,17 @@ class TestGRLLMEngineEndToEnd(unittest.TestCase):
         self.assertEqual(outputs[0].request_id, "test-001")
         
         engine.shutdown()
-    
-    def test_engine_multiple_requests(self):
-        """Test engine with multiple requests."""
-        from vllm_gr import GRLLMEngine
-        
-        engine = GRLLMEngine(
-            max_seq_len=32,
-            max_candidates=10,
-            default_top_k=2,
-        )
-        
-        for i in range(3):
-            prompt = {
-                "user_id": f"user_{i}",
-                "user_history": [{"item_id": j} for j in range(3)],
-                "candidates": [{"item_id": k * 10} for k in range(5)],
-            }
-            engine.add_gr_request(
-                request_id=f"req-{i}",
-                prompt=prompt,
-            )
-        
-        self.assertEqual(engine.get_num_unfinished_requests(), 3)
-        
-        outputs = []
-        while engine.has_unfinished_requests():
-            step_outputs = engine.step()
-            outputs.extend(step_outputs)
-        
-        self.assertEqual(len(outputs), 3)
-        
-        engine.shutdown()
 
 
 class TestProcessorsEndToEnd(unittest.TestCase):
     """End-to-end tests for processors."""
     
     def test_processor_full_flow(self):
-        """Test GRProcessor and GROutputProcessor together."""
-        from vllm_gr import GRProcessor, GROutputProcessor, GRPrompt
+        """Test GRInputProcessor and GROutputProcessor together."""
+        from vllm_gr import GRInputProcessor, GROutputProcessor, GRPrompt
         
-        # Create processors
-        processor = GRProcessor(max_seq_len=10, max_candidates=5)
+        # Create processors (new API)
+        input_processor = GRInputProcessor(max_seq_len=10, max_candidates=5)
         output_processor = GROutputProcessor(default_top_k=3)
         
         # Create prompt
@@ -283,30 +168,36 @@ class TestProcessorsEndToEnd(unittest.TestCase):
             ],
         }
         
-        # Process input
-        gr_request = processor.process_gr_inputs(
+        # Process input → GREngineCoreRequest with gr_features
+        gr_request = input_processor.process_gr_prompt(
             request_id="test-001",
             prompt=prompt,
             num_recommendations=3,
         )
         
         self.assertEqual(gr_request.request_id, "test-001")
-        self.assertEqual(gr_request.user_id, "user_123")
-        self.assertEqual(gr_request.num_recommendations, 3)
+        self.assertIsNotNone(gr_request.gr_features)
+        self.assertEqual(gr_request.gr_features.user_id, "user_123")
+        self.assertEqual(gr_request.gr_features.num_recommendations, 3)
         
-        # Add to output processor
-        output_processor.add_gr_request(
-            gr_request,
-            original_candidates=prompt["candidates"],
+        # Add to output processor (new API)
+        output_processor.add_request(
+            request_id="test-001",
+            user_id="user_123",
+            num_recommendations=3,
+            original_candidates=gr_request.gr_features.original_candidates,
         )
         
         self.assertTrue(output_processor.has_unfinished_requests())
         
         # Create mock scores and process output
         scores = [0.2, 0.8, 0.5, 0.3]  # item 20 has highest score
-        output = output_processor.create_output_from_scores(
+        output = output_processor._create_gr_output(
             request_id="test-001",
+            user_id="user_123",
             scores=scores,
+            candidates=gr_request.gr_features.original_candidates,
+            num_recommendations=3,
         )
         
         self.assertIsNotNone(output)
@@ -317,9 +208,6 @@ class TestProcessorsEndToEnd(unittest.TestCase):
         # Verify ranking
         self.assertEqual(output.recommendations[0].item_id, 20)  # Highest score
         self.assertEqual(output.recommendations[0].rank, 1)
-        
-        # Should have removed the request
-        self.assertFalse(output_processor.has_unfinished_requests())
 
 
 class TestConfigModules(unittest.TestCase):

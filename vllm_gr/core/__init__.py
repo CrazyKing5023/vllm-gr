@@ -1,17 +1,10 @@
 # Copyright (c) vllm-GR Authors.
 # Licensed under the Apache License, Version 2.0
 
-"""
-Core components for generative recommendation.
+"""Core components for GR scheduling and pipeline data flow."""
 
-Includes:
-- GRScheduler: Scheduler for GR requests (implements vLLM SchedulerInterface)
-- GRSchedulerConfig: Scheduler configuration
-"""
-
-from vllm_gr.core.gr_scheduler import GRScheduler, GRSchedulerConfig
+from vllm_gr.core.sched.output import GRNewRequestData
 
 __all__ = [
-    "GRScheduler",
-    "GRSchedulerConfig",
+    "GRNewRequestData",
 ]

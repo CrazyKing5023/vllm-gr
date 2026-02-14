@@ -85,11 +85,13 @@ class GREngineArgs(EngineArgs):
     scheduling_policy: str = "fcfs"
     
     # GR-specific: Feature configuration
-    uih_feature_names: List[str] = field(default_factory=lambda: ["item_id"])
-    candidate_feature_names: List[str] = field(default_factory=lambda: ["candidate_item_id"])
-    
-    # GR-specific: Execution mode
-    force_gr_native: bool = False  # If True, skip EngineCore and use GR-native mode
+    # These names must match the keys in ItemInteraction / CandidateItem dicts
+    uih_feature_names: List[str] = field(
+        default_factory=lambda: ["item_id", "timestamp", "rating", "action_type"]
+    )
+    candidate_feature_names: List[str] = field(
+        default_factory=lambda: ["item_id", "category_id"]
+    )
     
     def __post_init__(self):
         """Post-init processing to ensure proper configuration."""
@@ -112,6 +114,13 @@ class GREngineArgs(EngineArgs):
             # Without this, vLLM's KVCacheManager will fail with assertion error
             # when kv_cache_groups is empty but enable_caching is True.
             self.enable_prefix_caching = False
+            
+            # CRITICAL: Inject GRWorker as the custom worker class.
+            # This ensures vLLM's EngineCore uses GRModelRunner instead
+            # of the default GPUModelRunner, enabling GR feature decoding
+            # and custom model forward logic.
+            # Following the vllm-omni pattern of worker_cls injection.
+            self.worker_cls = "vllm_gr.worker.gr_worker.GRWorker"
             
             # Check if model has real weights, if not use dummy loader
             # This allows EngineCore to work without real weight files

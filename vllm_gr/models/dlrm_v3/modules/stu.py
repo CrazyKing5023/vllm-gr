@@ -17,16 +17,6 @@ from vllm_gr.ops.hstu_compute import hstu_compute_output, hstu_compute_uqvk, hst
 from vllm_gr.ops.jagged_tensors import concat_2D_jagged, split_2D_jagged
 
 
-def complete_cumsum(lengths: torch.Tensor) -> torch.Tensor:
-    """Compute complete cumulative sum (starting with 0)."""
-    try:
-        return torch.ops.fbgemm.asynchronous_complete_cumsum(lengths)
-    except (RuntimeError, AttributeError):
-        cumsum = torch.zeros(lengths.size(0) + 1, dtype=lengths.dtype, device=lengths.device)
-        cumsum[1:] = torch.cumsum(lengths, dim=0)
-        return cumsum
-
-
 class STU(HammerModule, abc.ABC):
     """Abstract base class for STU modules."""
     

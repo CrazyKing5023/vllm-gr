@@ -43,16 +43,6 @@ from vllm_gr.ops.layer_norm import LayerNorm, SwishLayerNorm
 logger: logging.Logger = logging.getLogger(__name__)
 
 
-def complete_cumsum(lengths: torch.Tensor) -> torch.Tensor:
-    """Compute complete cumulative sum (starting with 0)."""
-    try:
-        return torch.ops.fbgemm.asynchronous_complete_cumsum(lengths)
-    except (RuntimeError, AttributeError):
-        cumsum = torch.zeros(lengths.size(0) + 1, dtype=lengths.dtype, device=lengths.device)
-        cumsum[1:] = torch.cumsum(lengths, dim=0)
-        return cumsum
-
-
 class SequenceEmbedding(NamedTuple):
     """Container for sequence embeddings with lengths."""
     lengths: torch.Tensor

@@ -147,6 +147,7 @@ class HSTUForRecommendation(nn.Module):
         super().__init__()
         self.prefix = prefix
         self._device = device
+        self._device_checked = False  # Track whether we've done a device check
         
         logger.info(f"HSTUForRecommendation.__init__ starting, device={device}")
         
@@ -337,6 +338,34 @@ class HSTUForRecommendation(nn.Module):
     # vLLM Interface
     # =========================================================================
     
+    def _ensure_on_device(self, target_device: torch.device) -> None:
+        """
+        Ensure all model parameters and buffers are on the target device.
+        
+        This is a safety mechanism for vLLM integration where registered
+        buffers (not nn.Parameters) may not be moved to the target device
+        during model loading. vLLM's load_weights() only handles parameters,
+        not buffers.
+        
+        Called once on the first real inference pass.
+        """
+        moved_count = 0
+        for name, buf in self.named_buffers():
+            if buf.device != target_device:
+                buf.data = buf.data.to(target_device)
+                moved_count += 1
+        for name, param in self.named_parameters():
+            if param.device != target_device:
+                param.data = param.data.to(target_device)
+                moved_count += 1
+        if moved_count > 0:
+            logger.warning(
+                f"Moved {moved_count} tensors to {target_device}. "
+                f"This indicates some model tensors were not on the "
+                f"expected device after loading."
+            )
+        self._device_checked = True
+    
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -386,6 +415,12 @@ class HSTUForRecommendation(nn.Module):
                 f"hidden_states shape: ({total_tokens}, {hidden_dim})"
             )
             return torch.zeros(total_tokens, hidden_dim, device=device)
+        
+        # Safety: ensure all model tensors are on the correct device.
+        # This handles registered buffers that may have been created on CPU
+        # during model initialization and not moved by vLLM's load_weights().
+        if not self._device_checked:
+            self._ensure_on_device(uih_embeddings.device)
         
         output = self._forward_impl(
             uih_embeddings, uih_lengths, candidate_embeddings, num_candidates

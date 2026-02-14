@@ -5,7 +5,7 @@
 Unit Tests: Core Data Types
 
 Tests for:
-- GRPrompt, GRInputs data types
+- GRPrompt data types
 - GRRequestOutput, RecommendedItem output types
 - GRRequest extended request class
 - Monkey Patch mechanism
@@ -246,51 +246,60 @@ class TestGRRequestOutput(unittest.TestCase):
 
 
 class TestGRRequest(unittest.TestCase):
-    """Tests for GRRequest"""
+    """Tests for GRRequest (extended vLLM Request with gr_features)"""
     
-    def test_gr_request_creation(self):
-        """Test GRRequest creation"""
-        from vllm_gr.request import GRRequest
+    def test_gr_request_without_features(self):
+        """Test GRRequest creation without GR features"""
+        from vllm_gr.request import GRRequest, is_gr_request
+        
+        # GRRequest without gr_features behaves like a normal Request
+        request = GRRequest(
+            request_id="req1",
+            prompt_token_ids=[1, 2, 3],
+            sampling_params=None,
+            pooling_params=None,
+            eos_token_id=None,
+        )
+        
+        self.assertEqual(request.request_id, "req1")
+        self.assertIsNone(request.gr_features)
+        self.assertFalse(is_gr_request(request))
+    
+    def test_gr_request_with_features(self):
+        """Test GRRequest creation with GR features"""
+        from vllm_gr.request import GRRequest, is_gr_request
+        from vllm_gr.engine import GRFeaturesPayload
+        
+        payload = GRFeaturesPayload(
+            uih_keys=["item_id"],
+            uih_values_per_key=[[1, 2, 3]],
+            uih_lengths_per_key=[[1, 1, 1]],
+            cand_keys=["item_id"],
+            cand_values_per_key=[[10, 20]],
+            cand_lengths_per_key=[[1, 1]],
+            user_id="user_123",
+            num_recommendations=5,
+        )
         
         request = GRRequest(
-            request_id="gr_req_001",
-            user_id=123,
-            num_recommendations=10,
-            original_candidates=[{"item_id": 1}, {"item_id": 2}],
-        )
-        
-        self.assertEqual(request.request_id, "gr_req_001")
-        self.assertEqual(request.user_id, 123)
-        self.assertEqual(request.num_recommendations, 10)
-        self.assertEqual(request.num_candidates, 2)
-    
-    def test_gr_request_is_gr_request_property(self):
-        """Test is_gr_request property"""
-        from vllm_gr.request import GRRequest
-        
-        # Without gr_inputs
-        request1 = GRRequest(request_id="req1")
-        self.assertFalse(request1.is_gr_request)
-        
-        # With gr_inputs (simulated)
-        request2 = GRRequest(
+            gr_features=payload,
             request_id="req2",
-            gr_inputs={"type": "gr_inputs"},  # Simulated GRInputs
+            prompt_token_ids=[1, 2, 3],
+            sampling_params=None,
+            pooling_params=None,
+            eos_token_id=None,
         )
-        self.assertTrue(request2.is_gr_request)
+        
+        self.assertEqual(request.request_id, "req2")
+        self.assertIsNotNone(request.gr_features)
+        self.assertEqual(request.gr_features.user_id, "user_123")
+        self.assertTrue(is_gr_request(request))
     
     def test_is_gr_request_function(self):
         """Test is_gr_request standalone function"""
-        from vllm_gr.request import GRRequest, is_gr_request
+        from vllm_gr.request import is_gr_request
         
-        request = GRRequest(
-            request_id="req",
-            gr_inputs={"type": "gr_inputs"},
-        )
-        
-        self.assertTrue(is_gr_request(request))
-        
-        # Non-GRRequest objects
+        # Non-GRRequest objects should return False
         self.assertFalse(is_gr_request(None))
         self.assertFalse(is_gr_request({}))
         self.assertFalse(is_gr_request("string"))
@@ -344,7 +353,6 @@ class TestModuleExports(unittest.TestCase):
         
         # Core types should be accessible
         self.assertTrue(hasattr(vllm_gr, "GRPrompt"))
-        self.assertTrue(hasattr(vllm_gr, "GRInputs"))
         self.assertTrue(hasattr(vllm_gr, "GRRequestOutput"))
         self.assertTrue(hasattr(vllm_gr, "RecommendedItem"))
         self.assertTrue(hasattr(vllm_gr, "GRRequest"))
@@ -352,7 +360,6 @@ class TestModuleExports(unittest.TestCase):
         # Helper functions should be accessible
         self.assertTrue(hasattr(vllm_gr, "is_gr_prompt"))
         self.assertTrue(hasattr(vllm_gr, "is_gr_request"))
-        self.assertTrue(hasattr(vllm_gr, "gr_inputs"))
         
         # Version should be accessible
         self.assertTrue(hasattr(vllm_gr, "__version__"))
@@ -363,9 +370,7 @@ class TestModuleExports(unittest.TestCase):
             ItemInteraction,
             CandidateItem,
             GRPrompt,
-            GRInputs,
             is_gr_prompt,
-            gr_inputs,
         )
         
         # All should be importable
