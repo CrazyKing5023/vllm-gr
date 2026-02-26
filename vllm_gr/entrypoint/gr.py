@@ -15,10 +15,10 @@ import logging
 from tqdm.auto import tqdm
 import torch
 
-# vLLM imports - mandatory dependency (vLLM 0.11.0)
+# vLLM imports - mandatory dependency (vLLM 0.14.1)
 from vllm.entrypoints.llm import LLM
 from vllm.usage.usage_lib import UsageContext
-from vllm.utils import Counter
+from vllm.utils.counter import Counter
 
 logger = logging.getLogger("vllm_gr.entrypoint")
 

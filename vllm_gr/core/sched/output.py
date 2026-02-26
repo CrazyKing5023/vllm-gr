@@ -36,12 +36,14 @@ class GRNewRequestData(NewRequestData):
         cls,
         request: Request,
         block_ids: tuple[list[int], ...],
+        prefill_token_ids: list[int] | None = None,
     ) -> "GRNewRequestData":
         """
         Create GRNewRequestData from a GRRequest.
 
         Extracts gr_features from the request and includes it in the
         scheduler output so that ModelRunner can access it.
+        v0.14.1 added prefill_token_ids for v2 model runner support.
         """
         return cls(
             req_id=request.request_id,
@@ -53,6 +55,7 @@ class GRNewRequestData(NewRequestData):
             num_computed_tokens=request.num_computed_tokens,
             lora_request=request.lora_request,
             prompt_embeds=getattr(request, "prompt_embeds", None),
+            prefill_token_ids=prefill_token_ids,
             # GR-specific: extract gr_features from GRRequest
             gr_features=getattr(request, "gr_features", None),
         )

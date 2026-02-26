@@ -54,32 +54,18 @@ class HSTUPooler(nn.Module):
     def get_supported_tasks(self) -> set:
         """
         Return supported pooling tasks.
-        
-        For recommendation models, we support 'embed' and 'encode' tasks
-        which are appropriate for embedding/scoring models.
-        
-        Returns:
-            Set of supported task names
+
+        Valid PoolingTask values in vLLM v0.14.1:
+            "embed", "classify", "score",
+            "token_embed", "token_classify", "plugin"
+
+        For GR recommendation models the primary task is "embed".
         """
-        # Support embedding/encoding tasks for recommendation
-        return {"embed", "encode", "score"}
-    
+        return {"embed"}
+
     def get_pooling_updates(self, task: str) -> Any:
-        """
-        Return pooling parameter updates for a task.
-        
-        Args:
-            task: The pooling task
-            
-        Returns:
-            PoolingParamsUpdate or compatible object
-        """
-        # Return a simple object that has the required interface
-        # For GR models, we don't need special pooling updates
-        class SimplePoolingUpdate:
-            requires_token_ids = False
-            def apply(self, params): pass
-        return SimplePoolingUpdate()
+        from vllm.model_executor.layers.pooler.common import PoolingParamsUpdate
+        return PoolingParamsUpdate()
     
     def forward(
         self,

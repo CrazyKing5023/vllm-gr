@@ -10,7 +10,8 @@ to support GR-extended variants:
   - Request → GRRequest
   - NewRequestData → GRNewRequestData
 
-The patch is applied automatically when vllm_gr is imported.
+The patch is applied automatically when vllm_gr is imported, and can be
+re-applied to cover late-loaded modules via re_apply_patches().
 """
 
 import sys
@@ -42,19 +43,24 @@ except ImportError:
     logger.debug("vllm_gr: vLLM NewRequestData not found")
 
 
-def _apply_patches() -> int:
+def _apply_patches(force: bool = False) -> int:
     """
     Apply Monkey Patches.
 
     Replace vLLM's core types with GR-extended versions in all loaded
     vLLM modules, following the vllm-omni pattern.
 
+    Args:
+        force: If True, re-scan sys.modules even if patches were already
+               applied.  Use this to catch late-loaded modules (e.g.
+               vllm.v1.engine.core loaded after initial import).
+
     Returns:
         patched_count: Number of module-level replacements performed
     """
     global _PATCHES_APPLIED, _PATCH_COUNT
 
-    if _PATCHES_APPLIED:
+    if _PATCHES_APPLIED and not force:
         return _PATCH_COUNT
 
     if _OriginalEngineCoreRequest is None and _OriginalRequest is None:
@@ -71,7 +77,6 @@ def _apply_patches() -> int:
     patched_modules = []
 
     for module_name, module in list(sys.modules.items()):
-        # Only process vllm modules
         if "vllm" not in module_name:
             continue
         if module is None:
@@ -102,7 +107,7 @@ def _apply_patches() -> int:
                     patched_modules.append(f"{module_name}.NewRequestData")
 
     _PATCHES_APPLIED = True
-    _PATCH_COUNT = patched_count
+    _PATCH_COUNT += patched_count
 
     if patched_count > 0:
         logger.info(
@@ -111,6 +116,19 @@ def _apply_patches() -> int:
         )
 
     return patched_count
+
+
+def re_apply_patches() -> int:
+    """Re-scan sys.modules and patch any newly-loaded vLLM modules.
+
+    Call this at key entry points (e.g. GRLLMEngine.__init__) to ensure
+    late-loaded modules like vllm.v1.engine.core are patched before the
+    MsgpackDecoder is created.
+
+    Returns:
+        int: Number of NEW replacements performed in this call.
+    """
+    return _apply_patches(force=True)
 
 
 def get_original_request():

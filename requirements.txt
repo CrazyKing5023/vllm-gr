@@ -1,6 +1,9 @@
 # vllm-GR Requirements
 # Generative Recommender Inference Engine based on vLLM architecture
 #
+# Requires Python >=3.10
+# Versions aligned with vllm 0.14.1 ecosystem
+#
 # Installation:
 #   pip install .                    # Standard install
 #   pip install ".[all]"             # Full install with all dependencies
@@ -12,30 +15,33 @@
 # ============================================================
 # Required: Core dependencies
 # ============================================================
-torch>=2.0.0
-tqdm>=4.60.0
-vllm==0.11.0
+torch==2.9.1
+numpy==2.2.6
+msgspec
+tqdm>=4.66.0
+opencv-python-headless>=4.13.0
+vllm==0.14.1
 
 # ============================================================
 # Optional: TorchRec for distributed embeddings
 # ============================================================
-# torchrec>=0.6.0
-# fbgemm-gpu>=0.6.0
+# torchrec==1.4.0
+# fbgemm-gpu
 
 # ============================================================
 # Development dependencies
 # ============================================================
-pytest>=7.0.0
-pytest-cov>=4.0.0
+pytest>=8.0.0
+pytest-cov>=6.0.0
 
 # ============================================================
 # Optional: SafeTensors for model loading
 # ============================================================
-safetensors>=0.4.0
+safetensors>=0.4.5
 
 # ============================================================
 # Optional: Serving (future extension)
 # ============================================================
-# fastapi>=0.100.0
-# uvicorn>=0.23.0
-# pydantic>=2.0.0
+# fastapi[standard]>=0.115.0
+# uvicorn>=0.35.0
+# pydantic>=2.12.0

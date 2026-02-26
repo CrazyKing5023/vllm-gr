@@ -9,6 +9,15 @@ GR feature data through vLLM's EngineCore pipeline (following vllm-omni pattern)
 
 Note: GRInputProcessor, GROutputProcessor, GREngineArgs, GRLLMEngine
 are imported directly from their respective modules to avoid circular imports.
+
+msgspec serialization note:
+    EngineCoreRequest uses array_like=True, so fields are serialized
+    positionally. GREngineCoreRequest appends gr_features at the end.
+    This works transparently for InprocClient (no serialization).
+    For multi-process mode (ZMQ), the monkey patch must replace
+    EngineCoreRequest in the engine process BEFORE the MsgpackDecoder
+    is created, so the decoder uses GREngineCoreRequest's schema.
+    GREngineArgs enforces multiprocess_mode=False by default.
 """
 
 from typing import Any
@@ -29,17 +38,6 @@ class GRFeaturesPayload(msgspec.Struct):
     ratings, weights, candidates, etc.) in a msgspec-serializable format.
 
     Following the vllm-omni AdditionalInformationPayload pattern.
-
-    Fields:
-        uih_keys: UIH feature names, e.g. ["item_id", "action_timestamp", "rating"]
-        uih_values_per_key: Per-key int64 value lists (parallel to uih_keys)
-        uih_lengths_per_key: Per-key lengths (parallel to uih_keys), each list has batch_size ints
-        cand_keys: Candidate feature names, e.g. ["item_movie_id", "item_query_time"]
-        cand_values_per_key: Per-key int64 value lists
-        cand_lengths_per_key: Per-key lengths
-        user_id: User identifier (as string)
-        num_recommendations: Number of Top-K recommendations requested
-        original_candidates: Original candidate dicts for output mapping
     """
 
     # UIH (User Interaction History) features
@@ -67,6 +65,11 @@ class GREngineCoreRequest(EngineCoreRequest):
 
     The gr_features field carries complete GR feature data through the
     EngineCore pipeline to the GRModelRunner.
+
+    Because EngineCoreRequest uses array_like=True, gr_features is
+    appended as the last positional element in the serialized array.
+    The monkey patch in patch.py replaces EngineCoreRequest globally
+    so that MsgpackDecoder uses this subclass schema when decoding.
     """
 
     # GR feature payload (serializable via msgspec)

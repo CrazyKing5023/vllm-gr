@@ -7,7 +7,7 @@ Model wrappers and registry for vllm-GR.
 This module provides:
 - HSTUForRecommendation: Unified HSTU model (vLLM compatible)
 - HSTUModelOutput: Model output container
-- GRModelRegistry: Model registry merging vLLM + GR models
+- register_gr_models_to_vllm(): Registers GR models with vLLM's ModelRegistry
 """
 
 from vllm_gr.model_executor.models.hstu_vllm import (
@@ -15,7 +15,6 @@ from vllm_gr.model_executor.models.hstu_vllm import (
     HSTUModelOutput,
 )
 from vllm_gr.model_executor.models.registry import (
-    GRModelRegistry,
     register_gr_models_to_vllm,
     is_registered,
     get_gr_architectures,
@@ -27,7 +26,6 @@ __all__ = [
     "HSTUForRecommendation",
     "HSTUModelOutput",
     # Model registry
-    "GRModelRegistry",
     "register_gr_models_to_vllm",
     "is_registered",
     "get_gr_architectures",

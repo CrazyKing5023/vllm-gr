@@ -24,7 +24,7 @@ import torch
 from vllm.config import VllmConfig
 from vllm.usage.usage_lib import UsageContext
 from vllm.v1.engine.llm_engine import LLMEngine
-from vllm.v1.executor.abstract import Executor
+from vllm.v1.executor import Executor
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.outputs import RequestOutput, PoolingRequestOutput
 
@@ -33,6 +33,7 @@ from vllm_gr.outputs import GRRequestOutput, RecommendedItem
 from vllm_gr.engine.arg_utils import GREngineArgs
 from vllm_gr.engine.gr_input_processor import GRInputProcessor
 from vllm_gr.engine.gr_output_processor import GROutputProcessor, GRProcessedOutputs
+from vllm_gr.patch import re_apply_patches
 
 logger = logging.getLogger("vllm_gr.engine")
 
@@ -60,6 +61,7 @@ class GRLLMEngine(LLMEngine):
         vllm_config: VllmConfig,
         executor_class: Type[Executor],
         log_stats: bool,
+        aggregate_engine_logging: bool = False,
         usage_context: UsageContext = UsageContext.ENGINE_CONTEXT,
         stat_loggers: Optional[List[Any]] = None,
         mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
@@ -68,36 +70,35 @@ class GRLLMEngine(LLMEngine):
         # GR-specific parameters
         gr_config: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """
-        Initialize GRLLMEngine with EngineCore integration.
-
-        Args:
-            vllm_config: vLLM configuration
-            executor_class: Executor class for model execution
-            log_stats: Whether to log statistics
-            usage_context: Usage context
-            stat_loggers: Custom stat loggers
-            mm_registry: Multimodal registry
-            use_cached_outputs: Whether to use cached outputs
-            multiprocess_mode: Whether to use multiprocess mode
-            gr_config: GR-specific configuration dictionary
-        """
         # Store GR-specific configuration
         self.gr_config = gr_config or {}
         self.max_seq_len = self.gr_config.get("max_seq_len", 512)
         self.max_candidates = self.gr_config.get("max_candidates", 1000)
         self.default_top_k = self.gr_config.get("default_top_k", 10)
 
+        if multiprocess_mode:
+            logger.warning(
+                "GRLLMEngine: multiprocess_mode=True is experimental. "
+                "GR features may not survive ZMQ serialization unless "
+                "vllm_gr is imported in the engine subprocess. "
+                "Prefer multiprocess_mode=False (default) for GR."
+            )
+
+        # Re-apply monkey patches to cover late-loaded vLLM modules
+        # (e.g. vllm.v1.engine.core, vllm.v1.engine.core_client).
+        re_apply_patches()
+
         # Ensure skip_tokenizer_init is True for GR (we don't use tokenizer)
         if vllm_config.model_config is not None:
             vllm_config.model_config.skip_tokenizer_init = True
 
-        # Initialize EngineCore via parent class
+        # Initialize EngineCore via parent class (v0.14.1 signature)
         logger.info("GRLLMEngine: Initializing EngineCore...")
         super().__init__(
             vllm_config=vllm_config,
             executor_class=executor_class,
             log_stats=log_stats,
+            aggregate_engine_logging=aggregate_engine_logging,
             usage_context=usage_context,
             stat_loggers=stat_loggers,
             mm_registry=mm_registry,
@@ -212,8 +213,6 @@ class GRLLMEngine(LLMEngine):
         num_recs = num_recommendations or self.default_top_k
 
         # 1. Use GRInputProcessor to create GREngineCoreRequest
-        #    This serializes ALL features (item_id, timestamp, rating, etc.)
-        #    into GRFeaturesPayload
         gr_request = self.gr_input_processor.process_gr_prompt(
             request_id=request_id,
             prompt=prompt,
@@ -222,8 +221,15 @@ class GRLLMEngine(LLMEngine):
             priority=priority,
         )
 
-        # 2. Register with GROutputProcessor for output tracking
-        #    Extract metadata from gr_features for output mapping
+        # 2. Assign internal request_id (v0.14.1 requirement).
+        #    Sets external_req_id = original request_id, then replaces
+        #    request_id with a unique internal ID. OutputProcessor
+        #    asserts external_req_id is not None.
+        self.input_processor.assign_request_id(gr_request)
+
+        # 3. Register with GROutputProcessor for output tracking.
+        #    Use the ORIGINAL request_id (now in external_req_id)
+        #    because super().step() returns outputs keyed by external_req_id.
         user_id = prompt.get("user_id")
         original_candidates = (
             gr_request.gr_features.original_candidates
@@ -231,18 +237,16 @@ class GRLLMEngine(LLMEngine):
             else prompt.get("candidates", [])[:self.max_candidates]
         )
         self.gr_output_processor.add_request(
-            request_id=request_id,
+            request_id=gr_request.external_req_id,
             user_id=user_id,
             num_recommendations=num_recs,
             original_candidates=original_candidates,
         )
 
-        # 3. Register with parent's output_processor (for EngineCore tracking)
+        # 4. Register with parent's output_processor (for EngineCore tracking)
         self.output_processor.add_request(gr_request, None, None, 0)
 
-        # 4. Submit GREngineCoreRequest to EngineCore
-        #    The monkey-patched types ensure gr_features flows through:
-        #    EngineCore → Scheduler → GRNewRequestData → GRModelRunner
+        # 5. Submit GREngineCoreRequest to EngineCore
         self.engine_core.add_request(gr_request)
 
         logger.debug(
@@ -260,10 +264,10 @@ class GRLLMEngine(LLMEngine):
         """
         Execute one inference step via EngineCore.
 
-        Gets outputs from EngineCore and converts them to GRRequestOutput
-        using GROutputProcessor.
+        Delegates to parent's step() which handles all v0.14.1 internals
+        (dummy_batch for DP, IterationStats, StatLoggerManager, abort of
+        stop-string requests), then converts outputs to GRRequestOutput.
         """
-        # Get outputs from EngineCore (parent's step logic)
         try:
             engine_outputs = super().step()
         except Exception as e:
@@ -273,7 +277,6 @@ class GRLLMEngine(LLMEngine):
         if not engine_outputs:
             return []
 
-        # Convert to GRRequestOutput using GROutputProcessor
         processed = self.gr_output_processor.process_outputs(engine_outputs)
 
         if processed.request_outputs:
@@ -293,14 +296,15 @@ class GRLLMEngine(LLMEngine):
         """Get number of unfinished requests."""
         return super().get_num_unfinished_requests()
 
-    def abort_request(self, request_ids: Union[str, List[str]]) -> None:
-        """Abort requests."""
+    def abort_request(
+        self, request_ids: Union[str, List[str]], internal: bool = False
+    ) -> None:
+        """Abort requests (v0.14.1 signature includes internal flag)."""
         if isinstance(request_ids, str):
             request_ids = [request_ids]
 
-        super().abort_request(request_ids)
+        super().abort_request(request_ids, internal=internal)
 
-        # Clean up GR output processor tracking
         for request_id in request_ids:
             self.gr_output_processor.remove_request(request_id)
 

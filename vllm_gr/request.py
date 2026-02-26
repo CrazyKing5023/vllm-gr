@@ -46,35 +46,24 @@ class GRRequest(Request):
         Passes gr_features from the engine core request to the internal
         request object, ensuring data flows through the scheduler.
 
-        Must match the base Request.from_engine_core_request signature
-        and include all fields that vLLM's scheduler depends on.
+        Must match the base Request.from_engine_core_request signature.
+        In vllm v0.14.1, structured_output_request is computed internally
+        by Request.__init__ from sampling_params, so it is NOT passed here.
         """
-        # Build structured_output_request if sampling_params present
-        structured_output_request = None
-        if request.sampling_params:
-            try:
-                from vllm.v1.request import StructuredOutputRequest
-                structured_output_request = StructuredOutputRequest(
-                    sampling_params=request.sampling_params
-                )
-            except (ImportError, Exception):
-                pass
-
         return cls(
             # GR-specific field
             gr_features=getattr(request, "gr_features", None),
-            # Standard vLLM Request fields
+            # Standard vLLM Request fields (v0.14.1 signature)
             request_id=request.request_id,
-            client_index=getattr(request, "client_index", 0),
             prompt_token_ids=request.prompt_token_ids,
-            prompt_embeds=getattr(request, "prompt_embeds", None),
-            mm_features=request.mm_features,
             sampling_params=request.sampling_params,
             pooling_params=request.pooling_params,
             eos_token_id=request.eos_token_id,
+            client_index=getattr(request, "client_index", 0),
             arrival_time=request.arrival_time,
+            prompt_embeds=getattr(request, "prompt_embeds", None),
+            mm_features=request.mm_features,
             lora_request=request.lora_request,
-            structured_output_request=structured_output_request,
             cache_salt=request.cache_salt,
             priority=request.priority,
             trace_headers=request.trace_headers,

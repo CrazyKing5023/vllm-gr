@@ -24,10 +24,8 @@ from typing import Any, Optional, Union, TYPE_CHECKING
 import numpy as np
 import torch
 from vllm.logger import init_logger
-from vllm.v1.worker.gpu_model_runner import (
-    GPUModelRunner,
-    IntermediateTensors,
-)
+from vllm.sequence import IntermediateTensors
+from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
@@ -150,32 +148,29 @@ class GRModelRunner(GPUModelRunner):
     def _preprocess(
         self,
         scheduler_output: "SchedulerOutput",
-        intermediate_tensors: Optional[IntermediateTensors] = None,
-        ubatch_slices=None,
-        num_tokens_after_padding=None,
-    ):
+        num_input_tokens: int,
+        intermediate_tensors: IntermediateTensors | None = None,
+    ) -> tuple:
         """
         Preprocess inputs, then inject GR-specific kwargs into model_kwargs.
 
-        The base GPUModelRunner._preprocess returns a tuple where the
-        last element is model_kwargs (dict). We call super(), then
-        merge GR-specific kwargs (uih_embeddings, uih_lengths, etc.)
-        into model_kwargs so they are passed to self.model(**model_kwargs)
-        in execute_model().
+        The base GPUModelRunner._preprocess returns a 6-tuple:
+            (input_ids, inputs_embeds, positions,
+             intermediate_tensors, model_kwargs, ec_connector_output)
+
+        We call super(), then merge GR-specific kwargs into model_kwargs
+        so they are passed to self.model(**model_kwargs) in execute_model().
         """
-        # Call parent's _preprocess to get standard results
         result = super()._preprocess(
             scheduler_output,
+            num_input_tokens,
             intermediate_tensors,
-            ubatch_slices,
-            num_tokens_after_padding,
         )
 
-        # result is a tuple, model_kwargs is the last element
-        # Unpack: (*others, model_kwargs)
-        *others, model_kwargs = result
+        # Unpack the 6-tuple; model_kwargs is at index 4
+        (input_ids, inputs_embeds, positions,
+         interm_tensors, model_kwargs, ec_connector_output) = result
 
-        # Inject GR features into model_kwargs
         gr_kwargs = self._build_gr_model_kwargs()
         if gr_kwargs:
             model_kwargs.update(gr_kwargs)
@@ -184,7 +179,8 @@ class GRModelRunner(GPUModelRunner):
                 f"keys={list(gr_kwargs.keys())}"
             )
 
-        return (*others, model_kwargs)
+        return (input_ids, inputs_embeds, positions,
+                interm_tensors, model_kwargs, ec_connector_output)
 
     # ------------------------------------------------------------------
     # Build GR-specific model kwargs
