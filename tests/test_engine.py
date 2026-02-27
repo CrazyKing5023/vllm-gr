@@ -92,70 +92,40 @@ class TestGREngineArgs(unittest.TestCase):
 
 
 class TestGRInputProcessor(unittest.TestCase):
-    """Tests for GRInputProcessor (unit tests that don't require vLLM engine)."""
-    
-    def test_input_processor_creation(self):
-        """Test GRInputProcessor can be created standalone."""
+    """Tests for GRInputProcessor (unit tests for static methods)."""
+
+    def test_extract_features_basic(self):
+        """Test _extract_features static method."""
         from vllm_gr.engine.gr_input_processor import GRInputProcessor
-        
-        processor = GRInputProcessor(
-            max_seq_len=128,
-            max_candidates=100,
+
+        records = [
+            {"item_id": 1, "timestamp": 1000},
+            {"item_id": 2, "timestamp": 2000},
+        ]
+
+        keys, values, lengths = GRInputProcessor._extract_features(
+            records=records,
+            feature_names=["item_id", "timestamp"],
         )
-        
-        self.assertEqual(processor.max_seq_len, 128)
-        self.assertEqual(processor.max_candidates, 100)
-    
-    def test_input_processor_creates_request(self):
-        """Test GRInputProcessor creates GREngineCoreRequest with gr_features."""
-        from vllm_gr.engine.gr_input_processor import GRInputProcessor
-        
-        processor = GRInputProcessor(max_seq_len=64, max_candidates=50)
-        
-        prompt = {
-            "user_id": "user_123",
-            "user_history": [
-                {"item_id": 1, "timestamp": 1000},
-                {"item_id": 2, "timestamp": 2000},
-            ],
-            "candidates": [
-                {"item_id": 10},
-                {"item_id": 20},
-                {"item_id": 30},
-            ],
-        }
-        
-        request = processor.process_gr_prompt(
-            request_id="test-001",
-            prompt=prompt,
-            num_recommendations=2,
-        )
-        
-        self.assertEqual(request.request_id, "test-001")
-        self.assertIsNotNone(request.gr_features)
-        self.assertEqual(request.gr_features.user_id, "user_123")
-        self.assertEqual(request.gr_features.num_recommendations, 2)
-        self.assertEqual(len(request.gr_features.original_candidates), 3)
-    
-    def test_output_processor_tracking(self):
-        """Test GROutputProcessor tracks requests correctly."""
+
+        self.assertIn("item_id", keys)
+        self.assertIn("timestamp", keys)
+        item_idx = keys.index("item_id")
+        self.assertEqual(values[item_idx], [1, 2])
+
+    def test_output_processor_inherits_vllm(self):
+        """Test GROutputProcessor inherits from vLLM OutputProcessor."""
         from vllm_gr.engine.gr_output_processor import GROutputProcessor
-        
-        processor = GROutputProcessor(default_top_k=5)
-        
-        processor.add_request(
-            request_id="test-001",
-            user_id="user_123",
-            num_recommendations=3,
-            original_candidates=[{"item_id": 10}, {"item_id": 20}],
-        )
-        
-        self.assertTrue(processor.has_unfinished_requests())
-        self.assertEqual(processor.get_num_unfinished_requests(), 1)
-        
-        processor.remove_request("test-001")
-        
-        self.assertFalse(processor.has_unfinished_requests())
+        from vllm.v1.engine.output_processor import OutputProcessor
+
+        self.assertTrue(issubclass(GROutputProcessor, OutputProcessor))
+
+    def test_input_processor_inherits_vllm(self):
+        """Test GRInputProcessor inherits from vLLM InputProcessor."""
+        from vllm_gr.engine.gr_input_processor import GRInputProcessor
+        from vllm.v1.engine.input_processor import InputProcessor
+
+        self.assertTrue(issubclass(GRInputProcessor, InputProcessor))
 
 
 class TestGRLLM(unittest.TestCase):

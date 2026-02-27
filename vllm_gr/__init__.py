@@ -29,7 +29,9 @@ from vllm_gr.request import GRRequest, is_gr_request
 from vllm_gr.engine import GRFeaturesPayload, GREngineCoreRequest
 from vllm_gr.core.sched.output import GRNewRequestData
 from vllm_gr.engine.gr_input_processor import GRInputProcessor
-from vllm_gr.engine.gr_output_processor import GROutputProcessor, GRProcessedOutputs
+from vllm_gr.engine.gr_output_processor import GROutputProcessor, GRRequestState
+
+# Engine
 from vllm_gr.engine.arg_utils import GREngineArgs
 from vllm_gr.engine.gr_engine import GRLLMEngine
 from vllm_gr.worker.gr_worker import GRWorker
@@ -53,7 +55,8 @@ __all__ = [
     "GRNewRequestData",
     "GRInputProcessor",
     "GROutputProcessor",
-    "GRProcessedOutputs",
+    "GRRequestState",
+    # Engine
     "GREngineArgs",
     "GRLLMEngine",
     "GRWorker",

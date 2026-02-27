@@ -5,8 +5,8 @@
 Unit Tests: Input and Output Processors
 
 Tests for:
-- GRInputProcessor: Input processor (GRPrompt -> GREngineCoreRequest)
-- GROutputProcessor: Output processor (engine outputs -> GRRequestOutput)
+- GRInputProcessor._extract_features: Feature extraction logic
+- GRRequestState._make_gr_output: Output construction with Top-K
 - GRFeaturesPayload: Feature serialization
 """
 
@@ -15,232 +15,26 @@ import sys
 import unittest
 from typing import List, Dict, Any
 
-# Add parent directory to path
+import torch
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-class TestGRInputProcessor(unittest.TestCase):
-    """Tests for GRInputProcessor input processor."""
+class TestExtractFeatures(unittest.TestCase):
+    """Tests for GRInputProcessor._extract_features static method."""
 
-    def setUp(self):
-        """Set up test fixtures."""
+    def test_extract_multi_key_features(self):
+        """Test extraction with multiple keys."""
         from vllm_gr.engine.gr_input_processor import GRInputProcessor
 
-        self.processor = GRInputProcessor(
-            max_seq_len=100,
-            max_candidates=50,
-        )
-
-        # Sample user history (with rich features)
-        self.user_history = [
+        records = [
             {"item_id": 1, "timestamp": 1000, "rating": 4},
             {"item_id": 2, "timestamp": 2000, "rating": 5},
             {"item_id": 3, "timestamp": 3000, "rating": 3},
         ]
 
-        # Sample candidates
-        self.candidates = [
-            {"item_id": 10, "category_id": 1},
-            {"item_id": 20, "category_id": 2},
-            {"item_id": 30, "category_id": 1},
-            {"item_id": 40, "category_id": 3},
-            {"item_id": 50, "category_id": 2},
-        ]
-
-    def test_processor_initialization(self):
-        """Test processor initializes with correct parameters."""
-        self.assertEqual(self.processor.max_seq_len, 100)
-        self.assertEqual(self.processor.max_candidates, 50)
-        # Default feature names include multi-key features
-        self.assertIn("item_id", self.processor.uih_feature_names)
-        self.assertIn("timestamp", self.processor.uih_feature_names)
-        self.assertIn("item_id", self.processor.candidate_feature_names)
-
-    def test_process_gr_prompt_basic(self):
-        """Test basic input processing creates GREngineCoreRequest."""
-        from vllm_gr.inputs.data import GRPrompt
-
-        prompt: GRPrompt = {
-            "user_id": "user_123",
-            "user_history": self.user_history,
-            "candidates": self.candidates,
-        }
-
-        request = self.processor.process_gr_prompt(
-            request_id="test-001",
-            prompt=prompt,
-            num_recommendations=3,
-        )
-
-        # Verify request has gr_features
-        self.assertEqual(request.request_id, "test-001")
-        self.assertIsNotNone(request.gr_features)
-        self.assertEqual(request.gr_features.user_id, "user_123")
-        self.assertEqual(request.gr_features.num_recommendations, 3)
-
-    def test_gr_features_payload_contains_all_features(self):
-        """Test that ALL features (item_id, timestamp, rating) are serialized."""
-        from vllm_gr.inputs.data import GRPrompt
-
-        prompt: GRPrompt = {
-            "user_id": 456,
-            "user_history": self.user_history,
-            "candidates": self.candidates,
-        }
-
-        request = self.processor.process_gr_prompt(
-            request_id="test-002",
-            prompt=prompt,
-            num_recommendations=5,
-        )
-
-        payload = request.gr_features
-        self.assertIsNotNone(payload)
-
-        # Check UIH keys include multi-key features
-        self.assertIn("item_id", payload.uih_keys)
-        self.assertIn("timestamp", payload.uih_keys)
-        self.assertIn("rating", payload.uih_keys)
-
-        # Check UIH values
-        item_id_idx = payload.uih_keys.index("item_id")
-        self.assertEqual(payload.uih_values_per_key[item_id_idx], [1, 2, 3])
-
-        timestamp_idx = payload.uih_keys.index("timestamp")
-        self.assertEqual(
-            payload.uih_values_per_key[timestamp_idx], [1000, 2000, 3000]
-        )
-
-        rating_idx = payload.uih_keys.index("rating")
-        self.assertEqual(
-            payload.uih_values_per_key[rating_idx], [4, 5, 3]
-        )
-
-        # Check candidate keys
-        self.assertIn("item_id", payload.cand_keys)
-        self.assertIn("category_id", payload.cand_keys)
-
-        cand_item_idx = payload.cand_keys.index("item_id")
-        self.assertEqual(
-            payload.cand_values_per_key[cand_item_idx],
-            [10, 20, 30, 40, 50],
-        )
-
-    def test_prompt_token_ids_are_item_ids(self):
-        """Test that prompt_token_ids contains item_ids for vLLM compatibility."""
-        from vllm_gr.inputs.data import GRPrompt
-
-        prompt: GRPrompt = {
-            "user_id": "u1",
-            "user_history": self.user_history,
-            "candidates": self.candidates,
-        }
-
-        request = self.processor.process_gr_prompt(
-            request_id="test-003",
-            prompt=prompt,
-            num_recommendations=3,
-        )
-
-        # prompt_token_ids should be the UIH item_ids
-        self.assertEqual(request.prompt_token_ids, [1, 2, 3])
-
-    def test_original_candidates_preserved(self):
-        """Test that original candidates are preserved for output mapping."""
-        from vllm_gr.inputs.data import GRPrompt
-
-        prompt: GRPrompt = {
-            "user_id": "u1",
-            "user_history": self.user_history,
-            "candidates": self.candidates,
-        }
-
-        request = self.processor.process_gr_prompt(
-            request_id="test-004",
-            prompt=prompt,
-            num_recommendations=3,
-        )
-
-        self.assertEqual(len(request.gr_features.original_candidates), 5)
-        self.assertEqual(
-            request.gr_features.original_candidates[0]["item_id"], 10
-        )
-
-    def test_max_seq_len_truncation(self):
-        """Test that long sequences are truncated to max_seq_len."""
-        from vllm_gr.engine.gr_input_processor import GRInputProcessor
-        from vllm_gr.inputs.data import GRPrompt
-
-        processor = GRInputProcessor(max_seq_len=2, max_candidates=50)
-
-        long_history = [
-            {"item_id": 1, "timestamp": 1000},
-            {"item_id": 2, "timestamp": 2000},
-            {"item_id": 3, "timestamp": 3000},
-            {"item_id": 4, "timestamp": 4000},
-        ]
-
-        prompt: GRPrompt = {
-            "user_id": "u1",
-            "user_history": long_history,
-            "candidates": self.candidates,
-        }
-
-        request = processor.process_gr_prompt(
-            request_id="test-005",
-            prompt=prompt,
-            num_recommendations=3,
-        )
-
-        # Only last 2 items should be kept
-        self.assertEqual(request.prompt_token_ids, [3, 4])
-
-    def test_max_candidates_truncation(self):
-        """Test that candidates are truncated to max_candidates."""
-        from vllm_gr.engine.gr_input_processor import GRInputProcessor
-        from vllm_gr.inputs.data import GRPrompt
-
-        processor = GRInputProcessor(max_seq_len=100, max_candidates=2)
-
-        prompt: GRPrompt = {
-            "user_id": "u1",
-            "user_history": self.user_history,
-            "candidates": self.candidates,
-        }
-
-        request = processor.process_gr_prompt(
-            request_id="test-006",
-            prompt=prompt,
-            num_recommendations=2,
-        )
-
-        # Only first 2 candidates should be kept
-        self.assertEqual(len(request.gr_features.original_candidates), 2)
-
-    def test_empty_history(self):
-        """Test handling of empty user history."""
-        from vllm_gr.inputs.data import GRPrompt
-
-        prompt: GRPrompt = {
-            "user_id": "u1",
-            "user_history": [],
-            "candidates": self.candidates,
-        }
-
-        request = self.processor.process_gr_prompt(
-            request_id="test-007",
-            prompt=prompt,
-            num_recommendations=3,
-        )
-
-        self.assertIsNotNone(request.gr_features)
-        # prompt_token_ids should be [0] (dummy) for empty history
-        self.assertEqual(request.prompt_token_ids, [0])
-
-    def test_extract_features_multi_key(self):
-        """Test _extract_features with multiple keys."""
-        keys, values, lengths = self.processor._extract_features(
-            records=self.user_history,
+        keys, values, lengths = GRInputProcessor._extract_features(
+            records=records,
             feature_names=["item_id", "timestamp", "rating"],
         )
 
@@ -249,146 +43,165 @@ class TestGRInputProcessor(unittest.TestCase):
         self.assertIn("timestamp", keys)
         self.assertIn("rating", keys)
 
-        # Each key should have 3 values (one per record)
-        for vals in values:
-            self.assertEqual(len(vals), 3)
+        item_idx = keys.index("item_id")
+        self.assertEqual(values[item_idx], [1, 2, 3])
 
-    def test_extract_features_missing_key(self):
+        ts_idx = keys.index("timestamp")
+        self.assertEqual(values[ts_idx], [1000, 2000, 3000])
+
+        rating_idx = keys.index("rating")
+        self.assertEqual(values[rating_idx], [4, 5, 3])
+
+        for lens in lengths:
+            self.assertEqual(len(lens), 3)
+            self.assertTrue(all(l == 1 for l in lens))
+
+    def test_extract_missing_key_excluded(self):
         """Test that missing keys are excluded."""
-        keys, values, lengths = self.processor._extract_features(
-            records=[{"item_id": 1}, {"item_id": 2}],
+        from vllm_gr.engine.gr_input_processor import GRInputProcessor
+
+        records = [{"item_id": 1}, {"item_id": 2}]
+        keys, values, lengths = GRInputProcessor._extract_features(
+            records=records,
             feature_names=["item_id", "nonexistent_key"],
         )
 
-        # "nonexistent_key" should not appear since no record has it
         self.assertIn("item_id", keys)
         self.assertNotIn("nonexistent_key", keys)
 
+    def test_extract_empty_records(self):
+        """Test extraction with empty records."""
+        from vllm_gr.engine.gr_input_processor import GRInputProcessor
 
-class TestGROutputProcessor(unittest.TestCase):
-    """Tests for GROutputProcessor output processor."""
-
-    def setUp(self):
-        """Set up test fixtures."""
-        from vllm_gr.engine.gr_output_processor import GROutputProcessor
-
-        self.processor = GROutputProcessor(
-            default_top_k=3,
-            log_stats=False,
+        keys, values, lengths = GRInputProcessor._extract_features(
+            records=[],
+            feature_names=["item_id"],
         )
 
-        self.candidates = [
-            {"item_id": 10},
-            {"item_id": 20},
-            {"item_id": 30},
-            {"item_id": 40},
-            {"item_id": 50},
+        self.assertEqual(keys, [])
+        self.assertEqual(values, [])
+        self.assertEqual(lengths, [])
+
+    def test_extract_default_value(self):
+        """Test that missing values default to 0."""
+        from vllm_gr.engine.gr_input_processor import GRInputProcessor
+
+        records = [
+            {"item_id": 1, "rating": 5},
+            {"item_id": 2},  # no rating
         ]
 
-    def test_processor_initialization(self):
-        """Test processor initializes correctly."""
-        self.assertEqual(self.processor.default_top_k, 3)
-        self.assertEqual(self.processor.log_stats, False)
-        self.assertEqual(len(self.processor._active_requests), 0)
-
-    def test_add_request(self):
-        """Test adding a request to tracking."""
-        self.processor.add_request(
-            request_id="test-001",
-            user_id="user_123",
-            num_recommendations=3,
-            original_candidates=self.candidates,
+        keys, values, lengths = GRInputProcessor._extract_features(
+            records=records,
+            feature_names=["item_id", "rating"],
         )
 
-        self.assertTrue(self.processor.has_unfinished_requests())
-        self.assertEqual(self.processor.get_num_unfinished_requests(), 1)
+        rating_idx = keys.index("rating")
+        self.assertEqual(values[rating_idx], [5, 0])
 
-    def test_remove_request(self):
-        """Test removing a request."""
-        self.processor.add_request(
+
+class TestGRRequestState(unittest.TestCase):
+    """Tests for GRRequestState output construction."""
+
+    def _make_state(self, user_id="user_123", num_recs=3, candidates=None):
+        from vllm_gr.engine.gr_output_processor import GRRequestState
+
+        if candidates is None:
+            candidates = [
+                {"item_id": 10},
+                {"item_id": 20},
+                {"item_id": 30},
+                {"item_id": 40},
+                {"item_id": 50},
+            ]
+
+        return GRRequestState(
             request_id="test-001",
-            user_id="user_123",
-            num_recommendations=3,
-            original_candidates=self.candidates,
+            external_req_id="test-001",
+            parent_req=None,
+            request_index=0,
+            lora_request=None,
+            output_kind=None,
+            prompt=None,
+            prompt_token_ids=[1, 2, 3],
+            prompt_embeds=None,
+            logprobs_processor=None,
+            detokenizer=None,
+            max_tokens_param=None,
+            arrival_time=0.0,
+            queue=None,
+            log_stats=False,
+            stream_interval=1,
+            gr_user_id=user_id,
+            gr_num_recommendations=num_recs,
+            gr_original_candidates=candidates,
         )
 
-        self.assertTrue(self.processor.has_unfinished_requests())
+    def test_make_gr_output_basic(self):
+        """Test basic GR output creation with Top-K."""
+        state = self._make_state(num_recs=3)
+        scores = torch.tensor([0.1, 0.5, 0.3, 0.8, 0.2])
 
-        self.processor.remove_request("test-001")
+        from vllm_gr.outputs import GRRequestOutput
+        from vllm_gr.engine.gr_output_processor import GRRequestState
 
-        self.assertFalse(self.processor.has_unfinished_requests())
+        output = state._make_gr_output(scores, finish_reason="stop")
 
-    def test_create_gr_output_from_list_scores(self):
-        """Test creating GR output from list scores."""
-        self.processor.add_request(
-            request_id="test-001",
-            user_id="user_123",
-            num_recommendations=3,
-            original_candidates=self.candidates,
-        )
-
-        # Create mock output with scores
-        scores = [0.1, 0.5, 0.3, 0.8, 0.2]  # item 40 has highest score
-        output = self.processor._create_gr_output(
-            request_id="test-001",
-            user_id="user_123",
-            scores=scores,
-            candidates=self.candidates,
-            num_recommendations=3,
-        )
-
-        self.assertIsNotNone(output)
+        self.assertIsInstance(output, GRRequestOutput)
         self.assertEqual(output.request_id, "test-001")
         self.assertEqual(output.user_id, "user_123")
-        self.assertTrue(output.finished)
-
-        # Top 3 should be: item 40 (0.8), item 20 (0.5), item 30 (0.3)
         self.assertEqual(len(output.recommendations), 3)
+
+        # Top 3: item 40 (0.8), item 20 (0.5), item 30 (0.3)
         self.assertEqual(output.recommendations[0].item_id, 40)
         self.assertEqual(output.recommendations[0].rank, 1)
         self.assertAlmostEqual(output.recommendations[0].score, 0.8)
 
-    def test_top_k_limit(self):
+        self.assertEqual(output.recommendations[1].item_id, 20)
+        self.assertEqual(output.recommendations[1].rank, 2)
+
+        self.assertEqual(output.recommendations[2].item_id, 30)
+        self.assertEqual(output.recommendations[2].rank, 3)
+
+    def test_make_gr_output_top_k_limit(self):
         """Test that recommendations are limited to num_recommendations."""
         candidates = [{"item_id": i} for i in range(10)]
-        scores = [0.1, 0.9, 0.3, 0.8, 0.5, 0.2, 0.7, 0.4, 0.6, 0.15]
+        state = self._make_state(num_recs=2, candidates=candidates)
+        scores = torch.tensor([0.1, 0.9, 0.3, 0.8, 0.5, 0.2, 0.7, 0.4, 0.6, 0.15])
 
-        output = self.processor._create_gr_output(
-            request_id="test-002",
-            user_id="user_456",
-            scores=scores,
-            candidates=candidates,
-            num_recommendations=2,
-        )
+        output = state._make_gr_output(scores, finish_reason="stop")
 
-        # Should only have 2 recommendations
         self.assertEqual(len(output.recommendations), 2)
-        # Top 2: item 1 (0.9), item 3 (0.8)
-        self.assertEqual(output.recommendations[0].item_id, 1)
-        self.assertEqual(output.recommendations[1].item_id, 3)
+        self.assertEqual(output.recommendations[0].item_id, 1)  # score 0.9
+        self.assertEqual(output.recommendations[1].item_id, 3)  # score 0.8
 
+    def test_make_gr_output_empty_candidates(self):
+        """Test output with empty candidates."""
+        state = self._make_state(num_recs=3, candidates=[])
+        scores = torch.tensor([])
 
-class TestGRProcessedOutputs(unittest.TestCase):
-    """Tests for GRProcessedOutputs dataclass."""
+        output = state._make_gr_output(scores, finish_reason="stop")
 
-    def test_creation(self):
-        """Test creating GRProcessedOutputs."""
-        from vllm_gr.engine.gr_output_processor import GRProcessedOutputs
+        self.assertEqual(len(output.recommendations), 0)
+        self.assertTrue(output.finished)
+
+    def test_make_request_output_delegates_for_gr(self):
+        """Test that make_request_output intercepts GR pooling output."""
+        state = self._make_state(num_recs=2)
+        scores = torch.tensor([0.1, 0.5, 0.3, 0.8, 0.2])
+
         from vllm_gr.outputs import GRRequestOutput
+        from vllm.v1.engine import FinishReason
 
-        outputs = GRProcessedOutputs(
-            request_outputs=[
-                GRRequestOutput(
-                    request_id="test-001",
-                    user_id="user_1",
-                    recommendations=[],
-                ),
-            ],
-            iteration_stats={"total_time": 0.1},
+        output = state.make_request_output(
+            new_token_ids=[],
+            pooling_output=scores,
+            finish_reason=FinishReason.STOP,
+            stop_reason=None,
         )
 
-        self.assertEqual(len(outputs.request_outputs), 1)
-        self.assertIsNotNone(outputs.iteration_stats)
+        self.assertIsInstance(output, GRRequestOutput)
+        self.assertEqual(len(output.recommendations), 2)
 
 
 class TestGRFeaturesPayload(unittest.TestCase):
@@ -407,7 +220,9 @@ class TestGRFeaturesPayload(unittest.TestCase):
             cand_lengths_per_key=[[1, 1, 1]],
             user_id="user_123",
             num_recommendations=5,
-            original_candidates=[{"item_id": 10}, {"item_id": 20}, {"item_id": 30}],
+            original_candidates=[
+                {"item_id": 10}, {"item_id": 20}, {"item_id": 30}
+            ],
         )
 
         self.assertEqual(payload.uih_keys, ["item_id", "timestamp"])
@@ -431,15 +246,71 @@ class TestGRFeaturesPayload(unittest.TestCase):
             num_recommendations=3,
         )
 
-        # Serialize
         data = msgspec.msgpack.encode(payload)
         self.assertIsInstance(data, bytes)
 
-        # Deserialize
         decoded = msgspec.msgpack.decode(data, type=GRFeaturesPayload)
         self.assertEqual(decoded.uih_keys, ["item_id"])
         self.assertEqual(decoded.uih_values_per_key[0], [1, 2, 3])
         self.assertEqual(decoded.user_id, "u1")
+
+
+class TestGRRequestOutput(unittest.TestCase):
+    """Tests for GRRequestOutput (inherits PoolingRequestOutput)."""
+
+    def test_inherits_pooling_request_output(self):
+        """Test that GRRequestOutput is a PoolingRequestOutput."""
+        from vllm.outputs import PoolingRequestOutput
+        from vllm_gr.outputs import GRRequestOutput, RecommendedItem
+
+        output = GRRequestOutput(
+            request_id="test-001",
+            user_id="user_1",
+            recommendations=[
+                RecommendedItem(item_id=10, score=0.9, rank=1),
+                RecommendedItem(item_id=20, score=0.8, rank=2),
+            ],
+            finished=True,
+        )
+
+        self.assertIsInstance(output, PoolingRequestOutput)
+        self.assertEqual(output.request_id, "test-001")
+        self.assertTrue(output.finished)
+        self.assertEqual(len(output.recommendations), 2)
+
+    def test_to_dict(self):
+        """Test serialization to dict."""
+        from vllm_gr.outputs import GRRequestOutput, RecommendedItem
+
+        output = GRRequestOutput(
+            request_id="test-002",
+            user_id="user_2",
+            recommendations=[
+                RecommendedItem(item_id=10, score=0.9, rank=1),
+            ],
+        )
+
+        d = output.to_dict()
+        self.assertEqual(d["request_id"], "test-002")
+        self.assertEqual(d["user_id"], "user_2")
+        self.assertEqual(len(d["recommendations"]), 1)
+
+    def test_properties(self):
+        """Test convenience properties."""
+        from vllm_gr.outputs import GRRequestOutput, RecommendedItem
+
+        output = GRRequestOutput(
+            request_id="test-003",
+            user_id="user_3",
+            recommendations=[
+                RecommendedItem(item_id=10, score=0.9, rank=1),
+                RecommendedItem(item_id=20, score=0.7, rank=2),
+            ],
+        )
+
+        self.assertEqual(output.top_recommendation.item_id, 10)
+        self.assertEqual(output.item_ids, [10, 20])
+        self.assertEqual(output.scores, [0.9, 0.7])
 
 
 if __name__ == "__main__":

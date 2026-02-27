@@ -19,7 +19,7 @@ vllm-GR is a generative recommendation model inference engine built on the vLLM 
 ### Required Dependencies
 - **PyTorch** (`torch>=2.0.0`): Required for all model inference
 - **tqdm** (`tqdm>=4.60.0`): Required for progress display
-- **vLLM** (`vllm==0.11.0`): Required for LLM/LLMEngine base classes
+- **vLLM** (`vllm>=0.14.1`): Required for LLM/LLMEngine base classes
 
 ### Optional Dependencies
 - **TorchRec** (`torchrec>=0.6.0`): Enables KeyedJaggedTensor support for optimized embedding lookup
@@ -213,10 +213,14 @@ output_dict = output.to_dict()  # Convert to JSON-serializable dict
 
 ### Inheritance Design
 
-vllm-GR classes directly inherit from vLLM base classes:
+vllm-GR classes inherit from vLLM base classes:
 
 - `GRLLM` inherits from `vllm.entrypoints.llm.LLM`
-- `GRLLMEngine` inherits from `vllm.v1.engine.llm_engine.LLMEngine` (or v0)
+- `GRLLMEngine` inherits from `vllm.v1.engine.llm_engine.LLMEngine`
+- `GRInputProcessor` inherits from `vllm.v1.engine.input_processor.InputProcessor`
+- `GROutputProcessor` inherits from `vllm.v1.engine.output_processor.OutputProcessor`
+- `GRRequestState` inherits from `vllm.v1.engine.output_processor.RequestState`
+- `GRRequestOutput` inherits from `vllm.outputs.PoolingRequestOutput`
 - `GREngineArgs` inherits from `vllm.engine.arg_utils.EngineArgs`
 
 ### Key Differences from vLLM LLM
@@ -293,6 +297,7 @@ class GRLLM(LLM):
 
 ```python
 from vllm_gr import GRLLMEngine, GREngineArgs
+from vllm.pooling_params import PoolingParams
 
 # Create engine directly (advanced usage)
 args = GREngineArgs(
@@ -302,11 +307,11 @@ args = GREngineArgs(
 )
 engine = GRLLMEngine.from_engine_args(args)
 
-# Add request
-engine.add_gr_request(
+# Add request (uses standard LLMEngine.add_request with PoolingParams)
+engine.add_request(
     request_id="req-001",
     prompt=prompt,
-    num_recommendations=10,
+    params=PoolingParams(task="embed"),
 )
 
 # Run inference
