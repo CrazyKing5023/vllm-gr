@@ -2,22 +2,16 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-Engine components for generative recommendation.
+Engine-level data structures for generative recommendation.
 
-Defines GREngineCoreRequest and GRFeaturesPayload for passing complete
-GR feature data through vLLM's EngineCore pipeline (following vllm-omni pattern).
+Defines GRFeaturesPayload and GREngineCoreRequest for transporting
+recommendation features through vLLM's EngineCore pipeline.
 
-Note: GRInputProcessor, GROutputProcessor, GREngineArgs, GRLLMEngine
-are imported directly from their respective modules to avoid circular imports.
-
-msgspec serialization note:
-    EngineCoreRequest uses array_like=True, so fields are serialized
-    positionally. GREngineCoreRequest appends gr_features at the end.
-    This works transparently for InprocClient (no serialization).
-    For multi-process mode (ZMQ), the monkey patch must replace
-    EngineCoreRequest in the engine process BEFORE the MsgpackDecoder
-    is created, so the decoder uses GREngineCoreRequest's schema.
-    GREngineArgs enforces multiprocess_mode=False by default.
+Serialization note:
+    EngineCoreRequest uses array_like=True (positional msgspec encoding).
+    GREngineCoreRequest appends gr_features as the last field. For
+    multi-process mode (ZMQ), the monkey patch in patch.py must replace
+    EngineCoreRequest before the MsgpackDecoder is created.
 """
 
 from typing import Any
@@ -31,48 +25,33 @@ logger = logging.getLogger("vllm_gr.engine")
 
 
 class GRFeaturesPayload(msgspec.Struct):
-    """
-    Serialized GR features payload for transport through EngineCore pipeline.
+    """Msgspec-serializable payload carrying all features for the HSTU model.
 
-    Carries ALL features needed by the HSTU model (item_ids, timestamps,
-    ratings, weights, candidates, etc.) in a msgspec-serializable format.
-
-    Following the vllm-omni AdditionalInformationPayload pattern.
+    Contains user interaction history (UIH) features and candidate features,
+    each represented as parallel lists of keys, values, and lengths.
     """
 
-    # UIH (User Interaction History) features
     uih_keys: list[str]
     uih_values_per_key: list[list[int]]
     uih_lengths_per_key: list[list[int]]
 
-    # Candidate features
     cand_keys: list[str]
     cand_values_per_key: list[list[int]]
     cand_lengths_per_key: list[list[int]]
 
-    # Metadata
     user_id: str = ""
     num_recommendations: int = 10
     original_candidates: list[dict[str, Any]] = []
 
 
 class GREngineCoreRequest(EngineCoreRequest):
-    """
-    Extended EngineCoreRequest with GR features.
+    """EngineCoreRequest extended with a GRFeaturesPayload field.
 
-    Follows the vllm-omni OmniEngineCoreRequest pattern: extends the base
-    EngineCoreRequest with domain-specific payload fields.
-
-    The gr_features field carries complete GR feature data through the
-    EngineCore pipeline to the GRModelRunner.
-
-    Because EngineCoreRequest uses array_like=True, gr_features is
-    appended as the last positional element in the serialized array.
-    The monkey patch in patch.py replaces EngineCoreRequest globally
-    so that MsgpackDecoder uses this subclass schema when decoding.
+    Appended as the last positional element in the array_like serialization.
+    The monkey patch in patch.py replaces EngineCoreRequest globally so
+    MsgpackDecoder uses this subclass schema when decoding.
     """
 
-    # GR feature payload (serializable via msgspec)
     gr_features: GRFeaturesPayload | None = None
 
 

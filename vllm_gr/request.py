@@ -2,10 +2,8 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-GRRequest: Extended vLLM Request with GR feature data.
-
-Follows the vllm-omni OmniRequest pattern: extends vLLM's Request class
-to carry GR-specific data (gr_features) through the EngineCore pipeline.
+GRRequest — extends vLLM's Request to carry GR features through the
+EngineCore → Scheduler → ModelRunner pipeline.
 """
 
 from typing import Any, Optional
@@ -17,12 +15,11 @@ from vllm_gr.engine import GRFeaturesPayload, GREngineCoreRequest
 
 
 class GRRequest(Request):
-    """
-    Extended Request that carries GR features through the pipeline.
+    """Request subclass that carries gr_features alongside standard fields.
 
-    When monkey-patched via patch.py, vLLM's EngineCore uses this class
-    instead of the base Request, so gr_features flows naturally through
-    Scheduler → NewRequestData → ModelRunner.
+    When monkey-patched via patch.py, vLLM's EngineCore creates GRRequest
+    instances, so gr_features flows through Scheduler → NewRequestData →
+    ModelRunner automatically.
     """
 
     def __init__(
@@ -40,20 +37,8 @@ class GRRequest(Request):
         request: GREngineCoreRequest,
         block_hasher: Optional[Callable] = None,
     ) -> "GRRequest":
-        """
-        Create GRRequest from GREngineCoreRequest.
-
-        Passes gr_features from the engine core request to the internal
-        request object, ensuring data flows through the scheduler.
-
-        Must match the base Request.from_engine_core_request signature.
-        In vllm v0.14.1, structured_output_request is computed internally
-        by Request.__init__ from sampling_params, so it is NOT passed here.
-        """
         return cls(
-            # GR-specific field
             gr_features=getattr(request, "gr_features", None),
-            # Standard vLLM Request fields (v0.14.1 signature)
             request_id=request.request_id,
             prompt_token_ids=request.prompt_token_ids,
             sampling_params=request.sampling_params,
