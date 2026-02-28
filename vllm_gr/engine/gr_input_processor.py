@@ -76,6 +76,7 @@ class GRInputProcessor(InputProcessor):
             return self._process_gr_prompt(
                 request_id=request_id,
                 prompt=prompt,
+                params=params,
                 arrival_time=arrival_time,
                 lora_request=lora_request,
                 trace_headers=trace_headers,
@@ -99,6 +100,7 @@ class GRInputProcessor(InputProcessor):
         self,
         request_id: str,
         prompt: GRPrompt,
+        params: SamplingParams | PoolingParams,
         arrival_time: float | None = None,
         lora_request: LoRARequest | None = None,
         trace_headers: Mapping[str, str] | None = None,
@@ -115,6 +117,9 @@ class GRInputProcessor(InputProcessor):
 
         if arrival_time is None:
             arrival_time = time.time()
+
+        if not isinstance(params, PoolingParams):
+            params = PoolingParams(task="embed")
 
         user_id = str(prompt.get("user_id", ""))
         user_history = prompt.get("user_history", [])
@@ -149,14 +154,12 @@ class GRInputProcessor(InputProcessor):
         else:
             prompt_token_ids = [0] * len(recent_history) if recent_history else [0]
 
-        pooling_params = PoolingParams(task="embed")
-
         request = GREngineCoreRequest(
             request_id=request_id,
             prompt_token_ids=prompt_token_ids,
             mm_features=None,
             sampling_params=None,
-            pooling_params=pooling_params,
+            pooling_params=params,
             eos_token_id=None,
             arrival_time=arrival_time,
             lora_request=lora_request,
