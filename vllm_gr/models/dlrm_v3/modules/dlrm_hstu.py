@@ -84,6 +84,7 @@ class DlrmHSTUConfig:
     action_embedding_init_std: float = 0.1
     enable_postprocessor: bool = True
     use_layer_norm_postprocessor: bool = False
+    context_feature_names: List[str] = field(default_factory=lambda: ["query_id", "scenario_id"])
 
 
 def _get_supervision_labels_and_weights(
@@ -152,7 +153,8 @@ class DlrmHSTU(HammerModule):
         else:
             self._multitask_module = None
 
-        # Preprocessor
+        # Preprocessor: context features from GRPrompt.context
+        additional_embedding_features = list(hstu_configs.context_feature_names)
         preprocessor = ContextualPreprocessor(
             input_embedding_dim=hstu_configs.hstu_embedding_table_dim,
             hidden_dim=hstu_configs.hstu_preprocessor_hidden_dim,
@@ -162,6 +164,7 @@ class DlrmHSTU(HammerModule):
             action_embedding_dim=8,
             action_feature_name=self._hstu_configs.uih_weight_feature_name,
             action_weights=self._hstu_configs.action_weights,
+            additional_embedding_features=additional_embedding_features,
             action_embedding_init_std=self._hstu_configs.action_embedding_init_std,
             is_inference=is_inference,
         )
@@ -301,6 +304,7 @@ class DlrmHSTU(HammerModule):
         seq_embeddings: Dict[str, SequenceEmbedding],
         payload_features: Dict[str, torch.Tensor],
         num_candidates: torch.Tensor,
+        seq_timestamps: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Compute user embeddings using HSTU transducer."""
         source_key = self._hstu_configs.uih_post_id_feature_name
@@ -310,10 +314,15 @@ class DlrmHSTU(HammerModule):
         source_lengths = seq_embeddings[source_key].lengths
         embedding = seq_embeddings[source_key].embedding
         total_targets = int(num_candidates.sum().item())
-        
-        # Create timestamps (simplified implementation)
         total_len = embedding.size(0)
-        source_timestamps = torch.zeros(total_len, device=embedding.device, dtype=torch.float32)
+
+        # Use provided timestamps when available (P0 fix), else zeros
+        if seq_timestamps is not None and seq_timestamps.numel() == total_len:
+            source_timestamps = seq_timestamps.to(embedding.device)
+        else:
+            source_timestamps = torch.zeros(
+                total_len, device=embedding.device, dtype=torch.float32
+            )
         
         dtype = embedding.dtype
         if (not self.is_inference) and self._bf16_training:
@@ -346,6 +355,7 @@ class DlrmHSTU(HammerModule):
         uih_seq_lengths: torch.Tensor,
         max_num_candidates: int,
         num_candidates: torch.Tensor,
+        seq_timestamps: Optional[torch.Tensor] = None,
     ) -> Tuple[
         torch.Tensor,
         torch.Tensor,
@@ -365,6 +375,7 @@ class DlrmHSTU(HammerModule):
                 seq_embeddings=seq_embeddings,
                 payload_features=payload_features,
                 num_candidates=num_candidates,
+                seq_timestamps=seq_timestamps,
             )
         
         with record_function("## multitask_module ##"):
@@ -402,6 +413,8 @@ class DlrmHSTU(HammerModule):
         num_candidates: torch.Tensor,
         max_uih_len: Optional[int] = None,
         max_num_candidates: Optional[int] = None,
+        seq_timestamps: Optional[torch.Tensor] = None,
+        payload_features: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Tuple[
         torch.Tensor,
         torch.Tensor,
@@ -434,8 +447,9 @@ class DlrmHSTU(HammerModule):
         with record_function("## main_forward ##"):
             return self.main_forward(
                 seq_embeddings=seq_embeddings,
-                payload_features={},
+                payload_features=payload_features if payload_features is not None else {},
                 max_uih_len=max_uih_len,
+                seq_timestamps=seq_timestamps,
                 uih_seq_lengths=uih_seq_lengths,
                 max_num_candidates=max_num_candidates,
                 num_candidates=num_candidates,

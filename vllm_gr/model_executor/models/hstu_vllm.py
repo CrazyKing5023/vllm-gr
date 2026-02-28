@@ -217,6 +217,7 @@ class HSTUForRecommendation(nn.Module):
             'user_embedding_feature_names': ['item_id'],
             'item_embedding_feature_names': ['item_candidate_id'],
             'uih_post_id_feature_name': 'item_id',
+            'context_feature_names': ['query_id', 'scenario_id'],
             'input_dropout_ratio': 0.2,
             'linear_dropout_rate': 0.2,
             'embedding_tables': [],
@@ -271,6 +272,7 @@ class HSTUForRecommendation(nn.Module):
             'merge_uih_candidate_feature_mapping',
             'contextual_feature_to_max_length',
             'contextual_feature_to_min_uih_length',
+            'context_feature_names',
             'enable_postprocessor',
             'use_layer_norm_postprocessor',
         ]
@@ -363,6 +365,8 @@ class HSTUForRecommendation(nn.Module):
         uih_lengths: Optional[torch.Tensor] = None,
         candidate_embeddings: Optional[torch.Tensor] = None,
         num_candidates: Optional[torch.Tensor] = None,
+        uih_timestamps: Optional[torch.Tensor] = None,
+        payload_features: Optional[Dict[str, torch.Tensor]] = None,
         **kwargs,
     ) -> torch.Tensor:
         """
@@ -409,7 +413,12 @@ class HSTUForRecommendation(nn.Module):
             self._ensure_on_device(uih_embeddings.device)
         
         output = self._forward_impl(
-            uih_embeddings, uih_lengths, candidate_embeddings, num_candidates
+            uih_embeddings,
+            uih_lengths,
+            candidate_embeddings,
+            num_candidates,
+            uih_timestamps=uih_timestamps,
+            payload_features=payload_features,
         )
         return output.predictions
     
@@ -522,6 +531,8 @@ class HSTUForRecommendation(nn.Module):
         uih_lengths: torch.Tensor,
         candidate_embeddings: torch.Tensor,
         num_candidates: torch.Tensor,
+        uih_timestamps: Optional[torch.Tensor] = None,
+        payload_features: Optional[Dict[str, torch.Tensor]] = None,
     ) -> HSTUModelOutput:
         """
         Internal forward implementation.
@@ -600,7 +611,7 @@ class HSTUForRecommendation(nn.Module):
                 embedding=total_embeddings,
             )
         
-        # Run HSTU model
+        # Run HSTU model (pass timestamps and payload when available)
         (
             user_embeddings,
             item_embeddings,
@@ -611,6 +622,8 @@ class HSTUForRecommendation(nn.Module):
         ) = self.hstu(
             seq_embeddings=seq_embeddings,
             num_candidates=num_candidates,
+            seq_timestamps=uih_timestamps,
+            payload_features=payload_features or {},
         )
         
         # Ensure predictions shape

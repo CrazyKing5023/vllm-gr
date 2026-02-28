@@ -41,16 +41,16 @@ class TestGRLLMEndToEnd(unittest.TestCase):
         prompt: GRPrompt = {
             "user_id": "user_001",
             "user_history": [
-                {"item_id": 1, "timestamp": 1000},
-                {"item_id": 2, "timestamp": 2000},
-                {"item_id": 3, "timestamp": 3000},
+                {"item_id": 1, "timestamp": 1000, "rating": 5, "action_type": 1},
+                {"item_id": 2, "timestamp": 2000, "rating": 4, "action_type": 1},
+                {"item_id": 3, "timestamp": 3000, "rating": 5, "action_type": 2},
             ],
             "candidates": [
-                {"item_id": 10},
-                {"item_id": 20},
-                {"item_id": 30},
-                {"item_id": 40},
-                {"item_id": 50},
+                {"item_id": 10, "category_id": 1},
+                {"item_id": 20, "category_id": 1},
+                {"item_id": 30, "category_id": 2},
+                {"item_id": 40, "category_id": 1},
+                {"item_id": 50, "category_id": 2},
             ],
         }
 
@@ -74,8 +74,14 @@ class TestGRLLMEndToEnd(unittest.TestCase):
         prompts: List[GRPrompt] = [
             {
                 "user_id": f"user_{i}",
-                "user_history": [{"item_id": j} for j in range(5)],
-                "candidates": [{"item_id": k * 10} for k in range(10)],
+                "user_history": [
+                    {"item_id": j, "rating": 4, "action_type": 1}
+                    for j in range(5)
+                ],
+                "candidates": [
+                    {"item_id": k * 10, "category_id": k % 3}
+                    for k in range(10)
+                ],
             }
             for i in range(5)
         ]
@@ -118,9 +124,14 @@ class TestGRLLMEngineEndToEnd(unittest.TestCase):
 
         prompt = {
             "user_id": "user_001",
-            "user_history": [{"item_id": 1}, {"item_id": 2}],
+            "user_history": [
+                {"item_id": 1, "rating": 5, "action_type": 1},
+                {"item_id": 2, "rating": 4, "action_type": 2},
+            ],
             "candidates": [
-                {"item_id": 10}, {"item_id": 20}, {"item_id": 30}
+                {"item_id": 10, "category_id": 1},
+                {"item_id": 20, "category_id": 1},
+                {"item_id": 30, "category_id": 2},
             ],
             "num_recommendations": 2,
         }

@@ -155,18 +155,28 @@ class TestGRLLM(unittest.TestCase):
         """Test GRPrompt validation logic (used by recommend)."""
         from vllm_gr.inputs.data import is_gr_prompt
         
-        # Valid prompt
-        valid = {
+        # Valid prompt (minimal - item_id only)
+        valid_minimal = {
             "user_id": "user_123",
             "user_history": [{"item_id": 1}],
             "candidates": [{"item_id": 10}],
         }
-        self.assertTrue(is_gr_prompt(valid))
+        self.assertTrue(is_gr_prompt(valid_minimal))
+
+        # Valid prompt with rating, action_type, category_id
+        valid_full = {
+            "user_id": "user_123",
+            "user_history": [
+                {"item_id": 1, "timestamp": 1000, "rating": 5, "action_type": 1},
+            ],
+            "candidates": [{"item_id": 10, "category_id": 1}],
+        }
+        self.assertTrue(is_gr_prompt(valid_full))
         
         # Invalid: missing candidates
         invalid = {
             "user_id": "user_123",
-            "user_history": [{"item_id": 1}],
+            "user_history": [{"item_id": 1, "rating": 5, "action_type": 1}],
         }
         self.assertFalse(is_gr_prompt(invalid))
 

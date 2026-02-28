@@ -92,32 +92,32 @@ def main():
         
         # User's interaction history
         "user_history": [
-            {"item_id": 1001, "timestamp": 1609459200},  # The_Matrix
-            {"item_id": 1002, "timestamp": 1609545600},  # Inception
-            {"item_id": 1003, "timestamp": 1609632000},  # Interstellar
-            {"item_id": 1004, "timestamp": 1609718400},  # Blade_Runner_2049
-            {"item_id": 1005, "timestamp": 1609804800},  # Dune
-            {"item_id": 1006, "timestamp": 1609891200},  # Arrival
-            {"item_id": 1007, "timestamp": 1609977600},  # Ex_Machina
+            {"item_id": 1001, "timestamp": 1609459200, "rating": 5, "action_type": 1},  # The_Matrix
+            {"item_id": 1002, "timestamp": 1609545600, "rating": 4, "action_type": 1},  # Inception
+            {"item_id": 1003, "timestamp": 1609632000, "rating": 5, "action_type": 2},  # Interstellar
+            {"item_id": 1004, "timestamp": 1609718400, "rating": 4, "action_type": 1},  # Blade_Runner_2049
+            {"item_id": 1005, "timestamp": 1609804800, "rating": 5, "action_type": 2},  # Dune
+            {"item_id": 1006, "timestamp": 1609891200, "rating": 3, "action_type": 0},  # Arrival
+            {"item_id": 1007, "timestamp": 1609977600, "rating": 4, "action_type": 1},  # Ex_Machina
         ],
         
         # Candidate items to rank
         "candidates": [
-            {"item_id": 2001},  # Tenet
-            {"item_id": 2002},  # Avatar
-            {"item_id": 2003},  # Edge_of_Tomorrow
-            {"item_id": 2004},  # District_9
-            {"item_id": 2005},  # Elysium
-            {"item_id": 2006},  # Gravity
-            {"item_id": 2007},  # The_Martian
-            {"item_id": 2008},  # Annihilation
-            {"item_id": 2009},  # Oblivion
-            {"item_id": 2010},  # Looper
-            {"item_id": 2011},  # Moon
-            {"item_id": 2012},  # Sunshine
-            {"item_id": 2013},  # Source_Code
-            {"item_id": 2014},  # Prometheus
-            {"item_id": 2015},  # Midnight_Sky
+            {"item_id": 2001, "category_id": 1},   # Tenet
+            {"item_id": 2002, "category_id": 1},   # Avatar
+            {"item_id": 2003, "category_id": 1},   # Edge_of_Tomorrow
+            {"item_id": 2004, "category_id": 1},   # District_9
+            {"item_id": 2005, "category_id": 1},   # Elysium
+            {"item_id": 2006, "category_id": 1},   # Gravity
+            {"item_id": 2007, "category_id": 1},   # The_Martian
+            {"item_id": 2008, "category_id": 1},   # Annihilation
+            {"item_id": 2009, "category_id": 1},   # Oblivion
+            {"item_id": 2010, "category_id": 1},   # Looper
+            {"item_id": 2011, "category_id": 1},   # Moon
+            {"item_id": 2012, "category_id": 1},   # Sunshine
+            {"item_id": 2013, "category_id": 1},   # Source_Code
+            {"item_id": 2014, "category_id": 1},   # Prometheus
+            {"item_id": 2015, "category_id": 1},   # Midnight_Sky
         ],
         
         # Optional: override default top_k

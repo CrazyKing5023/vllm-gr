@@ -42,6 +42,7 @@ class GRFeaturesPayload(msgspec.Struct):
     user_id: str = ""
     num_recommendations: int = 10
     original_candidates: list[dict[str, Any]] = []
+    context: dict[str, Any] = {}  # P3: optional context (query, scenario, etc.)
 
 
 class GREngineCoreRequest(EngineCoreRequest):

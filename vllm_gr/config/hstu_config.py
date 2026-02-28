@@ -78,6 +78,9 @@ class HSTUModelConfig:
     merge_uih_candidate_feature_mapping: List[Tuple[str, str]] = field(default_factory=list)
     contextual_feature_to_max_length: Dict[str, int] = field(default_factory=dict)
     contextual_feature_to_min_uih_length: Dict[str, int] = field(default_factory=dict)
+    context_feature_names: List[str] = field(
+        default_factory=lambda: ["query_id", "scenario_id"]
+    )
     
     # Multitask configuration
     task_names: List[str] = field(default_factory=lambda: ["is_click", "is_like"])
