@@ -136,6 +136,9 @@ class GRInputProcessor(InputProcessor):
             self._extract_features(limited_candidates, self.candidate_feature_names)
         )
 
+        # P3: extract context from GRPrompt when present
+        context = prompt.get("context") or {}
+
         gr_features = GRFeaturesPayload(
             uih_keys=uih_keys,
             uih_values_per_key=uih_values_per_key,
@@ -146,6 +149,7 @@ class GRInputProcessor(InputProcessor):
             user_id=user_id,
             num_recommendations=num_recommendations,
             original_candidates=[dict(c) for c in limited_candidates],
+            context=context,
         )
 
         if "item_id" in uih_keys:

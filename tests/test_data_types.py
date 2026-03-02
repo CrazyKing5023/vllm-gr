@@ -53,8 +53,8 @@ class TestGRPrompt(unittest.TestCase):
         prompt: GRPrompt = {
             "user_id": "user_abc",
             "user_history": [
-                {"item_id": 1, "timestamp": 1000, "rating": 5},
-                {"item_id": 2, "timestamp": 2000, "rating": 4},
+                {"item_id": 1, "timestamp": 1000, "rating": 5, "action_type": 1},
+                {"item_id": 2, "timestamp": 2000, "rating": 4, "action_type": 2},
             ],
             "candidates": [
                 {"item_id": 10, "category_id": 1},

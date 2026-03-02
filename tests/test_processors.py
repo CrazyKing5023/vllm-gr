@@ -24,24 +24,25 @@ class TestExtractFeatures(unittest.TestCase):
     """Tests for GRInputProcessor._extract_features static method."""
 
     def test_extract_multi_key_features(self):
-        """Test extraction with multiple keys."""
+        """Test extraction with multiple keys (item_id, timestamp, rating, action_type)."""
         from vllm_gr.engine.gr_input_processor import GRInputProcessor
 
         records = [
-            {"item_id": 1, "timestamp": 1000, "rating": 4},
-            {"item_id": 2, "timestamp": 2000, "rating": 5},
-            {"item_id": 3, "timestamp": 3000, "rating": 3},
+            {"item_id": 1, "timestamp": 1000, "rating": 4, "action_type": 1},
+            {"item_id": 2, "timestamp": 2000, "rating": 5, "action_type": 2},
+            {"item_id": 3, "timestamp": 3000, "rating": 3, "action_type": 0},
         ]
 
         keys, values, lengths = GRInputProcessor._extract_features(
             records=records,
-            feature_names=["item_id", "timestamp", "rating"],
+            feature_names=["item_id", "timestamp", "rating", "action_type"],
         )
 
-        self.assertEqual(len(keys), 3)
+        self.assertEqual(len(keys), 4)
         self.assertIn("item_id", keys)
         self.assertIn("timestamp", keys)
         self.assertIn("rating", keys)
+        self.assertIn("action_type", keys)
 
         item_idx = keys.index("item_id")
         self.assertEqual(values[item_idx], [1, 2, 3])
@@ -52,9 +53,34 @@ class TestExtractFeatures(unittest.TestCase):
         rating_idx = keys.index("rating")
         self.assertEqual(values[rating_idx], [4, 5, 3])
 
+        action_idx = keys.index("action_type")
+        self.assertEqual(values[action_idx], [1, 2, 0])
+
         for lens in lengths:
             self.assertEqual(len(lens), 3)
             self.assertTrue(all(l == 1 for l in lens))
+
+    def test_extract_candidates_with_category_id(self):
+        """Test extraction of candidates with category_id."""
+        from vllm_gr.engine.gr_input_processor import GRInputProcessor
+
+        records = [
+            {"item_id": 10, "category_id": 1},
+            {"item_id": 20, "category_id": 2},
+            {"item_id": 30, "category_id": 1},
+        ]
+
+        keys, values, lengths = GRInputProcessor._extract_features(
+            records=records,
+            feature_names=["item_id", "category_id"],
+        )
+
+        self.assertIn("item_id", keys)
+        self.assertIn("category_id", keys)
+        item_idx = keys.index("item_id")
+        cat_idx = keys.index("category_id")
+        self.assertEqual(values[item_idx], [10, 20, 30])
+        self.assertEqual(values[cat_idx], [1, 2, 1])
 
     def test_extract_missing_key_excluded(self):
         """Test that missing keys are excluded."""
@@ -108,11 +134,11 @@ class TestGRRequestState(unittest.TestCase):
 
         if candidates is None:
             candidates = [
-                {"item_id": 10},
-                {"item_id": 20},
-                {"item_id": 30},
-                {"item_id": 40},
-                {"item_id": 50},
+                {"item_id": 10, "category_id": 1},
+                {"item_id": 20, "category_id": 1},
+                {"item_id": 30, "category_id": 2},
+                {"item_id": 40, "category_id": 1},
+                {"item_id": 50, "category_id": 2},
             ]
 
         return GRRequestState(
@@ -165,7 +191,7 @@ class TestGRRequestState(unittest.TestCase):
 
     def test_make_gr_output_top_k_limit(self):
         """Test that recommendations are limited to num_recommendations."""
-        candidates = [{"item_id": i} for i in range(10)]
+        candidates = [{"item_id": i, "category_id": i % 3} for i in range(10)]
         state = self._make_state(num_recs=2, candidates=candidates)
         scores = torch.tensor([0.1, 0.9, 0.3, 0.8, 0.5, 0.2, 0.7, 0.4, 0.6, 0.15])
 

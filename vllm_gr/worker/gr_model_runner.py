@@ -86,6 +86,7 @@ class GRModelRunner(GPUModelRunner):
             "user_id": payload.user_id,
             "num_recommendations": payload.num_recommendations,
             "original_candidates": list(payload.original_candidates),
+            "context": getattr(payload, "context", {}) or {},
         }
 
     def _preprocess(
@@ -114,8 +115,8 @@ class GRModelRunner(GPUModelRunner):
     def _build_gr_model_kwargs(self) -> dict[str, Any]:
         """Build batched GR tensors expected by HSTUForRecommendation.forward().
 
-        Returns uih_embeddings, uih_lengths, candidate_embeddings, and
-        num_candidates, or an empty dict if no GR requests are in the batch.
+        Returns uih_embeddings, uih_lengths, candidate_embeddings, num_candidates,
+        uih_timestamps (when available), and payload_features (when available).
         """
         if not self._gr_features_cache:
             return {}
@@ -137,21 +138,93 @@ class GRModelRunner(GPUModelRunner):
         all_uih_lengths = []
         all_cand_embeddings = []
         all_num_candidates = []
+        all_uih_timestamps = []
+        all_payload_weights = []
+        all_context_embeds = []
+
+        context_feature_names = getattr(
+            getattr(model, "config", None),
+            "context_feature_names",
+            ["query_id", "scenario_id"],
+        )
+        if not isinstance(context_feature_names, list):
+            context_feature_names = (
+                list(context_feature_names) if context_feature_names else []
+            )
 
         for req_id, features in gr_reqs:
-            if features["uih_values_per_key"]:
-                uih_item_ids = features["uih_values_per_key"][0].to(device)
+            uih_keys = features.get("uih_keys", [])
+            uih_values = features.get("uih_values_per_key", [])
+            cand_values = features.get("cand_values_per_key", [])
+
+            # Item IDs: use first key (item_id)
+            if uih_values:
+                uih_item_ids = uih_values[0].to(device)
                 uih_len = len(uih_item_ids)
             else:
                 uih_item_ids = torch.zeros(0, dtype=torch.int64, device=device)
                 uih_len = 0
 
-            if features["cand_values_per_key"]:
-                cand_item_ids = features["cand_values_per_key"][0].to(device)
+            if cand_values:
+                cand_item_ids = cand_values[0].to(device)
                 n_cand = len(cand_item_ids)
             else:
                 cand_item_ids = torch.zeros(0, dtype=torch.int64, device=device)
                 n_cand = 0
+
+            # Timestamps: extract when "timestamp" in uih_keys (P0 fix)
+            if uih_len > 0 and "timestamp" in uih_keys:
+                ts_idx = uih_keys.index("timestamp")
+                ts_vals = uih_values[ts_idx].to(device=device, dtype=torch.float32)
+                uih_ts = ts_vals
+            else:
+                uih_ts = torch.zeros(uih_len, device=device, dtype=torch.float32)
+            cand_ts = torch.zeros(n_cand, device=device, dtype=torch.float32)
+            all_uih_timestamps.append(torch.cat([uih_ts, cand_ts], dim=0))
+
+            # Payload: action_weight from rating or action_type (P1 fix)
+            # Use rating as primary; fallback to action_type if no rating
+            if uih_len > 0 and uih_values:
+                pw = None
+                if "rating" in uih_keys:
+                    r_idx = uih_keys.index("rating")
+                    pw = uih_values[r_idx].to(device=device, dtype=torch.float32).unsqueeze(-1)
+                elif "action_type" in uih_keys:
+                    a_idx = uih_keys.index("action_type")
+                    pw = uih_values[a_idx].to(device=device, dtype=torch.float32).unsqueeze(-1)
+                if pw is not None:
+                    pc = torch.zeros(n_cand, pw.size(-1), device=device, dtype=torch.float32)
+                    all_payload_weights.append(torch.cat([pw, pc], dim=0))
+                else:
+                    all_payload_weights.append(None)
+            else:
+                all_payload_weights.append(None)
+
+            # Context: embed scalar IDs and broadcast to (seq_len, D) for ContextualPreprocessor
+            total_len = uih_len + n_cand
+            context = features.get("context") or {}
+            if (
+                context_feature_names
+                and total_len > 0
+                and hasattr(model, "lookup_embeddings")
+            ):
+                ctx_embeds = {}
+                for name in context_feature_names:
+                    val = context.get(name)
+                    if val is None:
+                        val = 0
+                    try:
+                        id_val = int(val)
+                    except (TypeError, ValueError):
+                        id_val = hash(str(val)) % (1 << 31)
+                    ids = torch.tensor(
+                        [id_val], dtype=torch.int64, device=device
+                    )
+                    emb = model.lookup_embeddings(ids)
+                    ctx_embeds[name] = emb.expand(total_len, -1).contiguous()
+                all_context_embeds.append(ctx_embeds)
+            else:
+                all_context_embeds.append({})
 
             if hasattr(model, "lookup_embeddings"):
                 uih_embeds = model.lookup_embeddings(uih_item_ids)
@@ -190,9 +263,37 @@ class GRModelRunner(GPUModelRunner):
             all_num_candidates, dtype=torch.int64, device=device
         )
 
-        return {
+        result = {
             "uih_embeddings": uih_embeddings,
             "uih_lengths": uih_lengths,
             "candidate_embeddings": candidate_embeddings,
             "num_candidates": num_candidates,
         }
+
+        # uih_timestamps: (total_uih + total_cand,) float32, aligns with total_embeddings
+        if all_uih_timestamps:
+            result["uih_timestamps"] = torch.cat(all_uih_timestamps, dim=0)
+
+        # payload_features: action_weight + context embeddings for ContextualPreprocessor
+        payload_features: dict[str, torch.Tensor] = {}
+        payload_list = []
+        for i, pw in enumerate(all_payload_weights):
+            if pw is not None:
+                payload_list.append(pw)
+            else:
+                total_len = all_uih_lengths[i] + all_num_candidates[i]
+                payload_list.append(
+                    torch.zeros(total_len, 1, device=device, dtype=torch.float32)
+                )
+        if payload_list:
+            payload_features["action_weight"] = torch.cat(payload_list, dim=0)
+
+        for name in context_feature_names:
+            parts = [req[name] for req in all_context_embeds if name in req]
+            if parts:
+                payload_features[name] = torch.cat(parts, dim=0)
+
+        if payload_features:
+            result["payload_features"] = payload_features
+
+        return result
