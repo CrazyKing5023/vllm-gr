@@ -6,10 +6,15 @@ GRModelRunner — extends GPUModelRunner for HSTU/DLRM_v3 recommendation.
 
 Overrides:
   _update_states(): decodes GRFeaturesPayload from each new request and
-      caches the decoded tensors per request_id.
+      caches the decoded tensors per request_id.  Reads ``gr_features``
+      from GRNewRequestData (populated via monkey-patch).
   _preprocess(): injects GR-specific kwargs (uih_embeddings, uih_lengths,
       candidate_embeddings, num_candidates) into model_kwargs so they
       reach the HSTU model's forward() call.
+
+The monkey-patch is applied reliably via the vLLM plugin system
+(vllm.general_plugins entry point) which runs in every process before
+any MsgpackDecoder is constructed.
 """
 
 from typing import Any, TYPE_CHECKING
@@ -48,14 +53,24 @@ class GRModelRunner(GPUModelRunner):
                     decoded = self._decode_gr_features(gr_features)
                     self._gr_features_cache[req_id] = decoded
                     logger.debug(
-                        f"Decoded GR features for request {req_id}: "
-                        f"uih_keys={decoded.get('uih_keys')}, "
-                        f"cand_keys={decoded.get('cand_keys')}"
+                        "Decoded GR features for request %s: "
+                        "uih_keys=%s, cand_keys=%s",
+                        req_id,
+                        decoded.get("uih_keys"),
+                        decoded.get("cand_keys"),
                     )
-                except Exception as e:
+                except Exception:
                     logger.error(
-                        f"Error decoding GR features for {req_id}: {e}"
+                        "Error decoding GR features for %s", req_id,
+                        exc_info=True,
                     )
+            else:
+                logger.warning(
+                    "Request %s has no gr_features — monkey-patch may not "
+                    "be active.  Run ``from vllm_gr.patch import "
+                    "verify_patches; verify_patches()`` to diagnose.",
+                    req_id,
+                )
 
         for req_id in scheduler_output.finished_req_ids:
             self._gr_features_cache.pop(req_id, None)

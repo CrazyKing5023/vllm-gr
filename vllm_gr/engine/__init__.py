@@ -9,9 +9,12 @@ recommendation features through vLLM's EngineCore pipeline.
 
 Serialization note:
     EngineCoreRequest uses array_like=True (positional msgspec encoding).
-    GREngineCoreRequest appends gr_features as the last field. For
-    multi-process mode (ZMQ), the monkey patch in patch.py must replace
-    EngineCoreRequest before the MsgpackDecoder is created.
+    GREngineCoreRequest appends gr_features as the last field.  The
+    monkey-patch in patch.py replaces EngineCoreRequest in both source
+    and consumer modules so that:
+      - The client-side MsgpackEncoder serializes gr_features.
+      - The subprocess-side MsgpackDecoder(EngineCoreRequest) — which
+        now resolves to GREngineCoreRequest — deserializes it correctly.
 """
 
 from typing import Any
@@ -42,7 +45,7 @@ class GRFeaturesPayload(msgspec.Struct):
     user_id: str = ""
     num_recommendations: int = 10
     original_candidates: list[dict[str, Any]] = []
-    context: dict[str, Any] = {}  # P3: optional context (query, scenario, etc.)
+    context: dict[str, Any] = {}
 
 
 class GREngineCoreRequest(EngineCoreRequest):

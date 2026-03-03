@@ -68,6 +68,9 @@ Documentation = "https://github.com/your-org/vllm-GR#readme"
 Repository = "https://github.com/your-org/vllm-GR.git"
 Issues = "https://github.com/your-org/vllm-GR/issues"
 
+[project.entry-points."vllm.general_plugins"]
+vllm_gr = "vllm_gr.plugin:register"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["vllm_gr*"]
