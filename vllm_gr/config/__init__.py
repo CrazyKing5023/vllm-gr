@@ -5,24 +5,14 @@
 Configuration module for vllm-GR.
 
 Provides:
-- HSTUModelConfig: Internal dataclass configuration (detailed fields)
-- HSTUConfig: HuggingFace-compatible PretrainedConfig subclass
+- HSTUConfig: HuggingFace-compatible PretrainedConfig subclass (model arch)
+- GRConfig: Typed runtime / serving configuration dataclass
 """
 
-from vllm_gr.config.hstu_config import (
-    EmbeddingTableConfig,
-    HSTUModelConfig,
-    TaskConfig,
-    MultitaskTaskType,
-)
 from vllm_gr.config.hstu_hf_config import HSTUConfig
+from vllm_gr.config.gr_config import GRConfig
 
 __all__ = [
-    # Internal configuration (detailed dataclass)
-    "EmbeddingTableConfig",
-    "HSTUModelConfig",
-    "TaskConfig",
-    "MultitaskTaskType",
-    # HuggingFace-compatible configuration (for config.json parsing)
     "HSTUConfig",
+    "GRConfig",
 ]

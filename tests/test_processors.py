@@ -129,16 +129,17 @@ class TestExtractFeatures(unittest.TestCase):
 class TestGRRequestState(unittest.TestCase):
     """Tests for GRRequestState output construction."""
 
-    def _make_state(self, user_id="user_123", num_recs=3, candidates=None):
+    def _make_state(self, user_id="user_123", num_recs=3, candidates=None,
+                     primary_id_key="item_candidate_id"):
         from vllm_gr.engine.gr_output_processor import GRRequestState
 
         if candidates is None:
             candidates = [
-                {"item_id": 10, "category_id": 1},
-                {"item_id": 20, "category_id": 1},
-                {"item_id": 30, "category_id": 2},
-                {"item_id": 40, "category_id": 1},
-                {"item_id": 50, "category_id": 2},
+                {"item_candidate_id": 10},
+                {"item_candidate_id": 20},
+                {"item_candidate_id": 30},
+                {"item_candidate_id": 40},
+                {"item_candidate_id": 50},
             ]
 
         return GRRequestState(
@@ -161,6 +162,7 @@ class TestGRRequestState(unittest.TestCase):
             gr_user_id=user_id,
             gr_num_recommendations=num_recs,
             gr_original_candidates=candidates,
+            gr_primary_id_key=primary_id_key,
         )
 
     def test_make_gr_output_basic(self):
@@ -191,7 +193,7 @@ class TestGRRequestState(unittest.TestCase):
 
     def test_make_gr_output_top_k_limit(self):
         """Test that recommendations are limited to num_recommendations."""
-        candidates = [{"item_id": i, "category_id": i % 3} for i in range(10)]
+        candidates = [{"item_candidate_id": i} for i in range(10)]
         state = self._make_state(num_recs=2, candidates=candidates)
         scores = torch.tensor([0.1, 0.9, 0.3, 0.8, 0.5, 0.2, 0.7, 0.4, 0.6, 0.15])
 
@@ -230,18 +232,153 @@ class TestGRRequestState(unittest.TestCase):
         self.assertEqual(len(output.recommendations), 2)
 
 
+class TestMultiTaskOutput(unittest.TestCase):
+    """Tests for multi-task output with task_names and primary_task."""
+
+    def _make_state_with_tasks(self, task_names, primary_task="",
+                               num_recs=2):
+        from vllm_gr.engine.gr_output_processor import GRRequestState
+
+        candidates = [
+            {"item_candidate_id": 10},
+            {"item_candidate_id": 20},
+            {"item_candidate_id": 30},
+        ]
+
+        return GRRequestState(
+            request_id="mt-001",
+            external_req_id="mt-001",
+            parent_req=None,
+            request_index=0,
+            lora_request=None,
+            output_kind=None,
+            prompt=None,
+            prompt_token_ids=[1, 2, 3],
+            prompt_embeds=None,
+            logprobs_processor=None,
+            detokenizer=None,
+            max_tokens_param=None,
+            arrival_time=0.0,
+            queue=None,
+            log_stats=False,
+            stream_interval=1,
+            gr_user_id="user_mt",
+            gr_num_recommendations=num_recs,
+            gr_original_candidates=candidates,
+            gr_primary_id_key="item_candidate_id",
+            gr_task_names=task_names,
+            gr_primary_task=primary_task,
+        )
+
+    def test_multitask_primary_task_selection(self):
+        """Primary task scores are used for ranking."""
+        state = self._make_state_with_tasks(
+            task_names=["is_click", "is_purchase"],
+            primary_task="is_purchase",
+            num_recs=2,
+        )
+        scores = torch.tensor([
+            [0.9, 0.1, 0.5],   # is_click
+            [0.2, 0.8, 0.6],   # is_purchase
+        ])
+
+        output = state._make_gr_output(scores, finish_reason="stop")
+
+        self.assertEqual(len(output.recommendations), 2)
+        self.assertEqual(output.recommendations[0].item_id, 20)
+        self.assertEqual(output.recommendations[1].item_id, 30)
+
+    def test_multitask_per_item_task_scores(self):
+        """Each recommended item carries per-task scores."""
+        state = self._make_state_with_tasks(
+            task_names=["is_click", "is_purchase"],
+            primary_task="is_click",
+            num_recs=2,
+        )
+        scores = torch.tensor([
+            [0.9, 0.1, 0.5],
+            [0.2, 0.8, 0.6],
+        ])
+
+        output = state._make_gr_output(scores, finish_reason="stop")
+
+        top = output.recommendations[0]
+        self.assertIsNotNone(top.task_scores)
+        self.assertIn("is_click", top.task_scores)
+        self.assertIn("is_purchase", top.task_scores)
+        self.assertAlmostEqual(top.task_scores["is_click"], 0.9, places=4)
+        self.assertAlmostEqual(top.task_scores["is_purchase"], 0.2, places=4)
+
+    def test_multitask_defaults_to_first_task(self):
+        """Without explicit primary_task, first task is used for ranking."""
+        state = self._make_state_with_tasks(
+            task_names=["taskA", "taskB"],
+            primary_task="",
+            num_recs=2,
+        )
+        scores = torch.tensor([
+            [0.1, 0.9, 0.5],   # taskA
+            [0.8, 0.2, 0.6],   # taskB
+        ])
+
+        output = state._make_gr_output(scores, finish_reason="stop")
+
+        self.assertEqual(output.recommendations[0].item_id, 20)
+
+
+class TestCandidateFeatureExtraction(unittest.TestCase):
+    """Tests for candidate feature extraction with internal names."""
+
+    def test_internal_candidate_names_passthrough(self):
+        """Candidate dicts use model-internal names; no mapping needed."""
+        from vllm_gr.engine.gr_input_processor import GRInputProcessor
+
+        cands = [{"item_candidate_id": 10}, {"item_candidate_id": 20}]
+        keys, vals, lens = GRInputProcessor._extract_features(
+            cands, ["item_candidate_id"],
+        )
+        self.assertEqual(keys, ["item_candidate_id"])
+        self.assertEqual(vals[0], [10, 20])
+
+    def test_movielens_internal_names(self):
+        """MovieLens candidates use item_movie_id directly."""
+        from vllm_gr.engine.gr_input_processor import GRInputProcessor
+
+        cands = [
+            {"item_movie_id": 100, "item_movie_rating": 4},
+            {"item_movie_id": 200, "item_movie_rating": 5},
+        ]
+        keys, vals, _ = GRInputProcessor._extract_features(
+            cands, ["item_movie_id", "item_movie_rating"],
+        )
+        self.assertEqual(keys, ["item_movie_id", "item_movie_rating"])
+        self.assertEqual(vals[0], [100, 200])
+        self.assertEqual(vals[1], [4, 5])
+
+    def test_kuairand_internal_names(self):
+        """KuaiRand candidates use item_video_id directly."""
+        from vllm_gr.engine.gr_input_processor import GRInputProcessor
+
+        cands = [{"item_video_id": 500}]
+        keys, vals, _ = GRInputProcessor._extract_features(
+            cands, ["item_video_id"],
+        )
+        self.assertEqual(keys, ["item_video_id"])
+        self.assertEqual(vals[0], [500])
+
+
 class TestGRFeaturesPayload(unittest.TestCase):
     """Tests for GRFeaturesPayload serialization."""
 
     def test_payload_creation(self):
-        """Test creating GRFeaturesPayload."""
+        """Test creating GRFeaturesPayload with internal feature names."""
         from vllm_gr.engine import GRFeaturesPayload
 
         payload = GRFeaturesPayload(
             uih_keys=["item_id", "timestamp"],
             uih_values_per_key=[[1, 2, 3], [1000, 2000, 3000]],
             uih_lengths_per_key=[[1, 1, 1], [1, 1, 1]],
-            cand_keys=["item_id"],
+            cand_keys=["item_candidate_id"],
             cand_values_per_key=[[10, 20, 30]],
             cand_lengths_per_key=[[1, 1, 1]],
             user_id="user_123",
@@ -252,9 +389,28 @@ class TestGRFeaturesPayload(unittest.TestCase):
         )
 
         self.assertEqual(payload.uih_keys, ["item_id", "timestamp"])
+        self.assertEqual(payload.cand_keys, ["item_candidate_id"])
         self.assertEqual(payload.uih_values_per_key[0], [1, 2, 3])
         self.assertEqual(payload.user_id, "user_123")
         self.assertEqual(payload.num_recommendations, 5)
+
+    def test_payload_movielens(self):
+        """Test GRFeaturesPayload with MovieLens-style feature names."""
+        from vllm_gr.engine import GRFeaturesPayload
+
+        payload = GRFeaturesPayload(
+            uih_keys=["movie_id", "movie_rating", "action_timestamp"],
+            uih_values_per_key=[[1, 2], [5, 4], [100, 200]],
+            uih_lengths_per_key=[[1, 1], [1, 1], [1, 1]],
+            cand_keys=["item_movie_id"],
+            cand_values_per_key=[[10, 20]],
+            cand_lengths_per_key=[[1, 1]],
+            user_id="ml_user",
+            num_recommendations=3,
+        )
+
+        self.assertEqual(payload.uih_keys, ["movie_id", "movie_rating", "action_timestamp"])
+        self.assertEqual(payload.cand_keys, ["item_movie_id"])
 
     def test_payload_msgspec_serialization(self):
         """Test that GRFeaturesPayload can be serialized/deserialized."""
@@ -265,7 +421,7 @@ class TestGRFeaturesPayload(unittest.TestCase):
             uih_keys=["item_id"],
             uih_values_per_key=[[1, 2, 3]],
             uih_lengths_per_key=[[1, 1, 1]],
-            cand_keys=["item_id"],
+            cand_keys=["item_candidate_id"],
             cand_values_per_key=[[10, 20]],
             cand_lengths_per_key=[[1, 1]],
             user_id="u1",
@@ -277,6 +433,7 @@ class TestGRFeaturesPayload(unittest.TestCase):
 
         decoded = msgspec.msgpack.decode(data, type=GRFeaturesPayload)
         self.assertEqual(decoded.uih_keys, ["item_id"])
+        self.assertEqual(decoded.cand_keys, ["item_candidate_id"])
         self.assertEqual(decoded.uih_values_per_key[0], [1, 2, 3])
         self.assertEqual(decoded.user_id, "u1")
 

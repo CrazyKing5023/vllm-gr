@@ -31,18 +31,24 @@ logger = logging.getLogger("vllm_gr.output_processor")
 
 
 class GRRequestState(RequestState):
-    """RequestState extended with GR metadata (user_id, candidates, top-k)."""
+    """RequestState extended with GR metadata (user_id, candidates, top-k, tasks)."""
 
     def __init__(self, *args, **kwargs):
         gr_user_id = kwargs.pop("gr_user_id", None)
         gr_num_recommendations = kwargs.pop("gr_num_recommendations", 10)
         gr_original_candidates = kwargs.pop("gr_original_candidates", None)
+        gr_task_names = kwargs.pop("gr_task_names", None)
+        gr_primary_task = kwargs.pop("gr_primary_task", "")
+        gr_primary_id_key = kwargs.pop("gr_primary_id_key", "item_id")
 
         super().__init__(*args, **kwargs)
 
         self.gr_user_id: Any = gr_user_id
         self.gr_num_recommendations: int = gr_num_recommendations
         self.gr_original_candidates: list[dict] = gr_original_candidates or []
+        self.gr_task_names: list[str] = gr_task_names or []
+        self.gr_primary_task: str = gr_primary_task
+        self.gr_primary_id_key: str = gr_primary_id_key
 
     @classmethod
     def from_new_request(
@@ -55,6 +61,8 @@ class GRRequestState(RequestState):
         queue: RequestOutputCollector | None,
         log_stats: bool,
         stream_interval: int,
+        task_names: list[str] | None = None,
+        primary_task: str = "",
     ) -> "GRRequestState":
         from vllm.v1.engine.detokenizer import IncrementalDetokenizer
         from vllm.v1.engine.logprobs import LogprobsProcessor
@@ -63,6 +71,11 @@ class GRRequestState(RequestState):
         gr_user_id = gr_features.user_id if gr_features else None
         gr_num_recs = gr_features.num_recommendations if gr_features else 10
         gr_candidates = list(gr_features.original_candidates) if gr_features else []
+        gr_primary_id_key = (
+            gr_features.cand_keys[0]
+            if gr_features and gr_features.cand_keys
+            else "item_id"
+        )
 
         if sampling_params := request.sampling_params:
             if not sampling_params.detokenize:
@@ -110,6 +123,9 @@ class GRRequestState(RequestState):
             gr_user_id=gr_user_id,
             gr_num_recommendations=gr_num_recs,
             gr_original_candidates=gr_candidates,
+            gr_primary_id_key=gr_primary_id_key,
+            gr_task_names=task_names or [],
+            gr_primary_task=primary_task,
         )
 
     def make_request_output(
@@ -134,31 +150,60 @@ class GRRequestState(RequestState):
         pooling_output: torch.Tensor,
         finish_reason: FinishReason | None,
     ) -> GRRequestOutput:
-        """Select Top-K candidates by score and build GRRequestOutput."""
+        """Select Top-K candidates by score and build GRRequestOutput.
+
+        Supports both 1D scores (single task) and 2D scores (num_tasks, num_candidates).
+        For multi-task, uses gr_primary_task to select ranking scores and attaches
+        per-candidate task_scores from all tasks.
+        """
         candidates = self.gr_original_candidates
         num_recs = self.gr_num_recommendations
         scores = pooling_output.float()
 
-        top_k = min(num_recs, len(candidates), len(scores))
+        all_task_scores: dict[str, list[float]] | None = None
+
+        if scores.dim() == 2 and self.gr_task_names:
+            if self.gr_primary_task and self.gr_primary_task in self.gr_task_names:
+                primary_idx = self.gr_task_names.index(self.gr_primary_task)
+            else:
+                primary_idx = 0
+            ranking_scores = scores[primary_idx]
+            all_task_scores = {
+                name: scores[i].tolist()
+                for i, name in enumerate(self.gr_task_names)
+            }
+        elif scores.dim() == 2:
+            ranking_scores = scores[0]
+        else:
+            ranking_scores = scores
+
+        top_k = min(num_recs, len(candidates), len(ranking_scores))
         if top_k > 0:
-            top_scores, top_indices = torch.topk(scores, k=top_k)
+            top_scores, top_indices = torch.topk(ranking_scores, k=top_k)
             top_scores_list = top_scores.tolist()
             top_indices_list = top_indices.tolist()
         else:
             top_scores_list = []
             top_indices_list = []
 
+        pid_key = self.gr_primary_id_key
         recommendations = []
         for rank, (idx, score) in enumerate(
             zip(top_indices_list, top_scores_list)
         ):
             if idx < len(candidates):
                 candidate = candidates[idx]
+                item_task_scores = None
+                if all_task_scores is not None:
+                    item_task_scores = {
+                        t: all_task_scores[t][idx] for t in all_task_scores
+                    }
                 recommendations.append(RecommendedItem(
-                    item_id=candidate.get("item_id", idx),
+                    item_id=candidate.get(pid_key, idx),
                     score=float(score),
                     rank=rank + 1,
                     features=candidate,
+                    task_scores=item_task_scores,
                 ))
 
         return GRRequestOutput(
@@ -184,15 +229,21 @@ class GROutputProcessor(VLLMOutputProcessor):
         tokenizer: TokenizerLike | None,
         log_stats: bool,
         stream_interval: int = 1,
-        default_top_k: int = 10,
+        task_names: list[str] | None = None,
+        primary_task: str = "",
     ):
         super().__init__(
             tokenizer=tokenizer,
             log_stats=log_stats,
             stream_interval=stream_interval,
         )
-        self.default_top_k = default_top_k
+        self.task_names: list[str] = task_names or []
+        self.primary_task: str = primary_task
         self.request_states: dict[str, GRRequestState] = {}
+
+    @property
+    def num_pending_requests(self) -> int:
+        return len(self.request_states)
 
     def add_request(
         self,
@@ -215,6 +266,8 @@ class GROutputProcessor(VLLMOutputProcessor):
             queue=queue,
             log_stats=self.log_stats,
             stream_interval=self.stream_interval,
+            task_names=self.task_names,
+            primary_task=self.primary_task,
         )
         if self._requests_drained.is_set():
             self._requests_drained.clear()

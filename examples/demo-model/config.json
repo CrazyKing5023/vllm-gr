@@ -1,31 +1,37 @@
 {
   "model_type": "hstu",
   "architectures": ["HSTUEmbeddingModel"],
-  
+
   "is_text_encoder": true,
   "is_encoder_decoder": false,
   "is_attention_free": true,
-  
-  "num_layers": 2,
-  "num_heads": 2,
-  "embedding_dim": 64,
-  "attention_dim": 32,
-  "hidden_dim": 64,
-  "embedding_table_dim": 64,
-  "preprocessor_hidden_dim": 128,
-  
+
   "max_seq_len": 128,
   "max_num_candidates": 50,
-  "hash_size": 10000,
-  
-  "feature_names": ["user_id", "item_id", "item_candidate_id"],
+
+  "hstu_num_heads": 2,
+  "hstu_attn_linear_dim": 64,
+  "hstu_attn_qk_dim": 32,
+  "hstu_attn_num_layers": 2,
+  "hstu_embedding_table_dim": 64,
+  "hstu_preprocessor_hidden_dim": 128,
+  "hstu_transducer_embedding_dim": 64,
+
   "user_embedding_feature_names": ["item_id"],
   "item_embedding_feature_names": ["item_candidate_id"],
   "uih_post_id_feature_name": "item_id",
-  
+  "uih_action_time_feature_name": "timestamp",
+  "candidates_querytime_feature_name": "query_time",
+
+  "merge_uih_candidate_feature_mapping": [
+    ["item_id", "item_candidate_id"],
+    ["timestamp", "query_time"]
+  ],
+
+  "hash_size": 10000,
   "task_names": ["is_click"],
   "is_inference": true,
-  
+
   "embedding_tables": [
     {
       "name": "item_embedding",

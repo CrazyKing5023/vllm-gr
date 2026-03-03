@@ -16,7 +16,10 @@ logger = logging.getLogger(__name__)
 
 
 class HSTUConfig(PretrainedConfig):
-    """PretrainedConfig subclass for HSTU models (model_type="hstu")."""
+    """PretrainedConfig subclass for HSTU models (model_type="hstu").
+
+    Field names align with Meta's DlrmHSTUConfig from generative-recommenders.
+    """
 
     model_type = "hstu"
     architectures = ["HSTUEmbeddingModel"]
@@ -26,24 +29,40 @@ class HSTUConfig(PretrainedConfig):
 
     def __init__(
         self,
-        num_layers: int = 5,
-        num_heads: int = 4,
-        embedding_dim: int = 512,
-        attention_dim: int = 128,
-        hidden_dim: int = 256,
-        embedding_table_dim: int = 192,
-        preprocessor_hidden_dim: int = 256,
+        # --- Sequence / candidate limits (Meta DlrmHSTUConfig order) ---
         max_seq_len: int = 1024,
         max_num_candidates: int = 100,
-        hash_size: int = 10_000_000,
-        feature_names: Optional[List[str]] = None,
+        max_num_candidates_inference: int = 5,
+        # --- HSTU architecture ---
+        hstu_num_heads: int = 4,
+        hstu_attn_linear_dim: int = 256,
+        hstu_attn_qk_dim: int = 128,
+        hstu_attn_num_layers: int = 5,
+        hstu_embedding_table_dim: int = 192,
+        hstu_preprocessor_hidden_dim: int = 256,
+        hstu_transducer_embedding_dim: int = 512,
+        hstu_group_norm: bool = False,
+        hstu_input_dropout_ratio: float = 0.2,
+        hstu_linear_dropout_rate: float = 0.2,
+        # --- Feature configs ---
+        contextual_feature_to_max_length: Optional[Dict[str, int]] = None,
+        contextual_feature_to_min_uih_length: Optional[Dict[str, int]] = None,
+        candidates_weight_feature_name: str = "",
+        candidates_watchtime_feature_name: str = "",
+        candidates_querytime_feature_name: str = "",
         user_embedding_feature_names: Optional[List[str]] = None,
         item_embedding_feature_names: Optional[List[str]] = None,
         uih_post_id_feature_name: str = "item_id",
+        uih_action_time_feature_name: str = "",
+        uih_weight_feature_name: str = "",
+        hstu_uih_feature_names: Optional[List[str]] = None,
+        hstu_candidate_feature_names: Optional[List[str]] = None,
+        merge_uih_candidate_feature_mapping: Optional[List[List[str]]] = None,
+        action_weights: Optional[List[int]] = None,
+        # --- vllm-GR specific (not in Meta DlrmHSTUConfig) ---
+        hash_size: int = 10_000_000,
         task_names: Optional[List[str]] = None,
         embedding_tables: Optional[List[Dict[str, Any]]] = None,
-        input_dropout_ratio: float = 0.2,
-        linear_dropout_rate: float = 0.2,
         is_inference: bool = True,
         is_text_encoder: bool = True,
         is_encoder_decoder: bool = False,
@@ -53,63 +72,73 @@ class HSTUConfig(PretrainedConfig):
         self.is_text_encoder = is_text_encoder
         self.is_encoder_decoder = is_encoder_decoder
 
-        self.num_layers = num_layers
-        self.num_heads = num_heads
-        self.embedding_dim = embedding_dim
-        self.attention_dim = attention_dim
-        self.hidden_dim = hidden_dim
-        self.embedding_table_dim = embedding_table_dim
-        self.preprocessor_hidden_dim = preprocessor_hidden_dim
-
         self.max_seq_len = max_seq_len
         self.max_num_candidates = max_num_candidates
+        self.max_num_candidates_inference = max_num_candidates_inference
 
-        self.hash_size = hash_size
-        self.feature_names = feature_names or ["user_id", "item_id", "item_candidate_id"]
+        self.hstu_num_heads = hstu_num_heads
+        self.hstu_attn_linear_dim = hstu_attn_linear_dim
+        self.hstu_attn_qk_dim = hstu_attn_qk_dim
+        self.hstu_attn_num_layers = hstu_attn_num_layers
+        self.hstu_embedding_table_dim = hstu_embedding_table_dim
+        self.hstu_preprocessor_hidden_dim = hstu_preprocessor_hidden_dim
+        self.hstu_transducer_embedding_dim = hstu_transducer_embedding_dim
+        self.hstu_group_norm = hstu_group_norm
+        self.hstu_input_dropout_ratio = hstu_input_dropout_ratio
+        self.hstu_linear_dropout_rate = hstu_linear_dropout_rate
+
+        self.contextual_feature_to_max_length = contextual_feature_to_max_length or {}
+        self.contextual_feature_to_min_uih_length = contextual_feature_to_min_uih_length or {}
+        self.candidates_weight_feature_name = candidates_weight_feature_name
+        self.candidates_watchtime_feature_name = candidates_watchtime_feature_name
+        self.candidates_querytime_feature_name = candidates_querytime_feature_name
+
         self.user_embedding_feature_names = user_embedding_feature_names or ["item_id"]
         self.item_embedding_feature_names = item_embedding_feature_names or ["item_candidate_id"]
         self.uih_post_id_feature_name = uih_post_id_feature_name
+        self.uih_action_time_feature_name = uih_action_time_feature_name
+        self.uih_weight_feature_name = uih_weight_feature_name
+        self.hstu_uih_feature_names = hstu_uih_feature_names or []
+        self.hstu_candidate_feature_names = hstu_candidate_feature_names or []
+        self.merge_uih_candidate_feature_mapping = merge_uih_candidate_feature_mapping or []
+        self.action_weights = action_weights or []
 
+        self.hash_size = hash_size
         self.task_names = task_names or ["is_click"]
         self.embedding_tables = embedding_tables or [
             {
                 "name": "item_embedding",
-                "embedding_dim": embedding_table_dim,
+                "embedding_dim": hstu_embedding_table_dim,
                 "num_embeddings": hash_size,
                 "feature_names": ["item_id", "item_candidate_id"],
             }
         ]
-
-        self.input_dropout_ratio = input_dropout_ratio
-        self.linear_dropout_rate = linear_dropout_rate
         self.is_inference = is_inference
 
 
-# Maps HSTU-native field names (embedding_dim, num_layers, …) to the
-# standard names that vLLM's ModelArchitectureConfig expects.
 class HSTUModelArchConfigConvertor(ModelArchConfigConvertorBase):
+    """Maps HSTUConfig fields to vLLM's ModelArchitectureConfig interface."""
 
     def get_hidden_size(self) -> int:
-        return getattr(self.hf_text_config, "embedding_dim", 0)
+        return self.hf_text_config.hstu_transducer_embedding_dim
 
     def get_num_hidden_layers(self) -> int:
-        return getattr(self.hf_text_config, "num_layers", 0)
+        return self.hf_text_config.hstu_attn_num_layers
 
     def get_total_num_attention_heads(self) -> int:
-        return getattr(self.hf_text_config, "num_heads", 0)
+        return self.hf_text_config.hstu_num_heads
 
     def get_head_size(self) -> int:
-        return getattr(self.hf_text_config, "attention_dim", 0)
+        return self.hf_text_config.hstu_attn_qk_dim
 
     def get_vocab_size(self) -> int:
-        return getattr(self.hf_text_config, "hash_size", 0)
+        return self.hf_text_config.hash_size
 
     def get_total_num_kv_heads(self) -> int:
         return 0  # attention-free
 
     def derive_max_model_len_and_key(self) -> tuple:
-        max_seq = getattr(self.hf_text_config, "max_seq_len", 1024)
-        return float(max_seq), "max_seq_len"
+        return float(self.hf_text_config.max_seq_len), "max_seq_len"
 
 
 # Registration ----------------------------------------------------------------

@@ -8,8 +8,8 @@ Inherits from vLLM EngineArgs to maintain compatibility while adding
 GR-specific parameters.
 """
 
-from dataclasses import dataclass, field
-from typing import Optional, List, Any, Dict
+from dataclasses import dataclass
+from typing import Optional, Any, Dict
 import os
 import json
 import glob
@@ -36,32 +36,18 @@ class GREngineArgs(EngineArgs):
         max_model_len: Maximum model length (maps to max_seq_len for GR)
         
     GR-specific parameters:
-        device: Inference device (cuda/cpu), None for auto-detect
-        embedding_path: Path to pretrained embeddings
         max_seq_len: Maximum user history sequence length
         max_candidates: Maximum number of candidate items
         default_top_k: Default number of recommendations to return
-        embedding_dim: Embedding vector dimension
-        hash_size: Embedding table hash size
-        load_model: Whether to load the model
-        num_layers: Number of HSTU layers
-        num_heads: Number of attention heads
-        hidden_dim: Hidden layer dimension
-        attention_dim: Attention dimension
-        use_scheduler: Whether to use scheduler
-        gr_max_batch_size: Maximum batch size for GR scheduler
-        scheduling_policy: Scheduling policy (fcfs, priority)
-        uih_feature_names: User history feature names
-        candidate_feature_names: Candidate feature names
+    
+    Feature names (uih, candidate, primary_id, task_names) are read
+    directly from HSTUConfig (hf_config), which is the single source of
+    truth.  Override via hf_overrides or config.json, not here.
+    
+    Model architecture parameters (num_layers, embedding_dim, etc.) live in
+    config.json / HSTUConfig and are loaded via hf_config, following vLLM's
+    convention.  They are NOT duplicated here.
     """
-    
-    # GR-specific: Device configuration
-    device: Optional[str] = None  # cuda, cpu, or None for auto-detect
-    
-    # GR-specific: Embedding configuration
-    embedding_path: Optional[str] = None
-    embedding_dim: int = 192
-    hash_size: int = 10_000_000
     
     # GR-specific: Sequence configuration
     max_seq_len: int = 512
@@ -70,31 +56,14 @@ class GREngineArgs(EngineArgs):
     # GR-specific: Output configuration
     default_top_k: int = 10
     
-    # GR-specific: Model loading
-    load_model: bool = True
-    
-    # GR-specific: HSTU architecture parameters
-    num_layers: int = 3
-    num_heads: int = 2
-    hidden_dim: int = 128
-    attention_dim: int = 64
-    
-    # GR-specific: Scheduler configuration
-    use_scheduler: bool = True
-    gr_max_batch_size: int = 32  # Renamed to avoid conflict with parent
-    scheduling_policy: str = "fcfs"
-    
-    # GR-specific: Feature configuration
-    # These names must match the keys in ItemInteraction / CandidateItem dicts
-    uih_feature_names: List[str] = field(
-        default_factory=lambda: ["item_id", "timestamp", "rating", "action_type"]
-    )
-    candidate_feature_names: List[str] = field(
-        default_factory=lambda: ["item_id", "category_id"]
-    )
+    # GR-specific: Dataset identifier (drives config overrides)
+    dataset: Optional[str] = None
     
     def __post_init__(self):
         """Post-init processing to ensure proper configuration."""
+        # Merge dataset overrides into hf_overrides (in-memory, never disk)
+        self._apply_dataset_overrides()
+
         # Ensure trust_remote_code is enabled for HSTU models
         if self._is_hstu_model():
             self.trust_remote_code = True
@@ -104,26 +73,18 @@ class GREngineArgs(EngineArgs):
             # Ensure skip_tokenizer_init since GR models don't use tokenizers
             self.skip_tokenizer_init = True
             # Use runner="pooling" for recommendation models (task is deprecated)
-            # This tells vLLM to use the pooling runner instead of generate runner
             self.runner = "pooling"
             # Use eager mode for GR models (no CUDA graph optimization needed)
             self.enforce_eager = True
             
             # CRITICAL: Disable prefix caching for attention-free models
             # HSTU models don't use KV cache, so prefix caching must be disabled.
-            # Without this, vLLM's KVCacheManager will fail with assertion error
-            # when kv_cache_groups is empty but enable_caching is True.
             self.enable_prefix_caching = False
             
             # CRITICAL: Inject GRWorker as the custom worker class.
-            # This ensures vLLM's EngineCore uses GRModelRunner instead
-            # of the default GPUModelRunner, enabling GR feature decoding
-            # and custom model forward logic.
-            # Following the vllm-omni pattern of worker_cls injection.
             self.worker_cls = "vllm_gr.worker.gr_worker.GRWorker"
             
             # Check if model has real weights, if not use dummy loader
-            # This allows EngineCore to work without real weight files
             if not self._has_model_weights():
                 self.load_format = "dummy"
                 logger.info("No model weights found, using dummy loader (random weights)")
@@ -152,28 +113,6 @@ class GREngineArgs(EngineArgs):
         
         return False
     
-    def to_gr_dict(self) -> Dict[str, Any]:
-        """Convert GR-specific parameters to dictionary."""
-        return {
-            "device": self.device,
-            "embedding_path": self.embedding_path,
-            "max_seq_len": self.max_seq_len,
-            "max_candidates": self.max_candidates,
-            "default_top_k": self.default_top_k,
-            "embedding_dim": self.embedding_dim,
-            "hash_size": self.hash_size,
-            "load_model": self.load_model,
-            "num_layers": self.num_layers,
-            "num_heads": self.num_heads,
-            "hidden_dim": self.hidden_dim,
-            "attention_dim": self.attention_dim,
-            "use_scheduler": self.use_scheduler,
-            "gr_max_batch_size": self.gr_max_batch_size,
-            "scheduling_policy": self.scheduling_policy,
-            "uih_feature_names": self.uih_feature_names,
-            "candidate_feature_names": self.candidate_feature_names,
-        }
-    
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "GREngineArgs":
         """Create from dictionary."""
@@ -199,12 +138,45 @@ class GREngineArgs(EngineArgs):
                     pass
         return True  # Default to HSTU
     
+    def _apply_dataset_overrides(self) -> None:
+        """Merge dataset-specific overrides into ``hf_overrides`` (in-memory).
+
+        Unlike the previous implementation that mutated ``config.json`` on
+        disk, this uses vLLM's ``hf_overrides`` mechanism so that overrides
+        are applied in-memory when HuggingFace loads the config.  This is
+        safe for concurrent processes and read-only model directories.
+
+        User-supplied ``hf_overrides`` take precedence over dataset defaults.
+        """
+        if not self.dataset:
+            return
+
+        from vllm_gr.config.dataset_configs import (
+            get_hstu_config_overrides,
+            get_embedding_table_overrides,
+        )
+
+        overrides = get_hstu_config_overrides(self.dataset)
+        tables = get_embedding_table_overrides(self.dataset)
+        if tables:
+            overrides["embedding_tables"] = tables
+
+        if isinstance(self.hf_overrides, dict):
+            merged = dict(overrides)
+            merged.update(self.hf_overrides)
+            self.hf_overrides = merged
+        elif self.hf_overrides is None:
+            self.hf_overrides = overrides
+        logger.info("Applied dataset=%s overrides via hf_overrides", self.dataset)
+
     def create_engine_config(self, usage_context=None):
         """
         Create engine configuration for GR models.
         
         Ensures HSTUConfig is registered with HuggingFace AutoConfig before
         calling the parent's create_engine_config() to use EngineCore.
+        Dataset overrides have already been merged into ``hf_overrides``
+        during ``__post_init__``.
         """
         # CRITICAL: Ensure HSTUConfig is registered BEFORE any config loading
         from vllm_gr.config.hstu_hf_config import ensure_hstu_config_registered
@@ -216,11 +188,4 @@ class GREngineArgs(EngineArgs):
         
         logger.info(f"Creating engine config for model: {self.model}")
         
-        # Call parent's implementation which will use EngineCore properly
-        vllm_config = super().create_engine_config(usage_context)
-        
-        # Ensure skip_tokenizer_init for GR (tokenizer not needed)
-        if hasattr(vllm_config, 'model_config') and vllm_config.model_config is not None:
-            vllm_config.model_config.skip_tokenizer_init = True
-        
-        return vllm_config
+        return super().create_engine_config(usage_context)

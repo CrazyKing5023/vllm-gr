@@ -24,22 +24,25 @@ class RecommendedItem:
     score: float
     rank: int
     features: dict[str, Any] | None = None
+    task_scores: dict[str, float] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "item_id": self.item_id,
             "score": self.score,
             "rank": self.rank,
             "features": self.features,
         }
+        if self.task_scores is not None:
+            result["task_scores"] = self.task_scores
+        return result
 
 
 class GRRequestOutput(PoolingRequestOutput):
     """Recommendation output extending PoolingRequestOutput.
 
     Adds recommendation-specific fields (user_id, ranked recommendations,
-    raw scores, user embedding) while remaining compatible with vLLM's
-    output pipeline.
+    raw scores) while remaining compatible with vLLM's output pipeline.
     """
 
     def __init__(
@@ -49,8 +52,6 @@ class GRRequestOutput(PoolingRequestOutput):
         recommendations: list[RecommendedItem] | None = None,
         finished: bool = True,
         all_scores: torch.Tensor | None = None,
-        user_embedding: torch.Tensor | None = None,
-        metrics: dict[str, Any] | None = None,
         prompt_token_ids: list[int] | None = None,
         num_cached_tokens: int = 0,
     ):
@@ -67,8 +68,6 @@ class GRRequestOutput(PoolingRequestOutput):
         self.user_id = user_id
         self.recommendations = recommendations or []
         self.all_scores = all_scores
-        self.user_embedding = user_embedding
-        self.metrics = metrics or {}
 
     def __repr__(self) -> str:
         return (
@@ -84,7 +83,6 @@ class GRRequestOutput(PoolingRequestOutput):
             "user_id": self.user_id,
             "recommendations": [item.to_dict() for item in self.recommendations],
             "finished": self.finished,
-            "metrics": self.metrics,
         }
 
     @property

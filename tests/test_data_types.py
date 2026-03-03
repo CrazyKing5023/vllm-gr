@@ -86,33 +86,6 @@ class TestGRPrompt(unittest.TestCase):
         self.assertFalse(is_gr_prompt({}))
 
 
-class TestItemInteraction(unittest.TestCase):
-    """Tests for ItemInteraction type"""
-    
-    def test_minimal_interaction(self):
-        """Test minimal ItemInteraction with only item_id"""
-        from vllm_gr.inputs.data import ItemInteraction
-        
-        interaction: ItemInteraction = {"item_id": 42}
-        self.assertEqual(interaction["item_id"], 42)
-    
-    def test_full_interaction(self):
-        """Test ItemInteraction with all optional fields"""
-        from vllm_gr.inputs.data import ItemInteraction
-        
-        interaction: ItemInteraction = {
-            "item_id": 42,
-            "timestamp": 1609459200,
-            "rating": 5,
-            "action_type": 2,
-            "category_id": 10,
-        }
-        
-        self.assertEqual(interaction["item_id"], 42)
-        self.assertEqual(interaction["timestamp"], 1609459200)
-        self.assertEqual(interaction["rating"], 5)
-
-
 class TestRecommendedItem(unittest.TestCase):
     """Tests for RecommendedItem output type"""
     
@@ -219,7 +192,6 @@ class TestGRRequestOutput(unittest.TestCase):
             request_id="req_003",
             user_id=123,
             recommendations=recommendations,
-            metrics={"latency_ms": 10.5},
         )
         
         d = output.to_dict()
@@ -227,7 +199,7 @@ class TestGRRequestOutput(unittest.TestCase):
         self.assertEqual(d["user_id"], 123)
         self.assertEqual(len(d["recommendations"]), 1)
         self.assertEqual(d["recommendations"][0]["item_id"], 1)
-        self.assertEqual(d["metrics"]["latency_ms"], 10.5)
+        self.assertNotIn("metrics", d)
     
     def test_gr_request_output_repr(self):
         """Test GRRequestOutput __repr__"""
@@ -251,13 +223,13 @@ class TestGRRequest(unittest.TestCase):
     def test_gr_request_without_features(self):
         """Test GRRequest creation without GR features"""
         from vllm_gr.request import GRRequest, is_gr_request
+        from vllm.pooling_params import PoolingParams
         
-        # GRRequest without gr_features behaves like a normal Request
         request = GRRequest(
             request_id="req1",
             prompt_token_ids=[1, 2, 3],
             sampling_params=None,
-            pooling_params=None,
+            pooling_params=PoolingParams(task="embed"),
             eos_token_id=None,
         )
         
@@ -269,12 +241,13 @@ class TestGRRequest(unittest.TestCase):
         """Test GRRequest creation with GR features"""
         from vllm_gr.request import GRRequest, is_gr_request
         from vllm_gr.engine import GRFeaturesPayload
+        from vllm.pooling_params import PoolingParams
         
         payload = GRFeaturesPayload(
             uih_keys=["item_id"],
             uih_values_per_key=[[1, 2, 3]],
             uih_lengths_per_key=[[1, 1, 1]],
-            cand_keys=["item_id"],
+            cand_keys=["item_candidate_id"],
             cand_values_per_key=[[10, 20]],
             cand_lengths_per_key=[[1, 1]],
             user_id="user_123",
@@ -286,7 +259,7 @@ class TestGRRequest(unittest.TestCase):
             request_id="req2",
             prompt_token_ids=[1, 2, 3],
             sampling_params=None,
-            pooling_params=None,
+            pooling_params=PoolingParams(task="embed"),
             eos_token_id=None,
         )
         
@@ -367,16 +340,12 @@ class TestModuleExports(unittest.TestCase):
     def test_inputs_submodule(self):
         """Test inputs submodule exports"""
         from vllm_gr.inputs import (
-            ItemInteraction,
-            CandidateItem,
             GRPrompt,
             is_gr_prompt,
         )
         
-        # All should be importable
-        self.assertIsNotNone(ItemInteraction)
-        self.assertIsNotNone(CandidateItem)
         self.assertIsNotNone(GRPrompt)
+        self.assertIsNotNone(is_gr_prompt)
 
 
 def run_all_tests():
@@ -389,7 +358,6 @@ def run_all_tests():
     suite = unittest.TestSuite()
     
     suite.addTests(loader.loadTestsFromTestCase(TestGRPrompt))
-    suite.addTests(loader.loadTestsFromTestCase(TestItemInteraction))
     suite.addTests(loader.loadTestsFromTestCase(TestRecommendedItem))
     suite.addTests(loader.loadTestsFromTestCase(TestGRRequestOutput))
     suite.addTests(loader.loadTestsFromTestCase(TestGRRequest))

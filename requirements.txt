@@ -23,10 +23,10 @@ opencv-python-headless>=4.13.0
 vllm==0.14.1
 
 # ============================================================
-# Optional: TorchRec for distributed embeddings
+# Required: TorchRec for embedding collection and KJT
 # ============================================================
-# torchrec==1.4.0
-# fbgemm-gpu
+torchrec==1.4.0
+fbgemm-gpu==1.4.0
 
 # ============================================================
 # Development dependencies

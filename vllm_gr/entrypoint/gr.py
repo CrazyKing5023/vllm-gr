@@ -9,7 +9,7 @@ GRPrompt inputs. Internally creates a GRLLMEngine (which has GR-specific
 processors) and drives the engine loop to collect GRRequestOutput results.
 """
 
-from typing import Any, Optional, Union, Sequence, List
+from typing import Optional, Union, Sequence, List
 import time
 import logging
 
@@ -38,54 +38,20 @@ class GRLLM(LLM):
     def __init__(
         self,
         model: str = "",
-        embedding_path: Optional[str] = None,
         max_seq_len: int = 512,
         max_candidates: int = 1000,
         default_top_k: int = 10,
         tensor_parallel_size: int = 1,
         gpu_memory_utilization: float = 0.9,
-        device: Optional[str] = None,
-        embedding_dim: int = 192,
-        hash_size: int = 10_000_000,
-        load_model: bool = True,
-        num_layers: int = 3,
-        num_heads: int = 2,
-        hidden_dim: int = 128,
-        attention_dim: int = 64,
-        uih_feature_names: Optional[List[str]] = None,
-        candidate_feature_names: Optional[List[str]] = None,
         **kwargs,
     ):
-        use_scheduler = kwargs.pop('use_scheduler', True)
-        max_batch_size = kwargs.pop('max_batch_size', 32)
-        scheduling_policy = kwargs.pop('scheduling_policy', 'fcfs')
-
         engine_args = GREngineArgs(
             model=model,
-            embedding_path=embedding_path,
             max_seq_len=max_seq_len,
             max_candidates=max_candidates,
             default_top_k=default_top_k,
             tensor_parallel_size=tensor_parallel_size,
             gpu_memory_utilization=gpu_memory_utilization,
-            device=device,
-            embedding_dim=embedding_dim,
-            hash_size=hash_size,
-            load_model=load_model,
-            num_layers=num_layers,
-            num_heads=num_heads,
-            hidden_dim=hidden_dim,
-            attention_dim=attention_dim,
-            use_scheduler=use_scheduler,
-            gr_max_batch_size=max_batch_size,
-            scheduling_policy=scheduling_policy,
-            uih_feature_names=(
-                uih_feature_names
-                or ["item_id", "timestamp", "rating", "action_type"]
-            ),
-            candidate_feature_names=(
-                candidate_feature_names or ["item_id", "category_id"]
-            ),
         )
 
         self.llm_engine = GRLLMEngine.from_engine_args(
@@ -133,9 +99,9 @@ class GRLLM(LLM):
         request_ids = [f"gr-{next(self.request_counter)}" for _ in prompts]
 
         for prompt, request_id in zip(prompts, request_ids):
-            num_recs = top_k or prompt.get("num_recommendations")
+            num_recs = top_k if top_k is not None else prompt.get("num_recommendations")
             if num_recs is not None:
-                prompt = dict(prompt, num_recommendations=num_recs)
+                prompt = dict(prompt, num_recommendations=int(num_recs))
 
             pooling_params = PoolingParams(task="embed")
             self.llm_engine.add_request(

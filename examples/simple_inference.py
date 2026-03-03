@@ -43,20 +43,10 @@ def main():
     print("=" * 60)
     
     # 1. Initialize GRLLM
-    # 
-    # Model Loading Modes:
-    # - Production: GRLLM(model="path/to/pretrained_model")
-    #   -> Loads config.json and weights from the directory
-    # 
-    # - Demo mode: GRLLM(model="path/to/demo-model")
-    #   -> Loads config.json for architecture parameters
-    #   -> Uses randomly initialized weights (no weights file present)
-    #   -> Useful for validating the complete inference pipeline
     #
-    # The demo-model directory contains:
-    # - config.json: Model architecture configuration
-    # - README.md: Documentation
-    # (No weights file - model will be randomly initialized)
+    # Model architecture (layers, heads, embedding_dim, etc.) comes from
+    # the model directory's config.json -- following the vLLM convention.
+    # GRLLM only accepts runtime/serving parameters (max_seq_len, top_k, etc.).
     
     print(f"\n[Model Path]")
     print(f"   Using demo model: {DEMO_MODEL_PATH}")
@@ -66,16 +56,6 @@ def main():
         max_seq_len=64,         # Override config for demo (smaller for speed)
         max_candidates=50,
         default_top_k=10,
-        # Override architecture for demo (smaller for speed)
-        embedding_dim=64,
-        hash_size=10000,
-        num_layers=2,
-        num_heads=2,
-        hidden_dim=64,
-        attention_dim=32,
-        # Scheduler configuration
-        max_batch_size=16,
-        scheduling_policy="fcfs",
     )
     
     print(f"\n[Configuration]")
@@ -101,23 +81,23 @@ def main():
             {"item_id": 1007, "timestamp": 1609977600, "rating": 4, "action_type": 1},  # Ex_Machina
         ],
         
-        # Candidate items to rank
+        # Candidate items to rank (keys use model-internal candidate names)
         "candidates": [
-            {"item_id": 2001, "category_id": 1},   # Tenet
-            {"item_id": 2002, "category_id": 1},   # Avatar
-            {"item_id": 2003, "category_id": 1},   # Edge_of_Tomorrow
-            {"item_id": 2004, "category_id": 1},   # District_9
-            {"item_id": 2005, "category_id": 1},   # Elysium
-            {"item_id": 2006, "category_id": 1},   # Gravity
-            {"item_id": 2007, "category_id": 1},   # The_Martian
-            {"item_id": 2008, "category_id": 1},   # Annihilation
-            {"item_id": 2009, "category_id": 1},   # Oblivion
-            {"item_id": 2010, "category_id": 1},   # Looper
-            {"item_id": 2011, "category_id": 1},   # Moon
-            {"item_id": 2012, "category_id": 1},   # Sunshine
-            {"item_id": 2013, "category_id": 1},   # Source_Code
-            {"item_id": 2014, "category_id": 1},   # Prometheus
-            {"item_id": 2015, "category_id": 1},   # Midnight_Sky
+            {"item_candidate_id": 2001},   # Tenet
+            {"item_candidate_id": 2002},   # Avatar
+            {"item_candidate_id": 2003},   # Edge_of_Tomorrow
+            {"item_candidate_id": 2004},   # District_9
+            {"item_candidate_id": 2005},   # Elysium
+            {"item_candidate_id": 2006},   # Gravity
+            {"item_candidate_id": 2007},   # The_Martian
+            {"item_candidate_id": 2008},   # Annihilation
+            {"item_candidate_id": 2009},   # Oblivion
+            {"item_candidate_id": 2010},   # Looper
+            {"item_candidate_id": 2011},   # Moon
+            {"item_candidate_id": 2012},   # Sunshine
+            {"item_candidate_id": 2013},   # Source_Code
+            {"item_candidate_id": 2014},   # Prometheus
+            {"item_candidate_id": 2015},   # Midnight_Sky
         ],
         
         # Optional: override default top_k

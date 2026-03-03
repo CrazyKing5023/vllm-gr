@@ -23,7 +23,7 @@ from vllm_gr.model_executor.models.registry import register_gr_models_to_vllm
 register_gr_models_to_vllm()
 
 # Public API
-from vllm_gr.inputs.data import ItemInteraction, CandidateItem, GRPrompt, is_gr_prompt
+from vllm_gr.inputs.data import GRPrompt, is_gr_prompt
 from vllm_gr.outputs import RecommendedItem, GRRequestOutput
 from vllm_gr.request import GRRequest, is_gr_request
 from vllm_gr.engine import GRFeaturesPayload, GREngineCoreRequest
@@ -42,8 +42,6 @@ __all__ = [
     "__version__",
     "HSTUConfig",
     "ensure_hstu_config_registered",
-    "ItemInteraction",
-    "CandidateItem",
     "GRPrompt",
     "is_gr_prompt",
     "RecommendedItem",

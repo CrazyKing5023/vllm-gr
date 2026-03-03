@@ -1,11 +1,11 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-# Ported to vllm-GR with modifications.
+# Ported to vllm-GR — restored to match original generative-recommenders interface.
 # Licensed under the Apache License, Version 2.0
 
 """
 DlrmHSTU Main Model Class
 
-Generative recommendation model based on HSTU (Hierarchical Sequential Transducer Unit) architecture.
+Generative recommendation model based on HSTU (Hierarchical Sequential Transducer Unit).
 Supports multi-task prediction and user-item interaction modeling.
 """
 
@@ -15,6 +15,9 @@ from typing import Dict, List, NamedTuple, Optional, Tuple
 
 import torch
 from torch.autograd.profiler import record_function
+from torchrec.modules.embedding_configs import EmbeddingConfig
+from torchrec.modules.embedding_modules import EmbeddingCollection
+from torchrec.sparse.jagged_tensor import KeyedJaggedTensor
 
 from vllm_gr.models.dlrm_v3.common import (
     HammerModule,
@@ -41,6 +44,18 @@ from vllm_gr.ops.layer_norm import LayerNorm, SwishLayerNorm
 
 
 logger: logging.Logger = logging.getLogger(__name__)
+
+
+def _cumsum(lengths: torch.Tensor) -> torch.Tensor:
+    """Compute inclusive prefix-sum with leading zero (complete cumsum)."""
+    try:
+        return torch.ops.fbgemm.asynchronous_complete_cumsum(lengths)
+    except (RuntimeError, AttributeError):
+        cumsum = torch.zeros(
+            lengths.size(0) + 1, dtype=lengths.dtype, device=lengths.device
+        )
+        torch.cumsum(lengths, dim=0, out=cumsum[1:])
+        return cumsum
 
 
 class SequenceEmbedding(NamedTuple):
@@ -84,7 +99,6 @@ class DlrmHSTUConfig:
     action_embedding_init_std: float = 0.1
     enable_postprocessor: bool = True
     use_layer_norm_postprocessor: bool = False
-    context_feature_names: List[str] = field(default_factory=lambda: ["query_id", "scenario_id"])
 
 
 def _get_supervision_labels_and_weights(
@@ -95,7 +109,7 @@ def _get_supervision_labels_and_weights(
     """Extract supervision labels and weights for each task."""
     supervision_labels: Dict[str, torch.Tensor] = {}
     supervision_weights: Dict[str, torch.Tensor] = {}
-    
+
     for task in task_configs:
         if task.task_type == MultitaskTaskType.REGRESSION:
             supervision_labels[task.task_name] = watchtime_sequence.to(torch.float32)
@@ -105,38 +119,45 @@ def _get_supervision_labels_and_weights(
             ).to(torch.float32)
         else:
             raise RuntimeError("Unsupported MultitaskTaskType")
-    
+
     return supervision_labels, supervision_weights
 
 
 class DlrmHSTU(HammerModule):
     """
-    DLRM_v3 HSTU Model
-    
-    Generative recommendation model based on Hierarchical Sequential Transducer Unit.
-    Supports sparse-dense separation, causal attention, target-aware attention, and multi-task learning.
+    DLRM_v3 HSTU Model.
+
+    Restored to match original generative-recommenders interface:
+    - __init__ accepts embedding_tables and creates EmbeddingCollection
+    - preprocess() merges KJTs and performs embedding lookup
+    - forward() accepts KeyedJaggedTensor inputs
     """
-    
+
     def __init__(
         self,
         hstu_configs: DlrmHSTUConfig,
-        embedding_collection: Optional[torch.nn.Module] = None,
+        embedding_tables: Dict[str, EmbeddingConfig],
         is_inference: bool = True,
         is_dense: bool = False,
         bf16_training: bool = True,
     ) -> None:
         super().__init__(is_inference=is_inference)
         logger.info(f"Initialize HSTU module with configs {hstu_configs}")
-        
+
         self._hstu_configs = hstu_configs
         self._bf16_training: bool = bf16_training
         set_static_max_seq_lens([self._hstu_configs.max_seq_len])
 
-        # Embedding collection (optional, can be managed externally)
-        self._embedding_collection = embedding_collection
-        self._is_dense = is_dense
+        if not is_dense:
+            # Use "cpu" instead of original Meta's "meta" device — vLLM's
+            # DummyModelLoader needs real-device parameters for initialization,
+            # and vLLM handles GPU placement during its own loading flow.
+            self._embedding_collection: EmbeddingCollection = EmbeddingCollection(
+                tables=list(embedding_tables.values()),
+                need_indices=False,
+                device=torch.device("cpu"),
+            )
 
-        # Multitask module
         self._multitask_configs: List[TaskConfig] = hstu_configs.multitask_configs
         if self._multitask_configs:
             self._multitask_module = DefaultMultitaskModule(
@@ -153,8 +174,15 @@ class DlrmHSTU(HammerModule):
         else:
             self._multitask_module = None
 
-        # Preprocessor: context features from GRPrompt.context
-        additional_embedding_features = list(hstu_configs.context_feature_names)
+        self._additional_embedding_features: List[str] = [
+            uih_name
+            for uih_name, cand_name
+            in self._hstu_configs.merge_uih_candidate_feature_mapping
+            if (cand_name in self._hstu_configs.item_embedding_feature_names
+                and uih_name in self._hstu_configs.user_embedding_feature_names
+                and uih_name != self._hstu_configs.uih_post_id_feature_name)
+        ]
+
         preprocessor = ContextualPreprocessor(
             input_embedding_dim=hstu_configs.hstu_embedding_table_dim,
             hidden_dim=hstu_configs.hstu_preprocessor_hidden_dim,
@@ -164,21 +192,21 @@ class DlrmHSTU(HammerModule):
             action_embedding_dim=8,
             action_feature_name=self._hstu_configs.uih_weight_feature_name,
             action_weights=self._hstu_configs.action_weights,
-            additional_embedding_features=additional_embedding_features,
+            additional_embedding_features=self._additional_embedding_features,
             action_embedding_init_std=self._hstu_configs.action_embedding_init_std,
             is_inference=is_inference,
         )
 
-        # Positional encoder
         positional_encoder = HSTUPositionalEncoder(
             num_position_buckets=8192,
             num_time_buckets=2048,
             embedding_dim=hstu_configs.hstu_transducer_embedding_dim,
-            contextual_seq_len=sum(dict(hstu_configs.contextual_feature_to_max_length).values()),
+            contextual_seq_len=sum(
+                dict(hstu_configs.contextual_feature_to_max_length).values()
+            ),
             is_inference=self._is_inference,
         )
 
-        # Postprocessor
         if hstu_configs.enable_postprocessor:
             if hstu_configs.use_layer_norm_postprocessor:
                 postprocessor = LayerNormPostprocessor(
@@ -190,8 +218,8 @@ class DlrmHSTU(HammerModule):
                 postprocessor = TimestampLayerNormPostprocessor(
                     embedding_dim=hstu_configs.hstu_transducer_embedding_dim,
                     time_duration_features=[
-                        (60 * 60, 24),  # hour of day
-                        (24 * 60 * 60, 7),  # day of week
+                        (60 * 60, 24),
+                        (24 * 60 * 60, 7),
                     ],
                     eps=1e-5,
                     is_inference=self._is_inference,
@@ -199,7 +227,6 @@ class DlrmHSTU(HammerModule):
         else:
             postprocessor = None
 
-        # Construct HSTU (STU stack)
         stu_module: STU = STUStack(
             stu_list=[
                 STULayer(
@@ -227,7 +254,6 @@ class DlrmHSTU(HammerModule):
             is_inference=is_inference,
         )
 
-        # HSTU Transducer
         self._hstu_transducer: HSTUTransducer = HSTUTransducer(
             stu_module=stu_module,
             input_preprocessor=preprocessor,
@@ -239,7 +265,6 @@ class DlrmHSTU(HammerModule):
             listwise=False,
         )
 
-        # Item embedding MLP
         num_item_features = len(self._hstu_configs.item_embedding_feature_names) or 1
         self._item_embedding_mlp: torch.nn.Module = torch.nn.Sequential(
             torch.nn.Linear(
@@ -254,47 +279,150 @@ class DlrmHSTU(HammerModule):
             LayerNorm(hstu_configs.hstu_transducer_embedding_dim),
         ).apply(init_mlp_weights_optional_bias)
 
+    # =========================================================================
+    # preprocess: KJT merge → EmbeddingCollection → payload + seq_embeddings
+    # =========================================================================
+
+    def preprocess(
+        self,
+        uih_features: KeyedJaggedTensor,
+        candidates_features: KeyedJaggedTensor,
+    ) -> Tuple[
+        Dict[str, SequenceEmbedding],
+        Dict[str, torch.Tensor],
+        int,
+        torch.Tensor,
+        int,
+        torch.Tensor,
+    ]:
+        """Merge KJTs, run EmbeddingCollection, extract payload and seq_embeddings."""
+        merged_sparse_features = KeyedJaggedTensor.from_lengths_sync(
+            keys=uih_features.keys() + candidates_features.keys(),
+            values=torch.cat(
+                [uih_features.values(), candidates_features.values()], dim=0,
+            ),
+            lengths=torch.cat(
+                [uih_features.lengths(), candidates_features.lengths()], dim=0,
+            ),
+        )
+        seq_embeddings_dict = self._embedding_collection(merged_sparse_features)
+
+        num_candidates = fx_mark_length_features(
+            candidates_features.lengths().view(
+                len(candidates_features.keys()), -1)
+        )[0]
+        max_num_candidates = fx_infer_max_len(num_candidates)
+        uih_seq_lengths = uih_features[
+            self._hstu_configs.uih_post_id_feature_name
+        ].lengths()
+        max_uih_len = fx_infer_max_len(uih_seq_lengths)
+
+        payload_features: Dict[str, torch.Tensor] = {}
+        uih_keys_set = set(uih_features.keys())
+        cand_keys_set = set(candidates_features.keys())
+        device = uih_features.values().device
+
+        for (
+            uih_feature_name,
+            candidate_feature_name,
+        ) in self._hstu_configs.merge_uih_candidate_feature_mapping:
+            if (
+                candidate_feature_name
+                not in self._hstu_configs.item_embedding_feature_names
+                and uih_feature_name
+                not in self._hstu_configs.user_embedding_feature_names
+            ):
+                if uih_feature_name in uih_keys_set:
+                    values_left = uih_features[uih_feature_name].values()
+                elif self._is_inference:
+                    total_uih = int(uih_seq_lengths.sum().item())
+                    values_left = torch.zeros(
+                        total_uih, dtype=torch.int64, device=device,
+                    )
+                else:
+                    values_left = uih_features[uih_feature_name].values()
+
+                if candidate_feature_name in cand_keys_set:
+                    values_right = candidates_features[
+                        candidate_feature_name
+                    ].values()
+                elif self._is_inference:
+                    total_candidates = int(torch.sum(num_candidates).item())
+                    values_right = torch.zeros(
+                        total_candidates, dtype=torch.int64, device=device,
+                    )
+                else:
+                    values_right = candidates_features[
+                        candidate_feature_name
+                    ].values()
+                payload_features[uih_feature_name] = values_left
+                payload_features[candidate_feature_name] = values_right
+
+        payload_features["uih_offsets"] = _cumsum(uih_seq_lengths)
+        payload_features["candidate_offsets"] = _cumsum(num_candidates)
+
+        target_dtype = self._item_embedding_mlp[0].weight.dtype
+        seq_embeddings = {
+            k: SequenceEmbedding(
+                lengths=seq_embeddings_dict[k].lengths(),
+                embedding=seq_embeddings_dict[k].values().to(target_dtype),
+            )
+            for k in (self._hstu_configs.user_embedding_feature_names
+                      + self._hstu_configs.item_embedding_feature_names)
+        }
+
+        return (
+            seq_embeddings,
+            payload_features,
+            max_uih_len,
+            uih_seq_lengths,
+            max_num_candidates,
+            num_candidates,
+        )
+
+    # =========================================================================
+    # _construct_payload: add contextual + additional embeddings to payload
+    # =========================================================================
+
+    def _construct_payload(
+        self,
+        payload_features: Dict[str, torch.Tensor],
+        seq_embeddings: Dict[str, SequenceEmbedding],
+    ) -> Dict[str, torch.Tensor]:
+        if len(self._hstu_configs.contextual_feature_to_max_length) > 0:
+            contextual_offsets: List[torch.Tensor] = []
+            for x in self._hstu_configs.contextual_feature_to_max_length.keys():
+                contextual_offsets.append(_cumsum(seq_embeddings[x].lengths))
+        else:
+            contextual_offsets = []  # type: ignore[assignment]
+
+        result = {**payload_features}
+        for x in self._hstu_configs.contextual_feature_to_max_length.keys():
+            result[x] = seq_embeddings[x].embedding
+        for i, x in enumerate(
+            list(self._hstu_configs.contextual_feature_to_max_length.keys())
+        ):
+            if contextual_offsets:
+                result[x + "_offsets"] = contextual_offsets[i]
+        for x in self._additional_embedding_features:
+            result[x] = seq_embeddings[x].embedding
+        return result
+
+    # =========================================================================
+    # _item_forward / _user_forward
+    # =========================================================================
+
     def _item_forward(
         self,
         seq_embeddings: Dict[str, SequenceEmbedding],
     ) -> torch.Tensor:
-        """Compute item embeddings from features.
-        
-        This method concatenates embeddings from all item_embedding_feature_names
-        and passes them through the item_embedding_mlp.
-        
-        Note: In the original generative-recommenders implementation, this method
-        expects all item_embedding_feature_names to be present in seq_embeddings.
-        The caller (HSTUForRecommendation) must ensure this by populating
-        seq_embeddings correctly.
-        """
-        # Collect embeddings for item features
-        item_feature_names = self._hstu_configs.item_embedding_feature_names
-        
-        if not item_feature_names:
-            # Fallback: if no item features configured, use first available embedding
-            first_key = next(iter(seq_embeddings.keys()))
-            return self._item_embedding_mlp(seq_embeddings[first_key].embedding)
-        
-        # Collect available embeddings
-        available_embeddings = [
-            seq_embeddings[name].embedding
-            for name in item_feature_names
-            if name in seq_embeddings
-        ]
-        
-        if not available_embeddings:
-            # Fallback: if none of the configured item features are available,
-            # use first available embedding and log warning
-            logger.warning(
-                f"None of the configured item_embedding_feature_names {item_feature_names} "
-                f"are present in seq_embeddings (keys: {list(seq_embeddings.keys())}). "
-                f"Falling back to first available embedding."
-            )
-            first_key = next(iter(seq_embeddings.keys()))
-            return self._item_embedding_mlp(seq_embeddings[first_key].embedding)
-        
-        all_embeddings = torch.cat(available_embeddings, dim=-1)
+        all_embeddings = torch.cat(
+            [
+                seq_embeddings[name].embedding
+                for name in self._hstu_configs.item_embedding_feature_names
+            ],
+            dim=-1,
+        )
         return self._item_embedding_mlp(all_embeddings)
 
     def _user_forward(
@@ -304,30 +432,35 @@ class DlrmHSTU(HammerModule):
         seq_embeddings: Dict[str, SequenceEmbedding],
         payload_features: Dict[str, torch.Tensor],
         num_candidates: torch.Tensor,
-        seq_timestamps: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Compute user embeddings using HSTU transducer."""
-        source_key = self._hstu_configs.uih_post_id_feature_name
-        if not source_key or source_key not in seq_embeddings:
-            source_key = next(iter(seq_embeddings.keys()))
-        
-        source_lengths = seq_embeddings[source_key].lengths
-        embedding = seq_embeddings[source_key].embedding
-        total_targets = int(num_candidates.sum().item())
-        total_len = embedding.size(0)
+        source_lengths = seq_embeddings[
+            self._hstu_configs.uih_post_id_feature_name
+        ].lengths
 
-        # Use provided timestamps when available (P0 fix), else zeros
-        if seq_timestamps is not None and seq_timestamps.numel() == total_len:
-            source_timestamps = seq_timestamps.to(embedding.device)
-        else:
-            source_timestamps = torch.zeros(
-                total_len, device=embedding.device, dtype=torch.float32
-            )
-        
+        source_timestamps = concat_2D_jagged(
+            max_seq_len=max_uih_len + max_candidates,
+            max_len_left=max_uih_len,
+            offsets_left=payload_features["uih_offsets"],
+            values_left=payload_features[
+                self._hstu_configs.uih_action_time_feature_name
+            ].unsqueeze(-1),
+            max_len_right=max_candidates,
+            offsets_right=payload_features["candidate_offsets"],
+            values_right=payload_features[
+                self._hstu_configs.candidates_querytime_feature_name
+            ].unsqueeze(-1),
+            kernel=self.hammer_kernel(),
+        ).squeeze(-1)
+
+        total_targets = int(num_candidates.sum().item())
+        embedding = seq_embeddings[
+            self._hstu_configs.uih_post_id_feature_name
+        ].embedding
         dtype = embedding.dtype
+
         if (not self.is_inference) and self._bf16_training:
             embedding = embedding.to(torch.bfloat16)
-        
+
         with torch.autocast(
             "cuda",
             dtype=torch.bfloat16,
@@ -341,11 +474,18 @@ class DlrmHSTU(HammerModule):
                 seq_embeddings=embedding,
                 seq_lengths=source_lengths,
                 seq_timestamps=source_timestamps,
-                seq_payloads=payload_features,
+                seq_payloads=self._construct_payload(
+                    payload_features=payload_features,
+                    seq_embeddings=seq_embeddings,
+                ),
                 num_targets=num_candidates,
             )
-        
+
         return candidates_user_embeddings.to(dtype)
+
+    # =========================================================================
+    # main_forward: merge UIH+candidate embeddings, then item/user/multitask
+    # =========================================================================
 
     def main_forward(
         self,
@@ -355,7 +495,6 @@ class DlrmHSTU(HammerModule):
         uih_seq_lengths: torch.Tensor,
         max_num_candidates: int,
         num_candidates: torch.Tensor,
-        seq_timestamps: Optional[torch.Tensor] = None,
     ) -> Tuple[
         torch.Tensor,
         torch.Tensor,
@@ -364,10 +503,30 @@ class DlrmHSTU(HammerModule):
         Optional[torch.Tensor],
         Optional[torch.Tensor],
     ]:
-        """Main forward computation."""
+        for (
+            uih_feature_name,
+            candidate_feature_name,
+        ) in self._hstu_configs.merge_uih_candidate_feature_mapping:
+            if uih_feature_name in seq_embeddings:
+                seq_embeddings[uih_feature_name] = SequenceEmbedding(
+                    lengths=uih_seq_lengths + num_candidates,
+                    embedding=concat_2D_jagged(
+                        max_seq_len=max_uih_len + max_num_candidates,
+                        max_len_left=max_uih_len,
+                        offsets_left=_cumsum(uih_seq_lengths),
+                        values_left=seq_embeddings[uih_feature_name].embedding,
+                        max_len_right=max_num_candidates,
+                        offsets_right=_cumsum(num_candidates),
+                        values_right=seq_embeddings[
+                            candidate_feature_name
+                        ].embedding,
+                        kernel=self.hammer_kernel(),
+                    ),
+                )
+
         with record_function("## item_forward ##"):
             candidates_item_embeddings = self._item_forward(seq_embeddings)
-        
+
         with record_function("## user_forward ##"):
             candidates_user_embeddings = self._user_forward(
                 max_uih_len=max_uih_len,
@@ -375,28 +534,45 @@ class DlrmHSTU(HammerModule):
                 seq_embeddings=seq_embeddings,
                 payload_features=payload_features,
                 num_candidates=num_candidates,
-                seq_timestamps=seq_timestamps,
             )
-        
+
         with record_function("## multitask_module ##"):
             if self._multitask_module is not None:
+                if self._is_inference:
+                    supervision_labels: Dict[str, torch.Tensor] = {}
+                    supervision_weights: Dict[str, torch.Tensor] = {}
+                else:
+                    supervision_labels, supervision_weights = (
+                        _get_supervision_labels_and_weights(
+                            supervision_bitmasks=payload_features[
+                                self._hstu_configs.candidates_weight_feature_name
+                            ],
+                            watchtime_sequence=payload_features[
+                                self._hstu_configs.candidates_watchtime_feature_name
+                            ],
+                            task_configs=self._multitask_configs,
+                        )
+                    )
                 mt_target_preds, mt_target_labels, mt_target_weights, mt_losses = (
                     self._multitask_module(
                         encoded_user_embeddings=candidates_user_embeddings,
                         item_embeddings=candidates_item_embeddings,
-                        supervision_labels={},
-                        supervision_weights={},
+                        supervision_labels=supervision_labels,
+                        supervision_weights=supervision_weights,
                     )
                 )
             else:
-                # Simple dot product scoring
-                mt_target_preds = (candidates_user_embeddings * candidates_item_embeddings).sum(dim=-1, keepdim=True)
-                mt_target_preds = mt_target_preds.t()  # (1, L)
+                mt_target_preds = (
+                    candidates_user_embeddings * candidates_item_embeddings
+                ).sum(dim=-1, keepdim=True).t()
                 mt_target_labels = None
                 mt_target_weights = None
                 mt_losses = None
 
         aux_losses: Dict[str, torch.Tensor] = {}
+        if not self._is_inference and self.training and mt_losses is not None:
+            for i, task in enumerate(self._multitask_configs):
+                aux_losses[task.task_name] = mt_losses[i]
 
         return (
             candidates_user_embeddings,
@@ -407,14 +583,14 @@ class DlrmHSTU(HammerModule):
             mt_target_weights,
         )
 
+    # =========================================================================
+    # forward: KJT → preprocess → main_forward
+    # =========================================================================
+
     def forward(
         self,
-        seq_embeddings: Dict[str, SequenceEmbedding],
-        num_candidates: torch.Tensor,
-        max_uih_len: Optional[int] = None,
-        max_num_candidates: Optional[int] = None,
-        seq_timestamps: Optional[torch.Tensor] = None,
-        payload_features: Optional[Dict[str, torch.Tensor]] = None,
+        uih_features: KeyedJaggedTensor,
+        candidates_features: KeyedJaggedTensor,
     ) -> Tuple[
         torch.Tensor,
         torch.Tensor,
@@ -423,33 +599,24 @@ class DlrmHSTU(HammerModule):
         Optional[torch.Tensor],
         Optional[torch.Tensor],
     ]:
-        """
-        Forward pass of DLRM HSTU model.
-        
-        Args:
-            seq_embeddings: Dictionary of sequence embeddings
-            num_candidates: Number of candidates per batch element
-            max_uih_len: Maximum UIH length (computed if not provided)
-            max_num_candidates: Maximum candidates (computed if not provided)
-        
-        Returns:
-            (user_embeddings, item_embeddings, aux_losses, predictions, labels, weights)
-        """
-        # Get first sequence to compute lengths
-        first_key = next(iter(seq_embeddings.keys()))
-        uih_seq_lengths = seq_embeddings[first_key].lengths
-        
-        if max_uih_len is None:
-            max_uih_len = fx_infer_max_len(uih_seq_lengths)
-        if max_num_candidates is None:
-            max_num_candidates = fx_infer_max_len(num_candidates)
-        
+        with record_function("## preprocess ##"):
+            (
+                seq_embeddings,
+                payload_features,
+                max_uih_len,
+                uih_seq_lengths,
+                max_num_candidates,
+                num_candidates,
+            ) = self.preprocess(
+                uih_features=uih_features,
+                candidates_features=candidates_features,
+            )
+
         with record_function("## main_forward ##"):
             return self.main_forward(
                 seq_embeddings=seq_embeddings,
-                payload_features=payload_features if payload_features is not None else {},
+                payload_features=payload_features,
                 max_uih_len=max_uih_len,
-                seq_timestamps=seq_timestamps,
                 uih_seq_lengths=uih_seq_lengths,
                 max_num_candidates=max_num_candidates,
                 num_candidates=num_candidates,
