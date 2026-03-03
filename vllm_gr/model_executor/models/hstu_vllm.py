@@ -400,7 +400,7 @@ class HSTUForRecommendation(nn.Module):
             total_tokens = input_ids.numel() if input_ids is not None else 1
             hidden_dim = self.config.embedding_dim
             device = input_ids.device if input_ids is not None else self._get_device()
-            logger.debug(
+            logger.warning(
                 f"forward() called without GR inputs, returning dummy "
                 f"hidden_states shape: ({total_tokens}, {hidden_dim})"
             )

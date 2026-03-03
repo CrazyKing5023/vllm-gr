@@ -240,7 +240,10 @@ class GRModelRunner(GPUModelRunner):
                 )
                 uih_embeds = torch.zeros(uih_len, embed_dim, device=device)
                 cand_embeds = torch.zeros(n_cand, embed_dim, device=device)
-
+                logger.warning(
+                    f"Failed to lookup embeddings for request : {req_id}."
+                    f"Using zero embeddings as fallback."
+                )
             all_uih_embeddings.append(uih_embeds)
             all_uih_lengths.append(uih_len)
             all_cand_embeddings.append(cand_embeds)
