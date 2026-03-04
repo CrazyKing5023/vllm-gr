@@ -6,6 +6,11 @@ GRWorker — extends GPUWorker to use GRModelRunner.
 
 Injected via worker_cls in GREngineArgs so vLLM's EngineCore
 instantiates this worker instead of the default GPUWorker.
+
+The vllm-GR plugin (registered via entry_points) applies monkey-patches
+in every process via load_general_plugins().  The re_apply_patches()
+call in init_device() is a defense-in-depth measure that catches any
+vLLM modules loaded after the initial plugin execution.
 """
 
 import logging
@@ -22,9 +27,12 @@ class GRWorker(GPUWorker):
     def init_device(self):
         super().init_device()
 
+        # Defense-in-depth: re-apply patches to cover any vLLM modules
+        # loaded after the plugin's initial patch in load_general_plugins().
+        from vllm_gr.patch import re_apply_patches
+        re_apply_patches()
+
         from vllm_gr.worker.gr_model_runner import GRModelRunner
         self.model_runner = GRModelRunner(self.vllm_config, self.device)
 
-        logger.info(
-            f"GRWorker: using GRModelRunner on device {self.device}"
-        )
+        logger.info("GRWorker: using GRModelRunner on device %s", self.device)
