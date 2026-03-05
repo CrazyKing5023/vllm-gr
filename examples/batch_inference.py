@@ -31,33 +31,35 @@ DEMO_MODEL_PATH = os.path.join(SCRIPT_DIR, "demo-model")
 
 
 def generate_sample_prompts(num_users: int, seq_length: int, num_candidates: int) -> List[GRPrompt]:
-    """
-    Generate sample GRPrompt requests for testing.
-    
-    Args:
-        num_users: Number of users/requests to generate
-        seq_length: Length of user history per user
-        num_candidates: Number of candidates per user
-    
-    Returns:
-        List of GRPrompt dictionaries
+    """Generate sample GRPrompt requests for testing.
+
+    Uses the default demo-model feature names: item_id, timestamp, rating,
+    action_type for UIH; item_candidate_id for candidates.
+
+    All feature values are pre-processed embedding indices and must satisfy
+    0 <= value < num_embeddings (10000 for the demo-model item_embedding table).
     """
     prompts: List[GRPrompt] = []
-    
+
     for i in range(num_users):
         prompt: GRPrompt = {
             "user_id": f"user_{i:05d}",
             "user_history": [
-                {"item_id": i * 1000 + j, "timestamp": 1609459200 + j * 3600}
+                {
+                    "item_id": (i * 100 + j) % 10000,
+                    "timestamp": 1609459200 + j * 3600,
+                    "rating": (j % 5) + 1,
+                    "action_type": j % 3,
+                }
                 for j in range(seq_length)
             ],
             "candidates": [
-                {"item_id": i * 10000 + k}
+                {"item_candidate_id": 5000 + (i * 30 + k) % 5000}
                 for k in range(num_candidates)
             ],
         }
         prompts.append(prompt)
-    
+
     return prompts
 
 
@@ -87,16 +89,6 @@ def main():
         max_seq_len=64,         # Override config for demo (smaller for speed)
         max_candidates=50,
         default_top_k=5,
-        # Override architecture for demo (smaller for speed)
-        embedding_dim=64,
-        hash_size=10000,
-        num_layers=2,
-        num_heads=2,
-        hidden_dim=64,
-        attention_dim=32,
-        # Scheduler configuration
-        max_batch_size=8,
-        scheduling_policy="fcfs",
     )
     
     print(f"\n[GRLLM Initialized]")

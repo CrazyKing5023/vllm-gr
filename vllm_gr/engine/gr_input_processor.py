@@ -39,9 +39,6 @@ class GRInputProcessor(InputProcessor):
     parent implementation.
     """
 
-    DEFAULT_UIH_KEYS = ["item_id", "timestamp", "rating", "action_type"]
-    DEFAULT_CAND_KEYS = ["item_id", "category_id"]
-
     def __init__(
         self,
         vllm_config: VllmConfig,
@@ -49,16 +46,20 @@ class GRInputProcessor(InputProcessor):
         mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
         max_seq_len: int = 512,
         max_candidates: int = 1000,
+        default_top_k: int = 10,
         uih_feature_names: list[str] | None = None,
         candidate_feature_names: list[str] | None = None,
+        primary_id_feature_name: str | None = None,
     ):
         super().__init__(vllm_config, tokenizer, mm_registry)
         self.max_seq_len = max_seq_len
         self.max_candidates = max_candidates
-        self.uih_feature_names = uih_feature_names or self.DEFAULT_UIH_KEYS
+        self.default_top_k = default_top_k
+        self.uih_feature_names = uih_feature_names or ["item_id"]
         self.candidate_feature_names = (
-            candidate_feature_names or self.DEFAULT_CAND_KEYS
+            candidate_feature_names or ["item_candidate_id"]
         )
+        self.primary_id_feature_name = primary_id_feature_name or "item_id"
 
     def process_inputs(
         self,
@@ -124,7 +125,11 @@ class GRInputProcessor(InputProcessor):
         user_id = str(prompt.get("user_id", ""))
         user_history = prompt.get("user_history", [])
         candidates = prompt.get("candidates", [])
-        num_recommendations = prompt.get("num_recommendations", 10)
+        raw_num_recs = prompt.get("num_recommendations")
+        num_recommendations = (
+            int(raw_num_recs) if raw_num_recs is not None and raw_num_recs > 0
+            else self.default_top_k
+        )
 
         recent_history = user_history[-self.max_seq_len:]
         limited_candidates = candidates[:self.max_candidates]
@@ -136,8 +141,15 @@ class GRInputProcessor(InputProcessor):
             self._extract_features(limited_candidates, self.candidate_feature_names)
         )
 
-        # P3: extract context from GRPrompt when present
         context = prompt.get("context") or {}
+        ctx_keys = sorted(context.keys())
+        try:
+            ctx_values_per_key = [[int(context[k])] for k in ctx_keys]
+        except (ValueError, TypeError) as e:
+            raise ValueError(
+                f"Context values must be convertible to int. "
+                f"Got context={context!r}: {e}"
+            ) from e
 
         gr_features = GRFeaturesPayload(
             uih_keys=uih_keys,
@@ -146,14 +158,16 @@ class GRInputProcessor(InputProcessor):
             cand_keys=cand_keys,
             cand_values_per_key=cand_values_per_key,
             cand_lengths_per_key=cand_lengths_per_key,
+            ctx_keys=ctx_keys,
+            ctx_values_per_key=ctx_values_per_key,
             user_id=user_id,
             num_recommendations=num_recommendations,
             original_candidates=[dict(c) for c in limited_candidates],
-            context=context,
         )
 
-        if "item_id" in uih_keys:
-            idx = uih_keys.index("item_id")
+        pid = self.primary_id_feature_name
+        if pid in uih_keys:
+            idx = uih_keys.index(pid)
             prompt_token_ids = uih_values_per_key[idx]
         else:
             prompt_token_ids = [0] * len(recent_history) if recent_history else [0]
@@ -199,7 +213,15 @@ class GRInputProcessor(InputProcessor):
                        if any(key in record for record in records)]
 
         if not active_keys and records:
-            active_keys = ["item_id"]
+            if feature_names:
+                active_keys = [feature_names[0]]
+            else:
+                first_record_keys = list(records[0].keys())
+                active_keys = [first_record_keys[0]] if first_record_keys else []
+            logger.warning(
+                "No matching feature keys found in records; "
+                "falling back to %s", active_keys,
+            )
 
         values_per_key: list[list[int]] = []
         lengths_per_key: list[list[int]] = []

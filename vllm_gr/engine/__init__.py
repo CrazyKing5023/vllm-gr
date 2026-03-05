@@ -42,10 +42,12 @@ class GRFeaturesPayload(msgspec.Struct):
     cand_values_per_key: list[list[int]]
     cand_lengths_per_key: list[list[int]]
 
+    ctx_keys: list[str] = []
+    ctx_values_per_key: list[list[int]] = []
+
     user_id: str = ""
     num_recommendations: int = 10
     original_candidates: list[dict[str, Any]] = []
-    context: dict[str, Any] = {}
 
 
 class GREngineCoreRequest(EngineCoreRequest):

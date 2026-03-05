@@ -42,7 +42,6 @@ class TestGREngineArgs(unittest.TestCase):
         
         args = GREngineArgs(
             model="hstu-large",
-            embedding_path="/path/to/embeddings",
             max_seq_len=256,
             max_candidates=500,
             default_top_k=20,
@@ -51,25 +50,9 @@ class TestGREngineArgs(unittest.TestCase):
         )
         
         self.assertEqual(args.model, "hstu-large")
-        self.assertEqual(args.embedding_path, "/path/to/embeddings")
         self.assertEqual(args.max_seq_len, 256)
         self.assertEqual(args.max_candidates, 500)
         self.assertEqual(args.default_top_k, 20)
-    
-    def test_to_gr_dict(self):
-        """Test converting GR-specific params to dictionary."""
-        from vllm_gr.engine.arg_utils import GREngineArgs
-        
-        args = GREngineArgs(
-            model="test-model",
-            max_seq_len=128,
-        )
-        
-        d = args.to_gr_dict()
-        
-        self.assertEqual(d["max_seq_len"], 128)
-        self.assertIn("embedding_dim", d)
-        self.assertIn("hash_size", d)
     
     def test_worker_cls_injection(self):
         """Test that worker_cls is set to GRWorker for HSTU models."""
@@ -80,15 +63,154 @@ class TestGREngineArgs(unittest.TestCase):
         # worker_cls should be injected in __post_init__
         self.assertEqual(args.worker_cls, "vllm_gr.worker.gr_worker.GRWorker")
     
-    def test_feature_names_defaults(self):
-        """Test that feature name defaults are correct."""
+    def test_feature_names_not_on_engine_args(self):
+        """Feature names are read from hf_config, not GREngineArgs."""
+        from vllm_gr.engine.arg_utils import GREngineArgs
+
+        fields = {f.name for f in GREngineArgs.__dataclass_fields__.values()}
+        self.assertNotIn("uih_feature_names", fields)
+        self.assertNotIn("candidate_feature_names", fields)
+
+    def test_dataset_parameter(self):
+        """Test that dataset parameter is accepted and defaults to None."""
         from vllm_gr.engine.arg_utils import GREngineArgs
         
         args = GREngineArgs(model="test-model")
-        
-        # Should include multi-key feature names by default
-        self.assertIn("item_id", args.uih_feature_names)
-        self.assertIn("item_id", args.candidate_feature_names)
+        self.assertIsNone(args.dataset)
+
+        args_ml = GREngineArgs(model="test-model", dataset="movielens-1m")
+        self.assertEqual(args_ml.dataset, "movielens-1m")
+
+    def test_dataset_overrides_use_hf_overrides(self):
+        """Dataset overrides merge into hf_overrides (not disk mutation)."""
+        from vllm_gr.engine.arg_utils import GREngineArgs
+
+        args = GREngineArgs(model="test-model", dataset="movielens-1m")
+
+        self.assertIsInstance(args.hf_overrides, dict)
+        self.assertEqual(args.hf_overrides["uih_post_id_feature_name"], "movie_id")
+        self.assertIn("embedding_tables", args.hf_overrides)
+
+    def test_dataset_overrides_preserve_user_hf_overrides(self):
+        """User-supplied hf_overrides win over dataset defaults."""
+        from vllm_gr.engine.arg_utils import GREngineArgs
+
+        args = GREngineArgs(
+            model="test-model",
+            dataset="movielens-1m",
+            hf_overrides={"hstu_attn_num_layers": 99},
+        )
+
+        self.assertEqual(args.hf_overrides["hstu_attn_num_layers"], 99)
+        self.assertEqual(args.hf_overrides["uih_post_id_feature_name"], "movie_id")
+
+    def test_no_embedding_path_field(self):
+        """embedding_path was removed as dead code."""
+        from vllm_gr.engine.arg_utils import GREngineArgs
+
+        self.assertNotIn("embedding_path",
+                         {f.name for f in GREngineArgs.__dataclass_fields__.values()})
+
+
+class TestGRConfig(unittest.TestCase):
+    """Tests for the typed GRConfig dataclass."""
+
+    def test_defaults(self):
+        from vllm_gr.config.gr_config import GRConfig
+
+        cfg = GRConfig()
+        self.assertEqual(cfg.max_seq_len, 512)
+        self.assertEqual(cfg.max_candidates, 1000)
+        self.assertEqual(cfg.default_top_k, 10)
+
+    def test_custom_values(self):
+        from vllm_gr.config.gr_config import GRConfig
+
+        cfg = GRConfig(
+            max_seq_len=256,
+            max_candidates=500,
+            default_top_k=20,
+        )
+        self.assertEqual(cfg.max_seq_len, 256)
+        self.assertEqual(cfg.max_candidates, 500)
+        self.assertEqual(cfg.default_top_k, 20)
+
+    def test_no_feature_name_fields(self):
+        """Feature names live in hf_config, not GRConfig."""
+        from vllm_gr.config.gr_config import GRConfig
+
+        fields = {f.name for f in GRConfig.__dataclass_fields__.values()}
+        self.assertNotIn("uih_feature_names", fields)
+        self.assertNotIn("candidate_feature_names", fields)
+
+
+class TestDatasetConfigs(unittest.TestCase):
+    """Tests for dataset_configs factory functions."""
+
+    def test_movielens_1m_overrides(self):
+        from vllm_gr.config.dataset_configs import (
+            get_hstu_config_overrides,
+            get_embedding_table_overrides,
+        )
+
+        cfg = get_hstu_config_overrides("movielens-1m")
+        self.assertEqual(cfg["uih_post_id_feature_name"], "movie_id")
+        self.assertEqual(cfg["uih_action_time_feature_name"], "action_timestamp")
+        self.assertEqual(cfg["candidates_querytime_feature_name"], "item_query_time")
+        self.assertIn(["movie_id", "item_movie_id"],
+                       cfg["merge_uih_candidate_feature_mapping"])
+        self.assertEqual(cfg["task_names"], ["rating"])
+
+        tables = get_embedding_table_overrides("movielens-1m")
+        table_names = [t["name"] for t in tables]
+        self.assertIn("movie_id", table_names)
+        self.assertIn("user_id", table_names)
+        # movielens-1m has user context embedding tables
+        self.assertIn("sex", table_names)
+        self.assertEqual(len(tables), 6)
+
+    def test_kuairand_overrides(self):
+        from vllm_gr.config.dataset_configs import (
+            get_hstu_config_overrides,
+            get_embedding_table_overrides,
+        )
+
+        cfg = get_hstu_config_overrides("kuairand-1k")
+        self.assertEqual(cfg["uih_post_id_feature_name"], "video_id")
+        self.assertIn(["video_id", "item_video_id"],
+                       cfg["merge_uih_candidate_feature_mapping"])
+        self.assertEqual(len(cfg["task_names"]), 8)
+
+        tables = get_embedding_table_overrides("kuairand-1k")
+        table_names = [t["name"] for t in tables]
+        self.assertIn("video_id", table_names)
+        self.assertEqual(len(tables), 7)
+
+    def test_streaming_overrides(self):
+        from vllm_gr.config.dataset_configs import (
+            get_hstu_config_overrides,
+            get_embedding_table_overrides,
+        )
+
+        cfg = get_hstu_config_overrides("streaming-400m")
+        self.assertEqual(cfg["uih_post_id_feature_name"], "item_id")
+        self.assertIn("item_candidate_id", cfg["item_embedding_feature_names"])
+
+        tables = get_embedding_table_overrides("streaming-400m")
+        self.assertEqual(len(tables), 3)
+
+    def test_debug_overrides(self):
+        from vllm_gr.config.dataset_configs import (
+            get_hstu_config_overrides,
+            get_embedding_table_overrides,
+        )
+
+        cfg = get_hstu_config_overrides("debug")
+        self.assertEqual(cfg["uih_post_id_feature_name"], "uih_post_id")
+        self.assertEqual(cfg["task_names"], ["vvp100"])
+
+        tables = get_embedding_table_overrides("debug")
+        self.assertEqual(len(tables), 3)
 
 
 class TestGRInputProcessor(unittest.TestCase):
@@ -112,6 +234,18 @@ class TestGRInputProcessor(unittest.TestCase):
         self.assertIn("timestamp", keys)
         item_idx = keys.index("item_id")
         self.assertEqual(values[item_idx], [1, 2])
+
+    def test_candidate_internal_names(self):
+        """Candidates use model-internal feature names directly."""
+        from vllm_gr.engine.gr_input_processor import GRInputProcessor
+
+        records = [{"item_candidate_id": 10}, {"item_candidate_id": 20}]
+        keys, values, lengths = GRInputProcessor._extract_features(
+            records=records,
+            feature_names=["item_candidate_id"],
+        )
+        self.assertEqual(keys, ["item_candidate_id"])
+        self.assertEqual(values[0], [10, 20])
 
     def test_output_processor_inherits_vllm(self):
         """Test GROutputProcessor inherits from vLLM OutputProcessor."""

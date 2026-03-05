@@ -46,11 +46,11 @@ class TestGRLLMEndToEnd(unittest.TestCase):
                 {"item_id": 3, "timestamp": 3000, "rating": 5, "action_type": 2},
             ],
             "candidates": [
-                {"item_id": 10, "category_id": 1},
-                {"item_id": 20, "category_id": 1},
-                {"item_id": 30, "category_id": 2},
-                {"item_id": 40, "category_id": 1},
-                {"item_id": 50, "category_id": 2},
+                {"item_candidate_id": 10},
+                {"item_candidate_id": 20},
+                {"item_candidate_id": 30},
+                {"item_candidate_id": 40},
+                {"item_candidate_id": 50},
             ],
         }
 
@@ -79,7 +79,7 @@ class TestGRLLMEndToEnd(unittest.TestCase):
                     for j in range(5)
                 ],
                 "candidates": [
-                    {"item_id": k * 10, "category_id": k % 3}
+                    {"item_candidate_id": k * 10}
                     for k in range(10)
                 ],
             }
@@ -129,9 +129,9 @@ class TestGRLLMEngineEndToEnd(unittest.TestCase):
                 {"item_id": 2, "rating": 4, "action_type": 2},
             ],
             "candidates": [
-                {"item_id": 10, "category_id": 1},
-                {"item_id": 20, "category_id": 1},
-                {"item_id": 30, "category_id": 2},
+                {"item_candidate_id": 10},
+                {"item_candidate_id": 20},
+                {"item_candidate_id": 30},
             ],
             "num_recommendations": 2,
         }
@@ -159,15 +159,12 @@ class TestConfigModules(unittest.TestCase):
     """Test that config modules can be imported."""
 
     def test_hstu_config_import(self):
-        """Test HSTUModelConfig import and creation."""
-        try:
-            from vllm_gr.config.hstu_config import HSTUModelConfig
-            config = HSTUModelConfig()
-            self.assertIsNotNone(config)
-            self.assertEqual(config.num_layers, 5)
-            self.assertEqual(config.num_heads, 4)
-        except ImportError:
-            self.skipTest("Config module not available")
+        """Test HSTUConfig import and creation."""
+        from vllm_gr.config.hstu_hf_config import HSTUConfig
+        config = HSTUConfig()
+        self.assertIsNotNone(config)
+        self.assertEqual(config.hstu_attn_num_layers, 5)
+        self.assertEqual(config.hstu_num_heads, 4)
 
 
 def run_all_tests():

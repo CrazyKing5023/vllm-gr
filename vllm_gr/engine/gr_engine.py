@@ -20,6 +20,7 @@ from vllm.v1.executor import Executor
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.v1.metrics.loggers import StatLoggerFactory
 
+from vllm_gr.config.gr_config import GRConfig
 from vllm_gr.engine.arg_utils import GREngineArgs
 from vllm_gr.engine.gr_input_processor import GRInputProcessor
 from vllm_gr.engine.gr_output_processor import GROutputProcessor
@@ -46,12 +47,9 @@ class GRLLMEngine(LLMEngine):
         mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
         use_cached_outputs: bool = False,
         multiprocess_mode: bool = False,
-        gr_config: dict[str, Any] | None = None,
+        gr_config: GRConfig | None = None,
     ) -> None:
-        self.gr_config = gr_config or {}
-
-        if vllm_config.model_config is not None:
-            vllm_config.model_config.skip_tokenizer_init = True
+        self.gr_config = gr_config or GRConfig()
 
         super().__init__(
             vllm_config=vllm_config,
@@ -73,21 +71,35 @@ class GRLLMEngine(LLMEngine):
         logger.info("GRLLMEngine initialized")
 
     def _replace_processors(self) -> None:
-        """Replace default processors with GR-specific versions."""
-        max_seq_len = self.gr_config.get("max_seq_len", 512)
-        max_candidates = self.gr_config.get("max_candidates", 1000)
-        default_top_k = self.gr_config.get("default_top_k", 10)
-        uih_feature_names = self.gr_config.get("uih_feature_names", None)
-        candidate_feature_names = self.gr_config.get(
-            "candidate_feature_names", None)
+        """Replace default processors with GR-specific versions.
+
+        All feature names, primary_id, and task metadata are read directly
+        from the model's HSTUConfig (hf_config) -- the single source of truth.
+        """
+        cfg = self.gr_config
+        hf_config = self.vllm_config.model_config.hf_config
+
+        uih_feature_names = (
+            hf_config.hstu_uih_feature_names
+            or hf_config.user_embedding_feature_names
+        )
+        candidate_feature_names = (
+            hf_config.hstu_candidate_feature_names
+            or hf_config.item_embedding_feature_names
+        )
+        primary_id_feature_name = hf_config.uih_post_id_feature_name
+        task_names = list(hf_config.task_names)
+        primary_task = task_names[0] if task_names else ""
 
         self.input_processor = GRInputProcessor(
             vllm_config=self.vllm_config,
             tokenizer=self.tokenizer,
-            max_seq_len=max_seq_len,
-            max_candidates=max_candidates,
+            max_seq_len=cfg.max_seq_len,
+            max_candidates=cfg.max_candidates,
+            default_top_k=cfg.default_top_k,
             uih_feature_names=uih_feature_names,
             candidate_feature_names=candidate_feature_names,
+            primary_id_feature_name=primary_id_feature_name,
         )
 
         stream_interval = self.vllm_config.scheduler_config.stream_interval
@@ -95,7 +107,8 @@ class GRLLMEngine(LLMEngine):
             tokenizer=self.tokenizer,
             log_stats=self.log_stats,
             stream_interval=stream_interval,
-            default_top_k=default_top_k,
+            task_names=task_names,
+            primary_task=primary_task,
         )
 
     @classmethod
@@ -109,27 +122,13 @@ class GRLLMEngine(LLMEngine):
         """Create GRLLMEngine from engine arguments."""
         vllm_config = engine_args.create_engine_config(usage_context)
 
-        if vllm_config.model_config is not None:
-            vllm_config.model_config.skip_tokenizer_init = True
-
         executor_class = Executor.get_class(vllm_config)
 
-        gr_config = {
-            "model_path": engine_args.model if engine_args.model else None,
-            "max_seq_len": engine_args.max_seq_len,
-            "max_candidates": engine_args.max_candidates,
-            "default_top_k": engine_args.default_top_k,
-            "embedding_dim": engine_args.embedding_dim,
-            "hash_size": engine_args.hash_size,
-            "load_model": engine_args.load_model,
-            "num_layers": engine_args.num_layers,
-            "num_heads": engine_args.num_heads,
-            "hidden_dim": engine_args.hidden_dim,
-            "attention_dim": engine_args.attention_dim,
-            "device": engine_args.device,
-            "uih_feature_names": engine_args.uih_feature_names,
-            "candidate_feature_names": engine_args.candidate_feature_names,
-        }
+        gr_config = GRConfig(
+            max_seq_len=engine_args.max_seq_len,
+            max_candidates=engine_args.max_candidates,
+            default_top_k=engine_args.default_top_k,
+        )
 
         return cls(
             vllm_config=vllm_config,
@@ -149,7 +148,7 @@ class GRLLMEngine(LLMEngine):
             "gr_throughput": (
                 self._num_gr_requests_processed / max(elapsed, 1e-6)
             ),
-            "pending_requests": self.output_processor.get_num_unfinished_requests(),
+            "pending_requests": self.output_processor.num_pending_requests,
         }
 
     def shutdown(self) -> None:

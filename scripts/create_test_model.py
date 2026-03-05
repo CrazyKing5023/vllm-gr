@@ -22,14 +22,13 @@ import torch
 
 def create_test_model(output_dir: str, config_override: dict = None):
     """Create a test model checkpoint."""
-    
-    from vllm_gr.config.hstu_config import HSTUModelConfig, EmbeddingTableConfig
+
+    from vllm_gr.config.hstu_hf_config import HSTUConfig
     from vllm_gr.model_executor.models.hstu_vllm import HSTUForRecommendation
-    
+
     print(f"Creating test model in: {output_dir}")
     os.makedirs(output_dir, exist_ok=True)
-    
-    # Create config
+
     config_dict = {
         "num_layers": 3,
         "num_heads": 4,
@@ -45,33 +44,27 @@ def create_test_model(output_dir: str, config_override: dict = None):
         "task_names": ["is_click", "is_like"],
         "is_inference": True,
     }
-    
+
     if config_override:
         config_dict.update(config_override)
-    
-    config = HSTUModelConfig.from_dict(config_dict)
-    
-    # Save config
+
+    config = HSTUConfig(**config_dict)
+
     config_path = os.path.join(output_dir, "config.json")
-    with open(config_path, "w") as f:
-        json.dump(config.to_dict(), f, indent=2)
+    config.save_pretrained(output_dir)
     print(f"  Config saved to: {config_path}")
-    
-    # Create model using unified HSTUForRecommendation
+
     device = torch.device("cpu")
     model = HSTUForRecommendation.from_model_config(config, device)
-    
-    # Collect all weights
+
     state_dict = {}
     for name, param in model.named_parameters():
         state_dict[name] = param.data.clone()
-    
-    # Save weights
+
     weights_path = os.path.join(output_dir, "model.pt")
     torch.save(state_dict, weights_path)
     print(f"  Weights saved to: {weights_path}")
-    
-    # Print summary
+
     total_params = sum(p.numel() for p in state_dict.values())
     print(f"\n  Model Summary:")
     print(f"     Total parameters: {total_params:,}")
@@ -79,10 +72,10 @@ def create_test_model(output_dir: str, config_override: dict = None):
     print(f"     Heads: {config.num_heads}")
     print(f"     Embedding dim: {config.embedding_dim}")
     print(f"     Tasks: {config.task_names}")
-    
+
     print(f"\n  Test model created successfully!")
     print(f"   Use with: GRLLM(model='{output_dir}')")
-    
+
     return output_dir
 
 
@@ -112,15 +105,15 @@ def main():
         default=100000,
         help="Hash size for embedding tables",
     )
-    
+
     args = parser.parse_args()
-    
+
     config_override = {
         "num_layers": args.num_layers,
         "embedding_dim": args.embedding_dim,
         "hash_size": args.hash_size,
     }
-    
+
     create_test_model(args.output_dir, config_override)
 
 
