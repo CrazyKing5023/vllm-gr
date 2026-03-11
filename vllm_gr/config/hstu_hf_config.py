@@ -59,6 +59,10 @@ class HSTUConfig(PretrainedConfig):
         hstu_candidate_feature_names: Optional[List[str]] = None,
         merge_uih_candidate_feature_mapping: Optional[List[List[str]]] = None,
         action_weights: Optional[List[int]] = None,
+        action_embedding_init_std: float = 0.1,
+        causal_multitask_weights: float = 0.2,
+        enable_postprocessor: bool = True,
+        use_layer_norm_postprocessor: bool = False,
         # --- vllm-GR specific (not in Meta DlrmHSTUConfig) ---
         hash_size: int = 10_000_000,
         task_names: Optional[List[str]] = None,
@@ -69,8 +73,16 @@ class HSTUConfig(PretrainedConfig):
         **kwargs,
     ):
         super().__init__(**kwargs)
+
+        self.architectures = ["HSTUEmbeddingModel"]
+
+        # Upstream DLRM_v3 always uses bfloat16 for inference.
+        if "torch_dtype" not in kwargs:
+            self.torch_dtype = "bfloat16"
+
         self.is_text_encoder = is_text_encoder
         self.is_encoder_decoder = is_encoder_decoder
+        self.is_attention_free = True
 
         self.max_seq_len = max_seq_len
         self.max_num_candidates = max_num_candidates
@@ -102,6 +114,10 @@ class HSTUConfig(PretrainedConfig):
         self.hstu_candidate_feature_names = hstu_candidate_feature_names or []
         self.merge_uih_candidate_feature_mapping = merge_uih_candidate_feature_mapping or []
         self.action_weights = action_weights or []
+        self.action_embedding_init_std = action_embedding_init_std
+        self.causal_multitask_weights = causal_multitask_weights
+        self.enable_postprocessor = enable_postprocessor
+        self.use_layer_norm_postprocessor = use_layer_norm_postprocessor
 
         self.hash_size = hash_size
         self.task_names = task_names or ["is_click"]

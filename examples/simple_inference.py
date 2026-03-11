@@ -83,21 +83,21 @@ def main():
         
         # Candidate items to rank (keys use model-internal candidate names)
         "candidates": [
-            {"item_candidate_id": 2001},   # Tenet
-            {"item_candidate_id": 2002},   # Avatar
-            {"item_candidate_id": 2003},   # Edge_of_Tomorrow
-            {"item_candidate_id": 2004},   # District_9
-            {"item_candidate_id": 2005},   # Elysium
-            {"item_candidate_id": 2006},   # Gravity
-            {"item_candidate_id": 2007},   # The_Martian
-            {"item_candidate_id": 2008},   # Annihilation
-            {"item_candidate_id": 2009},   # Oblivion
-            {"item_candidate_id": 2010},   # Looper
-            {"item_candidate_id": 2011},   # Moon
-            {"item_candidate_id": 2012},   # Sunshine
-            {"item_candidate_id": 2013},   # Source_Code
-            {"item_candidate_id": 2014},   # Prometheus
-            {"item_candidate_id": 2015},   # Midnight_Sky
+            {"item_candidate_id": 2001, "query_time": 1610000000},
+            {"item_candidate_id": 2002, "query_time": 1610000000},
+            {"item_candidate_id": 2003, "query_time": 1610000000},
+            {"item_candidate_id": 2004, "query_time": 1610000000},
+            {"item_candidate_id": 2005, "query_time": 1610000000},
+            {"item_candidate_id": 2006, "query_time": 1610000000},
+            {"item_candidate_id": 2007, "query_time": 1610000000},
+            {"item_candidate_id": 2008, "query_time": 1610000000},
+            {"item_candidate_id": 2009, "query_time": 1610000000},
+            {"item_candidate_id": 2010, "query_time": 1610000000},
+            {"item_candidate_id": 2011, "query_time": 1610000000},
+            {"item_candidate_id": 2012, "query_time": 1610000000},
+            {"item_candidate_id": 2013, "query_time": 1610000000},
+            {"item_candidate_id": 2014, "query_time": 1610000000},
+            {"item_candidate_id": 2015, "query_time": 1610000000},
         ],
         
         # Optional: override default top_k

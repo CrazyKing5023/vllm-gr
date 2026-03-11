@@ -18,7 +18,7 @@
   "hstu_transducer_embedding_dim": 64,
 
   "contextual_feature_to_max_length": {
-    "viewer_id": 1, "dummy_contextual": 1
+    "viewer_id": 1, "dummy_contexual": 1
   },
 
   "candidates_weight_feature_name": "item_action_weight",
@@ -26,11 +26,22 @@
   "candidates_querytime_feature_name": "item_query_time",
 
   "user_embedding_feature_names": [
-    "uih_post_id", "uih_owner_id", "viewer_id", "dummy_contextual"
+    "uih_post_id", "uih_owner_id", "viewer_id", "dummy_contexual"
   ],
   "item_embedding_feature_names": ["item_post_id", "item_owner_id"],
   "uih_post_id_feature_name": "uih_post_id",
   "uih_action_time_feature_name": "uih_action_time",
+
+  "hstu_uih_feature_names": [
+    "uih_post_id", "uih_action_time", "uih_weight",
+    "uih_owner_id", "uih_watchtime", "uih_surface_type",
+    "uih_video_length", "viewer_id", "dummy_contexual"
+  ],
+  "hstu_candidate_feature_names": [
+    "item_post_id", "item_owner_id",
+    "item_surface_type", "item_video_length",
+    "item_action_weight", "item_target_watchtime", "item_query_time"
+  ],
 
   "merge_uih_candidate_feature_mapping": [
     ["uih_post_id", "item_post_id"],
@@ -63,10 +74,10 @@
       "feature_names": ["viewer_id"]
     },
     {
-      "name": "dummy_contextual",
+      "name": "dummy_contexual",
       "embedding_dim": 64,
       "num_embeddings": 10000,
-      "feature_names": ["dummy_contextual"]
+      "feature_names": ["dummy_contexual"]
     }
   ]
 }

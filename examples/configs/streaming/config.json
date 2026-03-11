@@ -29,6 +29,16 @@
   "uih_action_time_feature_name": "action_timestamp",
   "uih_weight_feature_name": "item_weights",
 
+  "hstu_uih_feature_names": [
+    "user_id", "item_id", "item_rating", "action_timestamp",
+    "item_weights", "dummy_watch_time", "item_category_id"
+  ],
+  "hstu_candidate_feature_names": [
+    "item_candidate_id", "item_candidate_rating",
+    "item_query_time", "item_action_weights",
+    "item_dummy_watchtime", "item_candidate_category_id"
+  ],
+
   "merge_uih_candidate_feature_mapping": [
     ["item_id", "item_candidate_id"],
     ["item_rating", "item_candidate_rating"],

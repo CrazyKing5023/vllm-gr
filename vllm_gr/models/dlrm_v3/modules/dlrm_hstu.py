@@ -69,7 +69,7 @@ class DlrmHSTUConfig:
     hstu_attn_num_layers: int = 12
     hstu_embedding_table_dim: int = 192
     hstu_preprocessor_hidden_dim: int = 256
-    hstu_transducer_embedding_dim: int = 512
+    hstu_transducer_embedding_dim: int = 0
     hstu_group_norm: bool = False
     hstu_input_dropout_ratio: float = 0.2
     hstu_linear_dropout_rate: float = 0.2
@@ -143,39 +143,42 @@ class DlrmHSTU(HammerModule):
         set_static_max_seq_lens([self._hstu_configs.max_seq_len])
 
         if not is_dense:
-            # Use "cpu" instead of original Meta's "meta" device — vLLM's
-            # DummyModelLoader needs real-device parameters for initialization,
-            # and vLLM handles GPU placement during its own loading flow.
+            # Embeddings live on CPU to avoid GPU OOM for large tables.
+            # HSTUForRecommendation.forward() calls preprocess() on CPU for
+            # embedding lookups, then transfers results to GPU for main_forward().
             self._embedding_collection: EmbeddingCollection = EmbeddingCollection(
                 tables=list(embedding_tables.values()),
                 need_indices=False,
                 device=torch.device("cpu"),
             )
 
+        # multitask configs must be sorted by task types
         self._multitask_configs: List[TaskConfig] = hstu_configs.multitask_configs
-        if self._multitask_configs:
-            self._multitask_module = DefaultMultitaskModule(
-                task_configs=self._multitask_configs,
-                embedding_dim=hstu_configs.hstu_transducer_embedding_dim,
-                prediction_fn=lambda in_dim, num_tasks: torch.nn.Sequential(
-                    torch.nn.Linear(in_features=in_dim, out_features=512),
-                    SwishLayerNorm(512,
-                                   calculate_dtype = self._hstu_configs.layer_norm_calculate_dtype),
-                    torch.nn.Linear(in_features=512, out_features=num_tasks),
-                ).apply(init_mlp_weights_optional_bias),
-                causal_multitask_weights=hstu_configs.causal_multitask_weights,
-                is_inference=self._is_inference,
-            )
-        else:
-            self._multitask_module = None
+        self._multitask_module = DefaultMultitaskModule(
+            task_configs=self._multitask_configs,
+            embedding_dim=hstu_configs.hstu_transducer_embedding_dim,
+            prediction_fn=lambda in_dim, num_tasks: torch.nn.Sequential(
+                torch.nn.Linear(in_features=in_dim, out_features=512),
+                SwishLayerNorm(512,
+                               calculate_dtype = self._hstu_configs.layer_norm_calculate_dtype),
+                torch.nn.Linear(in_features=512, out_features=num_tasks),
+            ).apply(init_mlp_weights_optional_bias),
+            causal_multitask_weights=hstu_configs.causal_multitask_weights,
+            is_inference=self._is_inference,
+        )
 
         self._additional_embedding_features: List[str] = [
-            uih_name
-            for uih_name, cand_name
-            in self._hstu_configs.merge_uih_candidate_feature_mapping
-            if (cand_name in self._hstu_configs.item_embedding_feature_names
-                and uih_name in self._hstu_configs.user_embedding_feature_names
-                and uih_name != self._hstu_configs.uih_post_id_feature_name)
+            uih_feature_name
+            for (
+                uih_feature_name,
+                candidate_feature_name,
+            ) in self._hstu_configs.merge_uih_candidate_feature_mapping
+            if (
+                candidate_feature_name
+                in self._hstu_configs.item_embedding_feature_names
+            )
+            and (uih_feature_name in self._hstu_configs.user_embedding_feature_names)
+            and (uih_feature_name != self._hstu_configs.uih_post_id_feature_name)
         ]
 
         preprocessor = ContextualPreprocessor(
@@ -260,10 +263,10 @@ class DlrmHSTU(HammerModule):
             listwise=False,
         )
 
-        num_item_features = len(self._hstu_configs.item_embedding_feature_names) or 1
         self._item_embedding_mlp: torch.nn.Module = torch.nn.Sequential(
             torch.nn.Linear(
-                in_features=hstu_configs.hstu_embedding_table_dim * num_item_features,
+                in_features=hstu_configs.hstu_embedding_table_dim
+                * len(self._hstu_configs.item_embedding_feature_names),
                 out_features=512,
             ),
             SwishLayerNorm(512,
@@ -315,10 +318,6 @@ class DlrmHSTU(HammerModule):
         max_uih_len = fx_infer_max_len(uih_seq_lengths)
 
         payload_features: Dict[str, torch.Tensor] = {}
-        uih_keys_set = set(uih_features.keys())
-        cand_keys_set = set(candidates_features.keys())
-        device = uih_features.values().device
-
         for (
             uih_feature_name,
             candidate_feature_name,
@@ -329,43 +328,34 @@ class DlrmHSTU(HammerModule):
                 and uih_feature_name
                 not in self._hstu_configs.user_embedding_feature_names
             ):
-                if uih_feature_name in uih_keys_set:
-                    values_left = uih_features[uih_feature_name].values()
-                elif self._is_inference:
-                    total_uih = int(uih_seq_lengths.sum().item())
-                    values_left = torch.zeros(
-                        total_uih, dtype=torch.int64, device=device,
-                    )
-                else:
-                    values_left = uih_features[uih_feature_name].values()
-
-                if candidate_feature_name in cand_keys_set:
-                    values_right = candidates_features[
-                        candidate_feature_name
-                    ].values()
-                elif self._is_inference:
-                    total_candidates = int(torch.sum(num_candidates).item())
+                values_left = uih_features[uih_feature_name].values()
+                if self._is_inference and (
+                    candidate_feature_name
+                    == self._hstu_configs.candidates_weight_feature_name
+                    or candidate_feature_name
+                    == self._hstu_configs.candidates_watchtime_feature_name
+                ):
+                    total_candidates = torch.sum(num_candidates).item()
                     values_right = torch.zeros(
-                        total_candidates, dtype=torch.int64, device=device,
+                        total_candidates,  # pyre-ignore
+                        dtype=torch.int64,
+                        device=values_left.device,
                     )
                 else:
-                    values_right = candidates_features[
-                        candidate_feature_name
-                    ].values()
+                    values_right = candidates_features[candidate_feature_name].values()
                 payload_features[uih_feature_name] = values_left
                 payload_features[candidate_feature_name] = values_right
 
         payload_features["uih_offsets"] = _cumsum(uih_seq_lengths)
         payload_features["candidate_offsets"] = _cumsum(num_candidates)
 
-        target_dtype = self._item_embedding_mlp[0].weight.dtype
         seq_embeddings = {
             k: SequenceEmbedding(
                 lengths=seq_embeddings_dict[k].lengths(),
-                embedding=seq_embeddings_dict[k].values().to(target_dtype),
+                embedding=seq_embeddings_dict[k].values(),
             )
-            for k in (self._hstu_configs.user_embedding_feature_names
-                      + self._hstu_configs.item_embedding_feature_names)
+            for k in self._hstu_configs.user_embedding_feature_names
+            + self._hstu_configs.item_embedding_feature_names
         }
 
         return (
@@ -389,21 +379,28 @@ class DlrmHSTU(HammerModule):
         if len(self._hstu_configs.contextual_feature_to_max_length) > 0:
             contextual_offsets: List[torch.Tensor] = []
             for x in self._hstu_configs.contextual_feature_to_max_length.keys():
-                contextual_offsets.append(_cumsum(seq_embeddings[x].lengths))
+                contextual_offsets.append(
+                    _cumsum(seq_embeddings[x].lengths)
+                )
         else:
-            contextual_offsets = []  # type: ignore[assignment]
-
-        result = {**payload_features}
-        for x in self._hstu_configs.contextual_feature_to_max_length.keys():
-            result[x] = seq_embeddings[x].embedding
-        for i, x in enumerate(
-            list(self._hstu_configs.contextual_feature_to_max_length.keys())
-        ):
-            if contextual_offsets:
-                result[x + "_offsets"] = contextual_offsets[i]
-        for x in self._additional_embedding_features:
-            result[x] = seq_embeddings[x].embedding
-        return result
+            contextual_offsets = torch.empty((0, 0))  # type: ignore[assignment]
+        return {
+            **payload_features,
+            **{
+                x: seq_embeddings[x].embedding
+                for x in self._hstu_configs.contextual_feature_to_max_length.keys()
+            },
+            **{
+                x + "_offsets": contextual_offsets[i]
+                for i, x in enumerate(
+                    list(self._hstu_configs.contextual_feature_to_max_length.keys())
+                )
+            },
+            **{
+                x: seq_embeddings[x].embedding
+                for x in self._additional_embedding_features
+            },
+        }
 
     # =========================================================================
     # _item_forward / _user_forward
@@ -534,40 +531,32 @@ class DlrmHSTU(HammerModule):
             )
 
         with record_function("## multitask_module ##"):
-            if self._multitask_module is not None:
-                if self._is_inference:
-                    supervision_labels: Dict[str, torch.Tensor] = {}
-                    supervision_weights: Dict[str, torch.Tensor] = {}
-                else:
-                    supervision_labels, supervision_weights = (
-                        _get_supervision_labels_and_weights(
-                            supervision_bitmasks=payload_features[
-                                self._hstu_configs.candidates_weight_feature_name
-                            ],
-                            watchtime_sequence=payload_features[
-                                self._hstu_configs.candidates_watchtime_feature_name
-                            ],
-                            task_configs=self._multitask_configs,
-                        )
-                    )
-                mt_target_preds, mt_target_labels, mt_target_weights, mt_losses = (
-                    self._multitask_module(
-                        encoded_user_embeddings=candidates_user_embeddings,
-                        item_embeddings=candidates_item_embeddings,
-                        supervision_labels=supervision_labels,
-                        supervision_weights=supervision_weights,
+            if self._is_inference:
+                supervision_labels: Dict[str, torch.Tensor] = {}
+                supervision_weights: Dict[str, torch.Tensor] = {}
+            else:
+                supervision_labels, supervision_weights = (
+                    _get_supervision_labels_and_weights(
+                        supervision_bitmasks=payload_features[
+                            self._hstu_configs.candidates_weight_feature_name
+                        ],
+                        watchtime_sequence=payload_features[
+                            self._hstu_configs.candidates_watchtime_feature_name
+                        ],
+                        task_configs=self._multitask_configs,
                     )
                 )
-            else:
-                mt_target_preds = (
-                    candidates_user_embeddings * candidates_item_embeddings
-                ).sum(dim=-1, keepdim=True).t()
-                mt_target_labels = None
-                mt_target_weights = None
-                mt_losses = None
+            mt_target_preds, mt_target_labels, mt_target_weights, mt_losses = (
+                self._multitask_module(
+                    encoded_user_embeddings=candidates_user_embeddings,
+                    item_embeddings=candidates_item_embeddings,
+                    supervision_labels=supervision_labels,
+                    supervision_weights=supervision_weights,
+                )
+            )
 
         aux_losses: Dict[str, torch.Tensor] = {}
-        if not self._is_inference and self.training and mt_losses is not None:
+        if not self._is_inference and self.training:
             for i, task in enumerate(self._multitask_configs):
                 aux_losses[task.task_name] = mt_losses[i]
 

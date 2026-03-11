@@ -94,13 +94,14 @@ class TimestampLayerNormPostprocessor(OutputPostprocessor):
         self._layer_norm: torch.nn.Module = torch.nn.LayerNorm(
             normalized_shape=[embedding_dim], eps=eps
         )
+        # torch.tensor() respects set_default_device(); torch.Tensor() does not.
         self.register_buffer(
             "_period_units",
-            torch.Tensor([f[0] for f in time_duration_features]).view(1, -1),
+            torch.tensor([f[0] for f in time_duration_features]).view(1, -1),
         )
         self.register_buffer(
             "_units_per_period",
-            torch.Tensor([f[1] for f in time_duration_features]).view(1, -1),
+            torch.tensor([f[1] for f in time_duration_features]).view(1, -1),
         )
         self._time_feature_combiner: torch.nn.Module = torch.nn.Linear(
             embedding_dim + 2 * len(time_duration_features),
@@ -112,28 +113,23 @@ class TimestampLayerNormPostprocessor(OutputPostprocessor):
         combined_embeddings: torch.Tensor,
         timestamps: torch.Tensor,
     ) -> torch.Tensor:
-        # Ensure registered buffers are on the same device as input tensors.
-        # Buffers created via register_buffer(torch.Tensor([...])) may remain
-        # on CPU if they were not covered by the device context during model
-        # creation, and vLLM's load_weights only moves nn.Parameters.
-        target_device = combined_embeddings.device
-        period_units = self._period_units.to(target_device)
-        units_per_period = self._units_per_period.to(target_device)
+        period_units = self._period_units
+        units_per_period = self._units_per_period
 
         timestamps = timestamps.unsqueeze(-1)
         period_units = _unsqueeze_if_needed(period_units, combined_embeddings)
-        units_per_period = _unsqueeze_if_needed(units_per_period, combined_embeddings)
-        
+        units_per_period = _unsqueeze_if_needed(
+            units_per_period, combined_embeddings
+        ).float()
+        _units_elapsed_type: torch.dtype = combined_embeddings.dtype
         _units_since_epoch = torch.div(
-            timestamps, period_units, rounding_mode="floor"
+            timestamps.float(), period_units.float(), rounding_mode="floor"
         )
         _units_elapsed = (
             (torch.remainder(_units_since_epoch, units_per_period) / units_per_period)
             * 2
             * 3.14
         )
-        
-        _units_elapsed_type: torch.dtype = _units_elapsed.dtype
         _units_elapsed = torch.view_as_real(
             torch.polar(
                 _cast_dtype(torch.ones_like(_units_elapsed), torch.float32),
@@ -141,15 +137,6 @@ class TimestampLayerNormPostprocessor(OutputPostprocessor):
             )
         ).flatten(-2, -1)
         _units_elapsed = _cast_dtype(_units_elapsed, _units_elapsed_type)
-        
-        # Cast time features to match embedding dtype before concatenation.
-        # Timestamps and period_units are always float32 (timestamps are created
-        # explicitly as float32, and torch.Tensor([...]) always creates float32).
-        # But embeddings may be float16/bfloat16 (vLLM loads models in half
-        # precision). Without this cast, torch.cat promotes to float32, causing
-        # a dtype mismatch in the downstream nn.Linear (float16 weights).
-        _units_elapsed = _cast_dtype(_units_elapsed, combined_embeddings.dtype)
-        
         combined_embeddings = torch.cat([combined_embeddings, _units_elapsed], dim=-1)
         return combined_embeddings
 
@@ -160,7 +147,9 @@ class TimestampLayerNormPostprocessor(OutputPostprocessor):
         seq_payloads: Dict[str, torch.Tensor],
     ) -> torch.Tensor:
         user_embeddings = self._time_feature_combiner(
-            self._concat_time_features(seq_embeddings, timestamps=seq_timestamps)
+            self._concat_time_features(seq_embeddings, timestamps=seq_timestamps).to(
+                self._time_feature_combiner.weight.dtype
+            )
         )
         return self._layer_norm(user_embeddings)
 

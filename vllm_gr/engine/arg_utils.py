@@ -84,33 +84,39 @@ class GREngineArgs(EngineArgs):
             # CRITICAL: Inject GRWorker as the custom worker class.
             self.worker_cls = "vllm_gr.worker.gr_worker.GRWorker"
             
-            # Check if model has real weights, if not use dummy loader
+            # HSTU models always use bfloat16 (matching upstream DLRM_v3)
+            if self.dtype == "auto":
+                self.dtype = "bfloat16"
+
+            if self.tensor_parallel_size > 1:
+                logger.warning(
+                    "HSTU models use full model replication (data parallel), "
+                    "not tensor sharding. Each worker loads the full model. "
+                    "tensor_parallel_size=%d creates %d full replicas.",
+                    self.tensor_parallel_size,
+                    self.tensor_parallel_size,
+                )
+
+            # Determine weight loading strategy
             if not self._has_model_weights():
                 self.load_format = "dummy"
                 logger.info("No model weights found, using dummy loader (random weights)")
     
     def _has_model_weights(self) -> bool:
-        """Check if the model path contains actual weight files."""
+        """Check if the model path contains HuggingFace-style weight files."""
         if not self.model:
             return False
-        
+
         if not os.path.isdir(self.model):
             return False
-        
-        # Check for common weight file patterns
-        weight_patterns = [
-            "*.bin",           # PyTorch checkpoint
-            "*.safetensors",   # Safetensors format
-            "*.pt",            # PyTorch state dict
-            "*.pth",           # PyTorch model
-            "model.safetensors",
-            "pytorch_model.bin",
+
+        hf_patterns = [
+            "*.safetensors", "*.bin", "*.pt", "*.pth",
         ]
-        
-        for pattern in weight_patterns:
+        for pattern in hf_patterns:
             if glob.glob(os.path.join(self.model, pattern)):
                 return True
-        
+
         return False
     
     @classmethod
@@ -178,14 +184,11 @@ class GREngineArgs(EngineArgs):
         Dataset overrides have already been merged into ``hf_overrides``
         during ``__post_init__``.
         """
-        # CRITICAL: Ensure HSTUConfig is registered BEFORE any config loading
         from vllm_gr.config.hstu_hf_config import ensure_hstu_config_registered
-        ensure_hstu_config_registered()
-        
-        # Also ensure GR models are registered with vLLM ModelRegistry
         from vllm_gr.model_executor.models.registry import register_gr_models_to_vllm
+
+        ensure_hstu_config_registered()
         register_gr_models_to_vllm()
-        
-        logger.info(f"Creating engine config for model: {self.model}")
-        
+
+        logger.info("Creating engine config for model: %s", self.model)
         return super().create_engine_config(usage_context)
