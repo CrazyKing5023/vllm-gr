@@ -1,4 +1,4 @@
-# Copyright (c) vllm-GR Authors.
+﻿# Copyright (c) vllm-GR Authors.
 # Licensed under the Apache License, Version 2.0
 
 """
@@ -77,27 +77,26 @@ class GRModelRunner(GPUModelRunner):
         ctx_vals = payload.ctx_values_per_key
         return {
             "uih_keys": list(payload.uih_keys),
-            "uih_values_per_key": [
-                torch.tensor(vals, dtype=torch.int64)
-                for vals in payload.uih_values_per_key
-            ],
-            "uih_lengths_per_key": [
-                torch.tensor(lens, dtype=torch.int64)
-                for lens in payload.uih_lengths_per_key
-            ],
+            "uih_values_per_key": torch.tensor(
+                [val for vals in payload.uih_values_per_key for val in vals],
+                dtype=torch.int64
+            ),
+            "uih_lengths_per_key": torch.tensor(
+                payload.uih_lengths_per_key, dtype=torch.int64
+            ),
             "cand_keys": list(payload.cand_keys),
-            "cand_values_per_key": [
-                torch.tensor(vals, dtype=torch.int64)
-                for vals in payload.cand_values_per_key
-            ],
-            "cand_lengths_per_key": [
-                torch.tensor(lens, dtype=torch.int64)
-                for lens in payload.cand_lengths_per_key
-            ],
+            "cand_values_per_key": torch.tensor(
+                [val for vals in payload.cand_values_per_key for val in vals],
+                dtype=torch.int64
+            ),
+            "cand_lengths_per_key": torch.tensor(
+                payload.cand_lengths_per_key, dtype=torch.int64
+            ),
             "ctx_keys": ctx_keys,
-            "ctx_values_per_key": [
-                torch.tensor(vals, dtype=torch.int64) for vals in ctx_vals
-            ],
+            "ctx_values_per_key": torch.tensor(
+                [val for vals in ctx_vals for val in vals],
+                dtype=torch.int64
+            ),
         }
 
     def _preprocess(
@@ -123,6 +122,47 @@ class GRModelRunner(GPUModelRunner):
         return (input_ids, inputs_embeds, positions,
                 interm_tensors, model_kwargs, ec_connector_output)
 
+    @staticmethod
+    def _kjt_batch_func(
+        kjt_list: list[KeyedJaggedTensor],
+    ) -> KeyedJaggedTensor:
+        """
+        Batch multiple KeyedJaggedTensors into a single tensor.
+
+        Uses FBGEMM operations for efficient batching and reordering of
+        jagged tensor data.
+
+        Args:
+            kjt_list: List of KeyedJaggedTensors to batch.
+
+        Returns:
+            Batched KeyedJaggedTensor with reordered indices and lengths.
+        """
+        bs_list = [kjt.stride() for kjt in kjt_list]
+        bs = sum(bs_list)
+        batched_length = torch.cat([kjt.lengths() for kjt in kjt_list], dim=0)
+        batched_indices = torch.cat([kjt.values() for kjt in kjt_list], dim=0)
+        
+        # Ensure all tensors are on the same device as input KJTs
+        device = batched_length.device
+        bs_offset = torch.ops.fbgemm.asynchronous_complete_cumsum(
+            torch.tensor(bs_list, device=device)
+        ).int()
+        batched_offset = torch.ops.fbgemm.asynchronous_complete_cumsum(batched_length)
+        reorder_length = torch.ops.fbgemm.reorder_batched_ad_lengths(
+            batched_length, bs_offset, bs
+        )
+        reorder_offsets = torch.ops.fbgemm.asynchronous_complete_cumsum(reorder_length)
+        reorder_indices = torch.ops.fbgemm.reorder_batched_ad_indices(
+            batched_offset, batched_indices, reorder_offsets, bs_offset, bs
+        )
+        out = KeyedJaggedTensor(
+            keys=kjt_list[0].keys(),
+            lengths=reorder_length.long(),
+            values=reorder_indices.long(),
+        )
+        return out
+
     def _build_gr_model_kwargs(self) -> dict[str, Any]:
         """Construct KeyedJaggedTensors from decoded features.
 
@@ -130,11 +170,8 @@ class GRModelRunner(GPUModelRunner):
         passed directly to HSTUForRecommendation.forward() and then to
         DlrmHSTU.forward(uih_features, candidates_features).
 
-        KJT layout (TorchRec convention):
-          batch_size = number of users (requests)
-          For K keys and B batch elements:
-            values:  all values for key_0 (user_0, user_1, …), then key_1, …
-            lengths: K*B entries — [key0_user0, key0_user1, …, key1_user0, …]
+        Uses _kjt_batch_func to batch individual request KJTs for efficient
+        FBGEMM-based reordering and concatenation.
         """
         if not self._gr_features_cache:
             return {}
@@ -152,63 +189,42 @@ class GRModelRunner(GPUModelRunner):
         uih_keys: list[str] = gr_reqs[0][1]["uih_keys"]
         cand_keys: list[str] = gr_reqs[0][1]["cand_keys"]
         ctx_keys: list[str] = gr_reqs[0][1].get("ctx_keys", [])
-        num_uih_keys = len(uih_keys)
-        num_cand_keys = len(cand_keys)
-        num_ctx_keys = len(ctx_keys)
 
-        uih_values_by_key: list[list[torch.Tensor]] = [[] for _ in range(num_uih_keys)]
-        uih_lengths_by_key: list[list[int]] = [[] for _ in range(num_uih_keys)]
-        cand_values_by_key: list[list[torch.Tensor]] = [[] for _ in range(num_cand_keys)]
-        cand_lengths_by_key: list[list[int]] = [[] for _ in range(num_cand_keys)]
-        ctx_values_by_key: list[list[torch.Tensor]] = [[] for _ in range(num_ctx_keys)]
+        # Create individual KJTs for each request
+        uih_kjt_list: list[KeyedJaggedTensor] = []
+        cand_kjt_list: list[KeyedJaggedTensor] = []
 
         for _req_id, features in gr_reqs:
-            for k in range(num_uih_keys):
-                vals = features["uih_values_per_key"][k].to(device)
-                uih_values_by_key[k].append(vals)
-                uih_lengths_by_key[k].append(len(vals))
+            # Build UIH KJT for this request (including ctx features)
+            uih_values = features["uih_values_per_key"].to(device)
+            ctx_values = features.get(
+                "ctx_values_per_key", torch.tensor([], dtype=torch.int64)
+            ).to(device)
 
-            for k in range(num_cand_keys):
-                vals = features["cand_values_per_key"][k].to(device)
-                cand_values_by_key[k].append(vals)
-                cand_lengths_by_key[k].append(len(vals))
+            uih_lengths = features["uih_lengths_per_key"].to(device)
+            ctx_lengths = torch.ones(len(ctx_keys), dtype=torch.int64, device=device)
 
-            ctx_vals_list = features.get("ctx_values_per_key", [])
-            for k in range(num_ctx_keys):
-                vals = ctx_vals_list[k].to(device)
-                ctx_values_by_key[k].append(vals)
+            req_uih_kjt = KeyedJaggedTensor.from_lengths_sync(
+                keys=uih_keys + ctx_keys,
+                values=torch.cat([uih_values, ctx_values]),
+                lengths=torch.cat([uih_lengths, ctx_lengths]),
+            )
+            uih_kjt_list.append(req_uih_kjt)
 
-        # Contextual features (user-level, length=1 per batch element) are
-        # appended to the UIH KJT so the EmbeddingCollection can look them up.
-        all_uih_keys = uih_keys + ctx_keys
+            # Build Cand KJT for this request
+            cand_values = features["cand_values_per_key"].to(device)
+            cand_lengths = features["cand_lengths_per_key"].to(device)
 
-        all_uih_values_parts: list[torch.Tensor] = []
-        all_uih_lengths: list[int] = []
+            req_cand_kjt = KeyedJaggedTensor.from_lengths_sync(
+                keys=cand_keys,
+                values=cand_values,
+                lengths=cand_lengths,
+            )
+            cand_kjt_list.append(req_cand_kjt)
 
-        for k in range(num_uih_keys):
-            all_uih_values_parts.append(torch.cat(uih_values_by_key[k]))
-            all_uih_lengths.extend(uih_lengths_by_key[k])
-
-        batch_size = len(gr_reqs)
-        for k in range(num_ctx_keys):
-            all_uih_values_parts.append(torch.cat(ctx_values_by_key[k]))
-            all_uih_lengths.extend([1] * batch_size)
-
-        uih_kjt = KeyedJaggedTensor.from_lengths_sync(
-            keys=all_uih_keys,
-            values=torch.cat(all_uih_values_parts),
-            lengths=torch.tensor(all_uih_lengths, dtype=torch.int64, device=device),
-        )
-        cand_kjt = KeyedJaggedTensor.from_lengths_sync(
-            keys=cand_keys,
-            values=torch.cat([
-                torch.cat(cand_values_by_key[k]) for k in range(num_cand_keys)
-            ]),
-            lengths=torch.tensor(
-                [l for k in range(num_cand_keys) for l in cand_lengths_by_key[k]],
-                dtype=torch.int64, device=device,
-            ),
-        )
+        # Batch individual KJTs using FBGEMM operations
+        uih_kjt = self._kjt_batch_func(uih_kjt_list)
+        cand_kjt = self._kjt_batch_func(cand_kjt_list)
 
         return {
             "uih_features": uih_kjt,

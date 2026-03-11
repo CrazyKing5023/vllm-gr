@@ -201,7 +201,7 @@ class GRInputProcessor(InputProcessor):
     def _extract_features(
         records: list[dict[str, Any]],
         feature_names: list[str],
-    ) -> tuple[list[str], list[list[int]], list[list[int]]]:
+    ) -> tuple[list[str], list[list[int]], list[int]]:
         """
         Extract multi-key features from a list of records.
 
@@ -224,11 +224,11 @@ class GRInputProcessor(InputProcessor):
             )
 
         values_per_key: list[list[int]] = []
-        lengths_per_key: list[list[int]] = []
+        lengths_per_key: list[int] = []
 
         for key in active_keys:
             values = [int(record.get(key, 0)) for record in records]
-            lengths = [1] * len(records)
+            lengths = len(values)
             values_per_key.append(values)
             lengths_per_key.append(lengths)
 
