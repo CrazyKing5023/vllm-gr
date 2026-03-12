@@ -1,4 +1,4 @@
-# Copyright (c) vllm-GR Authors.
+﻿# Copyright (c) vllm-GR Authors.
 # Licensed under the Apache License, Version 2.0
 
 """
@@ -56,9 +56,9 @@ class TestExtractFeatures(unittest.TestCase):
         action_idx = keys.index("action_type")
         self.assertEqual(values[action_idx], [1, 2, 0])
 
-        for lens in lengths:
-            self.assertEqual(len(lens), 3)
-            self.assertTrue(all(l == 1 for l in lens))
+        self.assertEqual(len(lengths), 4)
+        for length in lengths:
+            self.assertEqual(length, 3)
 
     def test_extract_candidates_with_category_id(self):
         """Test extraction of candidates with category_id."""
@@ -377,10 +377,10 @@ class TestGRFeaturesPayload(unittest.TestCase):
         payload = GRFeaturesPayload(
             uih_keys=["item_id", "timestamp"],
             uih_values_per_key=[[1, 2, 3], [1000, 2000, 3000]],
-            uih_lengths_per_key=[[1, 1, 1], [1, 1, 1]],
+            uih_lengths_per_key=[3, 3],
             cand_keys=["item_candidate_id"],
             cand_values_per_key=[[10, 20, 30]],
-            cand_lengths_per_key=[[1, 1, 1]],
+            cand_lengths_per_key=[3],
             user_id="user_123",
             num_recommendations=5,
             original_candidates=[
@@ -401,10 +401,10 @@ class TestGRFeaturesPayload(unittest.TestCase):
         payload = GRFeaturesPayload(
             uih_keys=["movie_id", "movie_rating", "action_timestamp"],
             uih_values_per_key=[[1, 2], [5, 4], [100, 200]],
-            uih_lengths_per_key=[[1, 1], [1, 1], [1, 1]],
+            uih_lengths_per_key=[2, 2, 2],
             cand_keys=["item_movie_id"],
             cand_values_per_key=[[10, 20]],
-            cand_lengths_per_key=[[1, 1]],
+            cand_lengths_per_key=[2],
             user_id="ml_user",
             num_recommendations=3,
         )
@@ -420,10 +420,10 @@ class TestGRFeaturesPayload(unittest.TestCase):
         payload = GRFeaturesPayload(
             uih_keys=["item_id"],
             uih_values_per_key=[[1, 2, 3]],
-            uih_lengths_per_key=[[1, 1, 1]],
+            uih_lengths_per_key=[3],
             cand_keys=["item_candidate_id"],
             cand_values_per_key=[[10, 20]],
-            cand_lengths_per_key=[[1, 1]],
+            cand_lengths_per_key=[2],
             user_id="u1",
             num_recommendations=3,
         )

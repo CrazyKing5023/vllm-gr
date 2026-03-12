@@ -48,14 +48,7 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 def _cumsum(lengths: torch.Tensor) -> torch.Tensor:
     """Compute inclusive prefix-sum with leading zero (complete cumsum)."""
-    try:
-        return torch.ops.fbgemm.asynchronous_complete_cumsum(lengths)
-    except (RuntimeError, AttributeError):
-        cumsum = torch.zeros(
-            lengths.size(0) + 1, dtype=lengths.dtype, device=lengths.device
-        )
-        torch.cumsum(lengths, dim=0, out=cumsum[1:])
-        return cumsum
+    return torch.ops.fbgemm.asynchronous_complete_cumsum(lengths)
 
 
 class SequenceEmbedding(NamedTuple):

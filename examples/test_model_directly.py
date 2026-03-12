@@ -62,12 +62,12 @@ except Exception as e:
 # Step 3: Create model config
 print("\n[Step 3] Creating model config...")
 config = HSTUConfig(
-    num_layers=2,
-    num_heads=2,
-    embedding_dim=64,
-    attention_dim=32,
-    hidden_dim=64,
-    embedding_table_dim=64,
+    hstu_attn_num_layers=2,
+    hstu_num_heads=2,
+    hstu_transducer_embedding_dim=64,
+    hstu_attn_linear_dim=32,
+    hstu_preprocessor_hidden_dim=64,
+    hstu_embedding_table_dim=64,
     max_seq_len=64,
     max_num_candidates=50,
     hash_size=10000,
@@ -83,7 +83,7 @@ config = HSTUConfig(
         },
     ],
 )
-print(f"  Config created: hash_size={config.hash_size}, dim={config.embedding_dim}")
+print(f"  Config created: hash_size={config.hash_size}, dim={config.hstu_embedding_table_dim}")
 
 # Step 4: Create model on CPU
 print("\n[Step 4] Creating model on CPU...")

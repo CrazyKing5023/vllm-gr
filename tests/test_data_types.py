@@ -1,4 +1,4 @@
-# Copyright (c) vllm-GR Authors.
+﻿# Copyright (c) vllm-GR Authors.
 # Licensed under the Apache License, Version 2.0
 
 """
@@ -246,10 +246,10 @@ class TestGRRequest(unittest.TestCase):
         payload = GRFeaturesPayload(
             uih_keys=["item_id"],
             uih_values_per_key=[[1, 2, 3]],
-            uih_lengths_per_key=[[1, 1, 1]],
+            uih_lengths_per_key=[3],
             cand_keys=["item_candidate_id"],
             cand_values_per_key=[[10, 20]],
-            cand_lengths_per_key=[[1, 1]],
+            cand_lengths_per_key=[2],
             user_id="user_123",
             num_recommendations=5,
         )

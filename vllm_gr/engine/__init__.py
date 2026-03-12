@@ -36,11 +36,11 @@ class GRFeaturesPayload(msgspec.Struct):
 
     uih_keys: list[str]
     uih_values_per_key: list[list[int]]
-    uih_lengths_per_key: list[list[int]]
+    uih_lengths_per_key: list[int]
 
     cand_keys: list[str]
     cand_values_per_key: list[list[int]]
-    cand_lengths_per_key: list[list[int]]
+    cand_lengths_per_key: list[int]
 
     ctx_keys: list[str] = []
     ctx_values_per_key: list[list[int]] = []
