@@ -351,15 +351,17 @@ vllm_gr/
 ## Running Tests
 
 ```bash
-# Run all tests
+# Run all unit tests
 python -m pytest tests/ -v
 
 # Run specific test files
-python -m pytest tests/test_data_types.py -v      # Core data types
+python -m pytest tests/test_engine.py -v          # Engine, config, data types
 python -m pytest tests/test_processors.py -v      # Input/output processors
-python -m pytest tests/test_engine.py -v          # Engine components
-python -m pytest tests/test_model_runner.py -v    # Model runner
-python -m pytest tests/test_offline_inference.py -v  # End-to-end tests
+python -m pytest tests/test_weight_loading.py -v  # Checkpoint conversion & weight loading
+
+# Unified runner (unit tests + optional examples)
+python scripts/run_tests.py                       # Unit tests only
+python scripts/run_tests.py --all                 # Unit tests + examples
 ```
 
 ## Examples

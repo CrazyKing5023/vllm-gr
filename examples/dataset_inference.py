@@ -50,7 +50,8 @@ def build_movielens_1m_prompts() -> Dict[str, Any]:
 
     UIH features:  movie_id, movie_rating, action_timestamp,
                    item_weights, dummy_watch_time
-    Candidates:    item_movie_id, item_movie_rating
+    Candidates:    item_movie_id, item_movie_rating, item_query_time,
+                   item_action_weights, item_dummy_watchtime
     Context:       user_id, sex, age_group, occupation, zip_code
     Task:          rating
 
@@ -75,11 +76,11 @@ def build_movielens_1m_prompts() -> Dict[str, Any]:
                  "item_weights": 4, "dummy_watch_time": 0},
             ],
             "candidates": [
-                {"item_movie_id": 1, "item_movie_rating": 0},
-                {"item_movie_id": 48, "item_movie_rating": 0},
-                {"item_movie_id": 150, "item_movie_rating": 0},
-                {"item_movie_id": 260, "item_movie_rating": 0},
-                {"item_movie_id": 527, "item_movie_rating": 0},
+                {"item_movie_id": 1,   "item_movie_rating": 0, "item_query_time": 978830000, "item_action_weights": 0, "item_dummy_watchtime": 0},
+                {"item_movie_id": 48,  "item_movie_rating": 0, "item_query_time": 978830000, "item_action_weights": 0, "item_dummy_watchtime": 0},
+                {"item_movie_id": 150, "item_movie_rating": 0, "item_query_time": 978830000, "item_action_weights": 0, "item_dummy_watchtime": 0},
+                {"item_movie_id": 260, "item_movie_rating": 0, "item_query_time": 978830000, "item_action_weights": 0, "item_dummy_watchtime": 0},
+                {"item_movie_id": 527, "item_movie_rating": 0, "item_query_time": 978830000, "item_action_weights": 0, "item_dummy_watchtime": 0},
             ],
             "context": {
                 "user_id": 1, "sex": 0, "age_group": 3,
@@ -96,7 +97,10 @@ def build_movielens_1m_prompts() -> Dict[str, Any]:
             "movie_id", "movie_rating", "action_timestamp",
             "item_weights", "dummy_watch_time",
         ],
-        "candidate_feature_names": ["item_movie_id", "item_movie_rating"],
+        "candidate_feature_names": [
+            "item_movie_id", "item_movie_rating", "item_query_time",
+            "item_action_weights", "item_dummy_watchtime",
+        ],
         "primary_id": "movie_id",
     }
 
@@ -105,7 +109,8 @@ def build_kuairand_1k_prompts() -> Dict[str, Any]:
     """KuaiRand-1K: short-video engagement with 8 tasks.
 
     UIH features:  video_id, action_timestamp, action_weight, watch_time
-    Candidates:    item_video_id
+    Candidates:    item_video_id, item_action_weight,
+                   item_target_watchtime, item_query_time
     Tasks:         is_click, is_like, is_follow, is_comment,
                    is_forward, is_hate, long_view, is_profile_enter
     """
@@ -127,16 +132,16 @@ def build_kuairand_1k_prompts() -> Dict[str, Any]:
                  "action_weight": 2, "watch_time": 25000},
             ],
             "candidates": [
-                {"item_video_id": 1001},
-                {"item_video_id": 1002},
-                {"item_video_id": 1003},
-                {"item_video_id": 1004},
-                {"item_video_id": 1005},
-                {"item_video_id": 1006},
-                {"item_video_id": 1007},
-                {"item_video_id": 1008},
-                {"item_video_id": 1009},
-                {"item_video_id": 1010},
+                {"item_video_id": 1001, "item_action_weight": 0, "item_target_watchtime": 0, "item_query_time": 1640020000},
+                {"item_video_id": 1002, "item_action_weight": 0, "item_target_watchtime": 0, "item_query_time": 1640020000},
+                {"item_video_id": 1003, "item_action_weight": 0, "item_target_watchtime": 0, "item_query_time": 1640020000},
+                {"item_video_id": 1004, "item_action_weight": 0, "item_target_watchtime": 0, "item_query_time": 1640020000},
+                {"item_video_id": 1005, "item_action_weight": 0, "item_target_watchtime": 0, "item_query_time": 1640020000},
+                {"item_video_id": 1006, "item_action_weight": 0, "item_target_watchtime": 0, "item_query_time": 1640020000},
+                {"item_video_id": 1007, "item_action_weight": 0, "item_target_watchtime": 0, "item_query_time": 1640020000},
+                {"item_video_id": 1008, "item_action_weight": 0, "item_target_watchtime": 0, "item_query_time": 1640020000},
+                {"item_video_id": 1009, "item_action_weight": 0, "item_target_watchtime": 0, "item_query_time": 1640020000},
+                {"item_video_id": 1010, "item_action_weight": 0, "item_target_watchtime": 0, "item_query_time": 1640020000},
             ],
             "context": {
                 "user_id": 42, "user_active_degree": 3,
@@ -153,7 +158,10 @@ def build_kuairand_1k_prompts() -> Dict[str, Any]:
         "uih_feature_names": [
             "video_id", "action_timestamp", "action_weight", "watch_time",
         ],
-        "candidate_feature_names": ["item_video_id"],
+        "candidate_feature_names": [
+            "item_video_id", "item_action_weight",
+            "item_target_watchtime", "item_query_time",
+        ],
         "primary_id": "video_id",
     }
 
@@ -163,7 +171,9 @@ def build_streaming_prompts() -> Dict[str, Any]:
 
     UIH features:  item_id, item_rating, action_timestamp,
                    item_weights, dummy_watch_time, item_category_id
-    Candidates:    item_candidate_id, item_candidate_category_id
+    Candidates:    item_candidate_id, item_candidate_rating,
+                   item_query_time, item_action_weights,
+                   item_dummy_watchtime, item_candidate_category_id
     Task:          rating
     """
     prompts: List[GRPrompt] = [
@@ -180,14 +190,14 @@ def build_streaming_prompts() -> Dict[str, Any]:
                  "item_weights": 4, "dummy_watch_time": 0, "item_category_id": 12},
             ],
             "candidates": [
-                {"item_candidate_id": 2001, "item_candidate_category_id": 3},
-                {"item_candidate_id": 2002, "item_candidate_category_id": 7},
-                {"item_candidate_id": 2003, "item_candidate_category_id": 3},
-                {"item_candidate_id": 2004, "item_candidate_category_id": 12},
-                {"item_candidate_id": 2005, "item_candidate_category_id": 5},
-                {"item_candidate_id": 2006, "item_candidate_category_id": 7},
-                {"item_candidate_id": 2007, "item_candidate_category_id": 3},
-                {"item_candidate_id": 2008, "item_candidate_category_id": 12},
+                {"item_candidate_id": 2001, "item_candidate_rating": 0, "item_query_time": 1650020000, "item_action_weights": 0, "item_dummy_watchtime": 0, "item_candidate_category_id": 3},
+                {"item_candidate_id": 2002, "item_candidate_rating": 0, "item_query_time": 1650020000, "item_action_weights": 0, "item_dummy_watchtime": 0, "item_candidate_category_id": 7},
+                {"item_candidate_id": 2003, "item_candidate_rating": 0, "item_query_time": 1650020000, "item_action_weights": 0, "item_dummy_watchtime": 0, "item_candidate_category_id": 3},
+                {"item_candidate_id": 2004, "item_candidate_rating": 0, "item_query_time": 1650020000, "item_action_weights": 0, "item_dummy_watchtime": 0, "item_candidate_category_id": 12},
+                {"item_candidate_id": 2005, "item_candidate_rating": 0, "item_query_time": 1650020000, "item_action_weights": 0, "item_dummy_watchtime": 0, "item_candidate_category_id": 5},
+                {"item_candidate_id": 2006, "item_candidate_rating": 0, "item_query_time": 1650020000, "item_action_weights": 0, "item_dummy_watchtime": 0, "item_candidate_category_id": 7},
+                {"item_candidate_id": 2007, "item_candidate_rating": 0, "item_query_time": 1650020000, "item_action_weights": 0, "item_dummy_watchtime": 0, "item_candidate_category_id": 3},
+                {"item_candidate_id": 2008, "item_candidate_rating": 0, "item_query_time": 1650020000, "item_action_weights": 0, "item_dummy_watchtime": 0, "item_candidate_category_id": 12},
             ],
             "context": {"user_id": 100},
             "num_recommendations": 5,
@@ -201,7 +211,11 @@ def build_streaming_prompts() -> Dict[str, Any]:
             "item_id", "item_rating", "action_timestamp",
             "item_weights", "dummy_watch_time", "item_category_id",
         ],
-        "candidate_feature_names": ["item_candidate_id", "item_candidate_category_id"],
+        "candidate_feature_names": [
+            "item_candidate_id", "item_candidate_rating",
+            "item_query_time", "item_action_weights",
+            "item_dummy_watchtime", "item_candidate_category_id",
+        ],
         "primary_id": "item_id",
     }
 
@@ -210,10 +224,12 @@ def build_debug_prompts() -> Dict[str, Any]:
     """Debug/Synthetic: development and CI testing.
 
     UIH features:  uih_post_id, uih_action_time, uih_weight,
-                   uih_owner_id, uih_watchtime, uih_video_length,
-                   uih_surface_type
-    Candidates:    item_post_id, item_owner_id
-    Context:       viewer_id, dummy_contextual
+                   uih_owner_id, uih_watchtime, uih_surface_type,
+                   uih_video_length
+    Candidates:    item_post_id, item_owner_id, item_surface_type,
+                   item_video_length, item_action_weight,
+                   item_target_watchtime, item_query_time
+    Context:       viewer_id, dummy_contexual
     Task:          vvp100
     """
     prompts: List[GRPrompt] = [
@@ -231,13 +247,13 @@ def build_debug_prompts() -> Dict[str, Any]:
                  "uih_video_length": 90, "uih_surface_type": 1},
             ],
             "candidates": [
-                {"item_post_id": 50, "item_owner_id": 500},
-                {"item_post_id": 60, "item_owner_id": 600},
-                {"item_post_id": 70, "item_owner_id": 500},
-                {"item_post_id": 80, "item_owner_id": 700},
-                {"item_post_id": 90, "item_owner_id": 600},
+                {"item_post_id": 50, "item_owner_id": 500, "item_surface_type": 0, "item_video_length": 0, "item_action_weight": 0, "item_target_watchtime": 0, "item_query_time": 4000},
+                {"item_post_id": 60, "item_owner_id": 600, "item_surface_type": 0, "item_video_length": 0, "item_action_weight": 0, "item_target_watchtime": 0, "item_query_time": 4000},
+                {"item_post_id": 70, "item_owner_id": 500, "item_surface_type": 0, "item_video_length": 0, "item_action_weight": 0, "item_target_watchtime": 0, "item_query_time": 4000},
+                {"item_post_id": 80, "item_owner_id": 700, "item_surface_type": 0, "item_video_length": 0, "item_action_weight": 0, "item_target_watchtime": 0, "item_query_time": 4000},
+                {"item_post_id": 90, "item_owner_id": 600, "item_surface_type": 0, "item_video_length": 0, "item_action_weight": 0, "item_target_watchtime": 0, "item_query_time": 4000},
             ],
-            "context": {"viewer_id": 42, "dummy_contextual": 1},
+            "context": {"viewer_id": 42, "dummy_contexual": 1},
             "num_recommendations": 3,
         },
     ]
@@ -247,10 +263,14 @@ def build_debug_prompts() -> Dict[str, Any]:
         "prompts": prompts,
         "uih_feature_names": [
             "uih_post_id", "uih_action_time", "uih_weight",
-            "uih_owner_id", "uih_watchtime",
-            "uih_video_length", "uih_surface_type",
+            "uih_owner_id", "uih_watchtime", "uih_surface_type",
+            "uih_video_length",
         ],
-        "candidate_feature_names": ["item_post_id", "item_owner_id"],
+        "candidate_feature_names": [
+            "item_post_id", "item_owner_id",
+            "item_surface_type", "item_video_length",
+            "item_action_weight", "item_target_watchtime", "item_query_time",
+        ],
         "primary_id": "uih_post_id",
     }
 

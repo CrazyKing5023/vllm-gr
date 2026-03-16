@@ -13,6 +13,11 @@ HSTU is a recommendation model (not LLM):
 - Uses Target-Aware Attention instead of autoregressive generation
 - Processes user history + candidates in a single forward pass
 - Returns ranking scores instead of token probabilities
+
+Device placement:
+- Sparse (embedding) weights live on CPU to handle large tables without GPU OOM
+- Dense (MLP/Attention) weights live on GPU for fast computation
+- Forward pass: preprocess(CPU) → move_sparse_output_to_device → main_forward(GPU)
 """
 
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
@@ -22,6 +27,38 @@ import torch
 import torch.nn as nn
 
 logger = logging.getLogger(__name__)
+
+
+def move_sparse_output_to_device(
+    seq_embeddings: Dict[str, Any],
+    payload_features: Dict[str, torch.Tensor],
+    uih_seq_lengths: torch.Tensor,
+    num_candidates: torch.Tensor,
+    device: torch.device,
+) -> Tuple[
+    Dict[str, Any],
+    Dict[str, torch.Tensor],
+    torch.Tensor,
+    torch.Tensor,
+]:
+    """Move sparse module (CPU) outputs to GPU for dense forward pass.
+
+    Converts embedding outputs to bfloat16 for efficient GPU computation.
+    """
+    from vllm_gr.models.dlrm_v3.modules.dlrm_hstu import SequenceEmbedding
+
+    num_candidates = num_candidates.to(device)
+    uih_seq_lengths = uih_seq_lengths.to(device)
+    seq_embeddings = {
+        k: SequenceEmbedding(
+            lengths=seq_embeddings[k].lengths.to(device),
+            embedding=seq_embeddings[k].embedding.to(device).to(torch.bfloat16),
+        )
+        for k in seq_embeddings.keys()
+    }
+    for k, v in payload_features.items():
+        payload_features[k] = v.to(device)
+    return seq_embeddings, payload_features, uih_seq_lengths, num_candidates
 
 
 class HSTUPooler(nn.Module):
@@ -86,23 +123,33 @@ class HSTUForRecommendation(nn.Module):
     ):
         super().__init__()
         self.prefix = prefix
-        self._device = device
-        self._device_checked = False
 
         if vllm_config is not None:
             config = vllm_config.model_config.hf_config
 
         self.config = config
 
+        # Determine GPU device for dense forward pass.
+        # During vLLM model loading, the default device context is set to the
+        # target GPU. We capture it here for move_sparse_output_to_device.
+        if device is not None:
+            self._gpu_device = device
+        elif torch.cuda.is_available():
+            self._gpu_device = torch.device(torch.cuda.current_device())
+        else:
+            self._gpu_device = torch.device("cpu")
+
         self._create_hstu_model()
 
         self._pooler = HSTUPooler(self.config.hstu_transducer_embedding_dim)
 
         logger.info(
-            "HSTUForRecommendation initialized: layers=%d, heads=%d, dim=%d",
+            "HSTUForRecommendation initialized: layers=%d, heads=%d, dim=%d, "
+            "gpu_device=%s, embedding_device=cpu",
             self.config.hstu_attn_num_layers,
             self.config.hstu_num_heads,
             self.config.hstu_transducer_embedding_dim,
+            self._gpu_device,
         )
 
     @property
@@ -177,6 +224,10 @@ class HSTUForRecommendation(nn.Module):
             hstu_candidate_feature_names=self.config.hstu_candidate_feature_names,
             merge_uih_candidate_feature_mapping=merge_mapping,
             action_weights=self.config.action_weights or None,
+            action_embedding_init_std=getattr(self.config, "action_embedding_init_std", 0.1),
+            causal_multitask_weights=getattr(self.config, "causal_multitask_weights", 0.2),
+            enable_postprocessor=getattr(self.config, "enable_postprocessor", True),
+            use_layer_norm_postprocessor=getattr(self.config, "use_layer_norm_postprocessor", False),
         )
 
         embedding_configs = self._build_embedding_configs()
@@ -192,21 +243,6 @@ class HSTUForRecommendation(nn.Module):
     # vLLM interface
     # ------------------------------------------------------------------
 
-    def _ensure_on_device(self, target_device: torch.device) -> None:
-        """Move all tensors to target_device if needed (safety for vLLM buffers)."""
-        moved = 0
-        for _, buf in self.named_buffers():
-            if buf.device != target_device:
-                buf.data = buf.data.to(target_device)
-                moved += 1
-        for _, param in self.named_parameters():
-            if param.device != target_device:
-                param.data = param.data.to(target_device)
-                moved += 1
-        if moved:
-            logger.warning("Moved %d tensors to %s", moved, target_device)
-        self._device_checked = True
-
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -217,32 +253,64 @@ class HSTUForRecommendation(nn.Module):
         candidates_features: Optional[Any] = None,
         **kwargs,
     ) -> torch.Tensor:
-        """
-        vLLM-compatible forward pass.
+        """Two-phase forward pass with sparse/dense device separation.
 
-        When uih_features and candidates_features (KeyedJaggedTensors) are
-        provided, runs the full DlrmHSTU inference pipeline.  Otherwise
-        returns a dummy tensor for vLLM warm-up.
+        Phase 1 (CPU): preprocess() — embedding lookups via EmbeddingCollection
+                       on CPU. Produces seq_embeddings + payload_features.
+        Transfer:      move_sparse_output_to_device() — CPU → GPU.
+        Phase 2 (GPU): main_forward() — attention, MLPs, multitask prediction
+                       on GPU.
+
+        When uih_features/candidates_features are None (vLLM warmup),
+        returns a zero tensor on GPU.
         """
         if uih_features is None or candidates_features is None:
             total_tokens = input_ids.numel() if input_ids is not None else 1
-            device = input_ids.device if input_ids is not None else self._get_device()
             return torch.zeros(
                 total_tokens, self.config.hstu_transducer_embedding_dim,
-                device=device,
+                device=self._gpu_device,
             )
 
-        if not self._device_checked:
-            self._ensure_on_device(uih_features.values().device)
+        # Phase 1: sparse preprocess on CPU (embedding lookups)
+        (
+            seq_embeddings,
+            payload_features,
+            max_uih_len,
+            uih_seq_lengths,
+            max_num_candidates,
+            num_candidates,
+        ) = self.hstu.preprocess(
+            uih_features=uih_features,
+            candidates_features=candidates_features,
+        )
 
+        # Transfer: CPU → GPU
+        seq_embeddings, payload_features, uih_seq_lengths, num_candidates = (
+            move_sparse_output_to_device(
+                seq_embeddings=seq_embeddings,
+                payload_features=payload_features,
+                uih_seq_lengths=uih_seq_lengths,
+                num_candidates=num_candidates,
+                device=self._gpu_device,
+            )
+        )
+
+        # Phase 2: dense forward on GPU
         (
             _user_emb, _item_emb, _aux,
             predictions, _labels, _weights,
-        ) = self.hstu(uih_features, candidates_features)
+        ) = self.hstu.main_forward(
+            seq_embeddings=seq_embeddings,
+            payload_features=payload_features,
+            max_uih_len=max_uih_len,
+            uih_seq_lengths=uih_seq_lengths,
+            max_num_candidates=max_num_candidates,
+            num_candidates=num_candidates,
+        )
 
         if predictions is None:
             predictions = torch.zeros(
-                1, 1, device=self._get_device(),
+                1, 1, device=self._gpu_device,
             )
         elif predictions.dim() == 1:
             predictions = predictions.unsqueeze(0)
@@ -252,35 +320,60 @@ class HSTUForRecommendation(nn.Module):
     def load_weights(
         self, weights: Iterable[Tuple[str, torch.Tensor]],
     ) -> Set[str]:
-        """Load model weights (vLLM interface)."""
-        loaded_params: Set[str] = set()
-        params_dict = dict(self.named_parameters())
+        """Load model weights with sparse/dense device separation.
 
-        for name, loaded_weight in weights:
-            if name in params_dict:
-                param = params_dict[name]
-                if param.shape == loaded_weight.shape:
-                    param.data.copy_(loaded_weight)
-                    loaded_params.add(name)
-                else:
-                    logger.warning("Shape mismatch for %s", name)
+        - Sparse weights (embedding_collection) stay on CPU
+        - Dense weights go to GPU
+        - Registered buffers are loaded manually (AutoWeightsLoader
+          only handles nn.Module and nn.Parameter)
 
-        logger.info("Loaded %d parameters", len(loaded_params))
-        return loaded_params
+        Device placement is automatic: parameters were created on their
+        target device (CPU for embeddings via explicit device="cpu",
+        GPU for everything else via vLLM's default device context).
+        param.data.copy_() copies to wherever the parameter already lives.
+        """
+        from vllm.model_executor.models.utils import AutoWeightsLoader
 
-    @classmethod
-    def from_model_config(
-        cls,
-        config: Any,
-        device: torch.device,
-        **kwargs,
-    ) -> "HSTUForRecommendation":
-        return cls(config=config, device=device, **kwargs)
+        buffer_names = {name for name, _ in self.named_buffers()}
+
+        buffer_weights: List[Tuple[str, torch.Tensor]] = []
+        param_weights: List[Tuple[str, torch.Tensor]] = []
+        sparse_count = 0
+        dense_count = 0
+
+        for name, tensor in weights:
+            is_sparse = "embedding_collection" in name
+            if name in buffer_names:
+                buffer_weights.append((name, tensor))
+            else:
+                param_weights.append((name, tensor))
+
+            if is_sparse:
+                sparse_count += 1
+            else:
+                dense_count += 1
+
+        loaded: Set[str] = set()
+
+        if buffer_weights:
+            buf_dict = dict(self.named_buffers())
+            for name, tensor in buffer_weights:
+                buf_dict[name].copy_(tensor)
+                loaded.add(name)
+
+        loader = AutoWeightsLoader(
+            self,
+            skip_prefixes=["_pooler."],
+        )
+        loaded |= loader.load_weights(iter(param_weights))
+
+        logger.info(
+            "Loaded %d weights: %d sparse (CPU), %d dense (GPU), "
+            "%d buffers",
+            len(loaded), sparse_count, dense_count, len(buffer_weights),
+        )
+        return loaded
 
     def _get_device(self) -> torch.device:
-        if self._device is not None:
-            return self._device
-        try:
-            return next(self.parameters()).device
-        except StopIteration:
-            return torch.device("cpu")
+        """Return the GPU device for dense computation."""
+        return self._gpu_device

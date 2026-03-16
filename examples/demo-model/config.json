@@ -2,6 +2,7 @@
   "model_type": "hstu",
   "architectures": ["HSTUEmbeddingModel"],
 
+  "torch_dtype": "bfloat16",
   "is_text_encoder": true,
   "is_encoder_decoder": false,
   "is_attention_free": true,
@@ -22,6 +23,15 @@
   "uih_post_id_feature_name": "item_id",
   "uih_action_time_feature_name": "timestamp",
   "candidates_querytime_feature_name": "query_time",
+  "candidates_weight_feature_name": "item_action_weight",
+  "candidates_watchtime_feature_name": "item_watchtime",
+
+  "hstu_uih_feature_names": [
+    "item_id", "timestamp"
+  ],
+  "hstu_candidate_feature_names": [
+    "item_candidate_id", "query_time"
+  ],
 
   "merge_uih_candidate_feature_mapping": [
     ["item_id", "item_candidate_id"],

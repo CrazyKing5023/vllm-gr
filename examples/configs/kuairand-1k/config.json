@@ -37,6 +37,17 @@
   "uih_action_time_feature_name": "action_timestamp",
   "uih_weight_feature_name": "action_weight",
 
+  "hstu_uih_feature_names": [
+    "user_id", "user_active_degree",
+    "follow_user_num_range", "fans_user_num_range",
+    "friend_user_num_range", "register_days_range",
+    "video_id", "action_timestamp", "action_weight", "watch_time"
+  ],
+  "hstu_candidate_feature_names": [
+    "item_video_id", "item_action_weight",
+    "item_target_watchtime", "item_query_time"
+  ],
+
   "merge_uih_candidate_feature_mapping": [
     ["video_id", "item_video_id"],
     ["action_timestamp", "item_query_time"],

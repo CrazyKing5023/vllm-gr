@@ -8,6 +8,7 @@ from vllm_gr.models.dlrm_v3.modules.dlrm_hstu import DlrmHSTU, DlrmHSTUConfig
 from vllm_gr.models.dlrm_v3.modules.stu import STU, STULayer, STUStack, STULayerConfig
 from vllm_gr.models.dlrm_v3.modules.hstu_transducer import HSTUTransducer
 from vllm_gr.models.dlrm_v3.modules.positional_encoder import HSTUPositionalEncoder
+from vllm_gr.models.dlrm_v3.modules.action_encoder import ActionEncoder
 from vllm_gr.models.dlrm_v3.modules.preprocessors import (
     InputPreprocessor,
     ContextualPreprocessor,
@@ -26,6 +27,7 @@ from vllm_gr.models.dlrm_v3.modules.multitask_module import (
 )
 
 __all__ = [
+    "ActionEncoder",
     "DlrmHSTU",
     "DlrmHSTUConfig",
     "STU",

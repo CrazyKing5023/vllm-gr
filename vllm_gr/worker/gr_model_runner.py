@@ -1,4 +1,4 @@
-﻿# Copyright (c) vllm-GR Authors.
+# Copyright (c) vllm-GR Authors.
 # Licensed under the Apache License, Version 2.0
 
 """
@@ -185,7 +185,9 @@ class GRModelRunner(GPUModelRunner):
         if not gr_reqs:
             return {}
 
-        device = self.device
+        # KJTs are built on CPU: embedding lookups run on CPU (sparse module),
+        # results are then transferred to GPU via move_sparse_output_to_device.
+        device = torch.device("cpu")
         uih_keys: list[str] = gr_reqs[0][1]["uih_keys"]
         cand_keys: list[str] = gr_reqs[0][1]["cand_keys"]
         ctx_keys: list[str] = gr_reqs[0][1].get("ctx_keys", [])
