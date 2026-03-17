@@ -52,6 +52,7 @@ class GRLLM(LLM):
             default_top_k=default_top_k,
             tensor_parallel_size=tensor_parallel_size,
             gpu_memory_utilization=gpu_memory_utilization,
+            **kwargs,
         )
 
         self.llm_engine = GRLLMEngine.from_engine_args(
@@ -168,6 +169,7 @@ class GRLLM(LLM):
     def shutdown(self) -> None:
         if hasattr(self, 'llm_engine') and self.llm_engine is not None:
             self.llm_engine.shutdown()
+            self.llm_engine = None
         logger.info("GRLLM shutdown complete")
 
     def __enter__(self):

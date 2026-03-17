@@ -16,6 +16,7 @@ import glob
 import logging
 
 from vllm.engine.arg_utils import EngineArgs
+from vllm.platforms import current_platform
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,8 @@ class GREngineArgs(EngineArgs):
     
     def __post_init__(self):
         """Post-init processing to ensure proper configuration."""
+        super().__post_init__()
+
         # Merge dataset overrides into hf_overrides (in-memory, never disk)
         self._apply_dataset_overrides()
 
@@ -81,8 +84,8 @@ class GREngineArgs(EngineArgs):
             # HSTU models don't use KV cache, so prefix caching must be disabled.
             self.enable_prefix_caching = False
             
-            # CRITICAL: Inject GRWorker as the custom worker class.
-            self.worker_cls = "vllm_gr.worker.gr_worker.GRWorker"
+            # Select the backend-specific GR worker implementation.
+            self.worker_cls = self._select_gr_worker_cls()
             
             # HSTU models always use bfloat16 (matching upstream DLRM_v3)
             if self.dtype == "auto":
@@ -101,6 +104,16 @@ class GREngineArgs(EngineArgs):
             if not self._has_model_weights():
                 self.load_format = "dummy"
                 logger.info("No model weights found, using dummy loader (random weights)")
+
+    def _is_ascend_platform(self) -> bool:
+        """Return True when the active vLLM platform is Ascend/NPU."""
+        return current_platform.device_type == "npu"
+
+    def _select_gr_worker_cls(self) -> str:
+        """Choose the GR worker implementation for the active platform."""
+        if self._is_ascend_platform():
+            return "vllm_gr.worker.gr_npu_worker.GRNPUWorker"
+        return "vllm_gr.worker.gr_worker.GRWorker"
     
     def _has_model_weights(self) -> bool:
         """Check if the model path contains HuggingFace-style weight files."""
@@ -178,17 +191,14 @@ class GREngineArgs(EngineArgs):
     def create_engine_config(self, usage_context=None):
         """
         Create engine configuration for GR models.
-        
-        Ensures HSTUConfig is registered with HuggingFace AutoConfig before
-        calling the parent's create_engine_config() to use EngineCore.
-        Dataset overrides have already been merged into ``hf_overrides``
-        during ``__post_init__``.
-        """
-        from vllm_gr.config.hstu_hf_config import ensure_hstu_config_registered
-        from vllm_gr.model_executor.models.registry import register_gr_models_to_vllm
 
-        ensure_hstu_config_registered()
-        register_gr_models_to_vllm()
+        Explicitly initializes the current process via ``vllm_gr.plugin``
+        before calling the parent implementation. Dataset overrides have
+        already been merged into ``hf_overrides`` during ``__post_init__``.
+        """
+        from vllm_gr.plugin import initialize_runtime
+
+        initialize_runtime()
 
         logger.info("Creating engine config for model: %s", self.model)
         return super().create_engine_config(usage_context)

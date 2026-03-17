@@ -19,6 +19,41 @@ from vllm_gr.ops.pytorch.pt_hstu_attention import (
 )
 
 
+def hstu_mha_npu(
+    max_seq_len: int,
+    alpha: float,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    seq_offsets: torch.Tensor,
+    causal: bool = True,
+    dropout_pr: float = 0.0,
+    training: bool = True,
+    num_targets: Optional[torch.Tensor] = None,
+    attn_scale: Optional[torch.Tensor] = None,
+    max_attn_len: int = 0,
+    contextual_seq_len: int = 0,
+    min_full_attn_seq_len: int = 0,
+) -> torch.Tensor:
+    """Conservative NPU attention entry point using the PyTorch path."""
+    return pytorch_hstu_mha(
+        max_seq_len=max_seq_len,
+        alpha=alpha,
+        q=q,
+        k=k,
+        v=v,
+        seq_offsets=seq_offsets,
+        causal=causal,
+        dropout_pr=dropout_pr,
+        training=training,
+        num_targets=num_targets,
+        attn_scale=attn_scale,
+        max_attn_len=max_attn_len,
+        contextual_seq_len=contextual_seq_len,
+        min_full_attn_seq_len=min_full_attn_seq_len,
+    )
+
+
 def hstu_mha(
     max_seq_len: int,
     alpha: float,
@@ -43,7 +78,24 @@ def hstu_mha(
     
     Currently uses PyTorch implementation, kernel parameter reserved for future extensions.
     """
-    # Use PyTorch implementation
+    if kernel == HammerKernel.NPU:
+        return hstu_mha_npu(
+            max_seq_len=max_seq_len,
+            alpha=alpha,
+            q=q,
+            k=k,
+            v=v,
+            seq_offsets=seq_offsets,
+            causal=causal,
+            dropout_pr=dropout_pr,
+            training=training,
+            num_targets=num_targets,
+            attn_scale=attn_scale,
+            max_attn_len=max_attn_len,
+            contextual_seq_len=contextual_seq_len,
+            min_full_attn_seq_len=min_full_attn_seq_len,
+        )
+
     return pytorch_hstu_mha(
         max_seq_len=max_seq_len,
         alpha=alpha,

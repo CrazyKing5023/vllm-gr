@@ -11,9 +11,11 @@ Contains HammerModule base class, kernel selection, and helper functions.
 import abc
 import copy
 from enum import Enum, unique
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional
 
 import torch
+
+from vllm_gr.utils import ReliableOps
 
 
 @unique
@@ -23,6 +25,7 @@ class HammerKernel(Enum):
     TLX = "TLX"
     PYTORCH = "PYTORCH"
     CUDA = "CUDA"
+    NPU = "NPU"
     TRITON_CC = "TRITON_CC"
 
 
@@ -187,23 +190,18 @@ def init_mlp_weights_optional_bias(m: torch.nn.Module) -> None:
             m.bias.data.fill_(0.0)
 
 
-# GPU availability checks
-nv_gpu_unavailable: Tuple[bool, str] = (
-    not torch.cuda.is_available() or torch.cuda.device_count() == 0,
-    "CUDA is not available or no GPUs detected",
-)
-nv_gpu_available: bool = not nv_gpu_unavailable[0]
-gpu_available: bool = nv_gpu_available
-
-
 def jagged_to_padded_dense(
     values: torch.Tensor,
     offsets: List[torch.Tensor],
     max_lengths: List[int],
     padding_value: float,
 ) -> torch.Tensor:
-    """Convert Jagged Tensor to padded dense tensor via fbgemm only."""
-    return torch.ops.fbgemm.jagged_to_padded_dense(
+    """
+    Convert Jagged Tensor to padded dense tensor
+    
+    Prefers fbgemm, falls back to PyTorch implementation if unavailable.
+    """
+    return ReliableOps.jagged_to_padded_dense(
         values=values,
         offsets=offsets,
         max_lengths=max_lengths,
@@ -215,10 +213,13 @@ def dense_to_jagged(
     dense: torch.Tensor,
     x_offsets: List[torch.Tensor],
 ) -> torch.Tensor:
-    """Convert padded dense tensor to Jagged Tensor via fbgemm only."""
-    return torch.ops.fbgemm.dense_to_jagged(
+    """
+    Convert padded dense tensor to Jagged Tensor
+    
+    Prefers fbgemm, falls back to PyTorch implementation if unavailable.
+    """
+    return ReliableOps.dense_to_jagged(
         dense=dense,
         x_offsets=x_offsets,
-    )[0]
-
+    )
 

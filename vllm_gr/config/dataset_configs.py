@@ -92,7 +92,7 @@ def get_hstu_config_overrides(dataset: str) -> Dict[str, Any]:
         overrides["contextual_feature_to_max_length"] = {"user_id": 1}
         overrides["contextual_feature_to_min_uih_length"] = {"user_id": 20}
         overrides["candidates_weight_feature_name"] = "item_action_weights"
-        overrides["candidates_watchtime_feature_name"] = "item_rating"
+        overrides["candidates_watchtime_feature_name"] = "item_candidate_rating"
         overrides["candidates_querytime_feature_name"] = "item_query_time"
         overrides["user_embedding_feature_names"] = [
             "item_id", "user_id", "item_category_id",

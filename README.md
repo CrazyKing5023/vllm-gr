@@ -13,17 +13,58 @@ vllm-GR is a generative recommendation model inference engine built on the vLLM 
 - **GRRequestOutput** - Type-safe output with RecommendedItem objects
 - **Batch Processing** - Efficient batch recommendation support
 - **Full vLLM Integration** - Direct inheritance from vLLM classes
+- **跨平台运行时** - 共享 GR/HSTU 逻辑，并在 GPU / NPU 适配边界处分层
+
+## 平台治理
+
+GPU / NPU 共存的仓库治理规则见 [PLATFORM_GOVERNANCE.md](PLATFORM_GOVERNANCE.md)。
+当前实现的分层与调用链见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+主线功能合入时的执行清单见 [MIGRATION_CHECKLIST.md](MIGRATION_CHECKLIST.md)。
+
+简要原则如下：
+
+- 保持一个主线仓库和一套共享业务逻辑
+- 平台专用代码只允许出现在 `worker/`、`utils/`、以及面向后端的 `ops/` 边界层
+- 不长期维护重复的 GPU / NPU 业务分支
 
 ## Dependencies
 
-### Required Dependencies
-- **PyTorch** (`torch>=2.0.0`): Required for all model inference
-- **tqdm** (`tqdm>=4.60.0`): Required for progress display
-- **vLLM** (`vllm>=0.14.1`): Required for LLM/LLMEngine base classes
+### Shared Layer
 
-### Optional Dependencies
-- **TorchRec** (`torchrec>=0.6.0`): Enables KeyedJaggedTensor support for optimized embedding lookup
-- **SafeTensors** (`safetensors>=0.4.0`): For model weight loading
+- `msgspec`
+- `tqdm>=4.66.0`
+
+### GPU Runtime
+
+- `torch==2.9.1`
+- `numpy==2.2.6`
+- `opencv-python-headless>=4.13.0`
+- `vllm==0.14.1`
+- `torchrec==1.4.0`
+- `fbgemm-gpu==1.4.0`
+
+### NPU Runtime
+
+- `opencv-python-headless>=4.13.0`
+- `vllm==0.14.1`
+- `fbgemm-gpu-cpu==1.4.0`
+- `torch==2.9.1` 需由 NPU 基础环境预装
+- `torch-npu==2.9.0` 需由 NPU 基础环境预装
+- `numpy` 建议跟随 NPU 基础环境 / 上游栈预装，不由本仓直接安装
+- `vllm_ascend==0.14.0rc1` 需由 NPU 基础环境预装
+- `torchrec==1.4.0+npu` 由 RecSDK 单独安装
+
+NPU 运行说明：
+
+- 本仓仍然遵循“同仓共存，但单次运行只选择 GPU 或 NPU 其中一条路径”
+- 当前仓的 NPU 基线固定为 `torch==2.9.1`、`torch-npu==2.9.0`、`vllm_ascend==0.14.0rc1`
+- `opencv-python-headless` 与 GPU 路径保持一致，当前口径为 `>=4.13.0`
+- `torch==2.9.1` 不由本仓依赖直接安装，要求随 Ascend / CANN 环境预先就绪
+- `torch-npu==2.9.0` 不由本仓依赖直接安装，要求随 Ascend / CANN 环境预先就绪
+- `numpy` 不由本仓依赖直接安装，建议保持与 NPU 基础环境一致
+- `vllm_ascend==0.14.0rc1` 不由本仓依赖直接安装，要求随 Ascend / CANN 环境预先就绪
+- `torchrec==1.4.0+npu` 不由本仓直接安装，要求先完成 RecSDK 环境安装
+- NPU 平台初始化继续委托给 `vllm_ascend`
 
 ## Quick Start
 
@@ -34,15 +75,91 @@ vllm-GR is a generative recommendation model inference engine built on the vLLM 
 git clone https://github.com/your-org/vllm-GR.git
 cd vllm-GR
 
-# Standard install (includes torch, tqdm, vllm)
+# Shared layer only
 pip install .
+
+# Or: shared layer from requirements shim
+pip install -r requirements.txt
 
 # Development install (editable mode)
 pip install -e ".[dev]"
 
-# Full install with all dependencies
-pip install ".[all]"
+# GPU runtime
+pip install -r requirements-gpu.txt
+# or
+pip install ".[gpu]"
+
+# Full GPU runtime + dev + serving extras
+pip install ".[all-gpu]"
+
+# NPU runtime
+# torch==2.9.1 should already exist in the base NPU environment
+# torch-npu==2.9.0 should already exist in the base NPU environment
+# numpy should also follow the base NPU environment if it is pinned there
+# vllm_ascend==0.14.0rc1 should already exist in the base NPU environment
+pip install -r requirements-npu.txt
+# or
+pip install ".[npu]"
+
+# Full NPU runtime + dev + serving extras
+pip install ".[all-npu]"
 ```
+
+安装建议：
+
+- 新环境优先使用 `requirements-gpu.txt` 或 `requirements-npu.txt`
+- `.[all]` 目前只保留为兼容别名，默认对齐 GPU 路径；新流程不建议继续把它当作“双平台通用安装”
+- 如果要走 NPU 路径，优先使用预装 `torch==2.9.1`、预装 `torch-npu==2.9.0`、预装 `vllm_ascend==0.14.0rc1` 这一组固定版本
+- 如果要走 NPU 路径，需额外确认 RecSDK 已提供 `torchrec==1.4.0+npu`
+
+### Final NPU Install Order
+
+建议固定使用下面的顺序：
+
+1. 基础环境
+   预装 `torch==2.9.1`、`torch-npu==2.9.0`、`numpy`、`vllm_ascend==0.14.0rc1`，并确认 `torch.npu.is_available()` 为 `True`。
+2. RecSDK
+   单独安装并确认可提供 `torchrec==1.4.0+npu`。
+3. GR 主仓
+   进入仓库后执行 `pip install -r requirements-npu.txt`；如果要跑测试或验收，执行 `pip install -e ".[all-npu]"`。
+
+建议补一个最小确认：
+
+```bash
+cd /root/PROJECT/HSTU_Update/GR_Repo_main
+
+python tests/test_npu_smoke.py
+python scripts/run_tests.py --suite platform-npu
+```
+
+### Real Model Smoke
+
+建议把真实模型 smoke 固定为后续回归入口：
+
+```bash
+cd /root/PROJECT/HSTU_Update/GR_Repo_main
+
+MODEL_DIR=/path/to/converted_model
+
+python examples/load_converted_model.py \
+    --model "$MODEL_DIR"
+```
+
+如果训练 checkpoint 还未转换，可先执行：
+
+```bash
+cd /root/PROJECT/HSTU_Update/GR_Repo_main
+
+CKPT_DIR=/path/to/training_checkpoint
+OUT_DIR=/path/to/converted_model
+
+python scripts/convert_gr_checkpoint.py \
+    --input-path "$CKPT_DIR" \
+    --output-dir "$OUT_DIR" \
+    --dataset movielens-1m
+```
+
+NPU 侧 examples 的现场执行清单见 [EXAMPLES_NPU_RUNBOOK.md](/root/PROJECT/HSTU_Update/GR_Repo_main/EXAMPLES_NPU_RUNBOOK.md)。
 
 ### Uninstallation
 
@@ -50,6 +167,8 @@ pip install ".[all]"
 # Uninstall vllm-GR
 pip uninstall vllm-gr
 ```
+
+如果是平台专用环境，通常还需要按环境分别卸载 GPU/NPU 侧附加依赖。
 
 ### Basic Usage
 

@@ -1,47 +1,11 @@
-# vllm-GR Requirements
-# Generative Recommender Inference Engine based on vLLM architecture
+# vllm-GR Requirements Compatibility Entry
 #
-# Requires Python >=3.10
-# Versions aligned with vllm 0.14.1 ecosystem
+# This file is intentionally no longer a full platform environment.
+# Use one of the platform-specific entry points instead:
+#   pip install -r requirements-gpu.txt
+#   pip install -r requirements-npu.txt
 #
-# Installation:
-#   pip install .                    # Standard install
-#   pip install ".[all]"             # Full install with all dependencies
-#   pip install -e ".[dev]"          # Editable install for development
-#
-# Uninstallation:
-#   pip uninstall vllm-gr
+# Kept as a compatibility shim for tooling that still expects
+# a top-level requirements.txt.
 
-# ============================================================
-# Required: Core dependencies
-# ============================================================
-torch==2.9.1
-numpy==2.2.6
-msgspec
-tqdm>=4.66.0
-opencv-python-headless>=4.13.0
-vllm==0.14.1
-
-# ============================================================
-# Required: TorchRec for embedding collection and KJT
-# ============================================================
-torchrec==1.4.0
-fbgemm-gpu==1.4.0
-
-# ============================================================
-# Development dependencies
-# ============================================================
-pytest>=8.0.0
-pytest-cov>=6.0.0
-
-# ============================================================
-# Optional: SafeTensors for model loading
-# ============================================================
-safetensors>=0.4.5
-
-# ============================================================
-# Optional: Serving (future extension)
-# ============================================================
-# fastapi[standard]>=0.115.0
-# uvicorn>=0.35.0
-# pydantic>=2.12.0
+-r requirements-common.txt

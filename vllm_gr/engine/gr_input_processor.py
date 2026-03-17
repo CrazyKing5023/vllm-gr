@@ -142,14 +142,31 @@ class GRInputProcessor(InputProcessor):
         )
 
         context = prompt.get("context") or {}
-        ctx_keys = sorted(context.keys())
-        try:
-            ctx_values_per_key = [[int(context[k])] for k in ctx_keys]
-        except (ValueError, TypeError) as e:
-            raise ValueError(
-                f"Context values must be convertible to int. "
-                f"Got context={context!r}: {e}"
-            ) from e
+        ctx_keys, ctx_values_per_key = self._extract_context_features(context)
+
+        (
+            uih_keys,
+            cand_keys,
+            ctx_keys,
+            schema_fingerprint,
+        ) = self.normalize_gr_schema(
+            uih_keys=uih_keys,
+            cand_keys=cand_keys,
+            ctx_keys=ctx_keys,
+        )
+        self.validate_feature_group(
+            "uih",
+            uih_keys,
+            uih_values_per_key,
+            uih_lengths_per_key,
+        )
+        self.validate_feature_group(
+            "cand",
+            cand_keys,
+            cand_values_per_key,
+            cand_lengths_per_key,
+        )
+        self.validate_context_group(ctx_keys, ctx_values_per_key)
 
         gr_features = GRFeaturesPayload(
             uih_keys=uih_keys,
@@ -190,12 +207,120 @@ class GRInputProcessor(InputProcessor):
 
         logger.debug(
             "Processed GR request %s: uih_keys=%s, uih_len=%d, "
-            "cand_keys=%s, cand_len=%d, num_recs=%d",
+            "cand_keys=%s, cand_len=%d, num_recs=%d, schema=%s",
             request_id, uih_keys, len(recent_history),
             cand_keys, len(limited_candidates), num_recommendations,
+            schema_fingerprint,
         )
 
         return request
+
+    @staticmethod
+    def normalize_gr_schema(
+        *,
+        uih_keys: list[str],
+        cand_keys: list[str],
+        ctx_keys: list[str],
+    ) -> tuple[list[str], list[str], list[str], str]:
+        """Normalize and validate the per-request schema boundary."""
+        normalized_uih = GRInputProcessor._normalize_keys("uih_keys", uih_keys)
+        normalized_cand = GRInputProcessor._normalize_keys("cand_keys", cand_keys)
+        normalized_ctx = GRInputProcessor._normalize_keys("ctx_keys", ctx_keys)
+        fingerprint = GRInputProcessor.build_schema_fingerprint(
+            uih_keys=normalized_uih,
+            cand_keys=normalized_cand,
+            ctx_keys=normalized_ctx,
+        )
+        return normalized_uih, normalized_cand, normalized_ctx, fingerprint
+
+    @staticmethod
+    def build_schema_fingerprint(
+        *,
+        uih_keys: list[str],
+        cand_keys: list[str],
+        ctx_keys: list[str],
+    ) -> str:
+        """Return a stable local fingerprint for a request schema."""
+        return (
+            f"uih:{','.join(uih_keys)}|"
+            f"cand:{','.join(cand_keys)}|"
+            f"ctx:{','.join(ctx_keys)}"
+        )
+
+    @staticmethod
+    def validate_feature_group(
+        group_name: str,
+        keys: list[str],
+        values_per_key: list[list[int]],
+        lengths_per_key: list[int],
+    ) -> None:
+        """Ensure a serialized feature group is internally consistent."""
+        if len(keys) != len(values_per_key) or len(keys) != len(lengths_per_key):
+            raise ValueError(
+                f"{group_name} schema is inconsistent: "
+                f"len(keys)={len(keys)}, "
+                f"len(values_per_key)={len(values_per_key)}, "
+                f"len(lengths_per_key)={len(lengths_per_key)}"
+            )
+
+        for key, values, length in zip(keys, values_per_key, lengths_per_key):
+            if int(length) != len(values):
+                raise ValueError(
+                    f"{group_name} feature {key!r} has length metadata {length} "
+                    f"but {len(values)} values"
+                )
+
+    @staticmethod
+    def validate_context_group(
+        ctx_keys: list[str],
+        ctx_values_per_key: list[list[int]],
+    ) -> None:
+        """Context features are per-request scalars and must stay 1:1."""
+        if len(ctx_keys) != len(ctx_values_per_key):
+            raise ValueError(
+                f"context schema is inconsistent: len(ctx_keys)={len(ctx_keys)}, "
+                f"len(ctx_values_per_key)={len(ctx_values_per_key)}"
+            )
+
+        for key, values in zip(ctx_keys, ctx_values_per_key):
+            if len(values) != 1:
+                raise ValueError(
+                    f"context feature {key!r} must contain exactly one value, "
+                    f"got {len(values)}"
+                )
+
+    @staticmethod
+    def _extract_context_features(
+        context: Mapping[str, Any],
+    ) -> tuple[list[str], list[list[int]]]:
+        ctx_keys = sorted(context.keys())
+        try:
+            ctx_values_per_key = [[int(context[k])] for k in ctx_keys]
+        except (ValueError, TypeError) as e:
+            raise ValueError(
+                f"Context values must be convertible to int. "
+                f"Got context={context!r}: {e}"
+            ) from e
+        return ctx_keys, ctx_values_per_key
+
+    @staticmethod
+    def _normalize_keys(group_name: str, keys: list[str]) -> list[str]:
+        normalized_keys: list[str] = []
+        seen: set[str] = set()
+
+        for key in keys:
+            if not isinstance(key, str) or not key:
+                raise ValueError(
+                    f"{group_name} contains an invalid key: {key!r}"
+                )
+            if key in seen:
+                raise ValueError(
+                    f"{group_name} contains duplicate key: {key!r}"
+                )
+            normalized_keys.append(key)
+            seen.add(key)
+
+        return normalized_keys
 
     @staticmethod
     def _extract_features(

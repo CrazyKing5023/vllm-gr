@@ -2,41 +2,39 @@
 # Copyright (c) vllm-GR Authors.
 # Licensed under the Apache License, Version 2.0
 
-"""
-Simple inference example for vllm-GR
+"""Simple inference example for vllm-GR."""
 
-This example demonstrates how to use the GRLLM class for offline recommendation.
-It runs the full HSTU model forward pass. When no pretrained weights are provided,
-the model uses randomly initialized weights for demonstration purposes.
-
-Demo Mode:
-- Uses 'demo-model' directory which contains config.json with model architecture
-- No actual weights file exists, so the model uses randomly initialized weights
-- This allows testing the full inference pipeline without real model weights
-"""
-
-import sys
+import argparse
 import os
-
-# Enable CUDA debugging - this makes CUDA errors synchronous and provides better error messages
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 # Enable verbose logging
 import logging
 logging.basicConfig(level=logging.INFO, format='%(name)s - %(levelname)s - %(message)s')
 
-# Add parent directory to path
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(SCRIPT_DIR))
+from runtime_utils import add_repo_root_to_path, add_runtime_args, describe_runtime
 
-from vllm_gr import GRLLM, GRPrompt
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+add_repo_root_to_path(__file__)
 
 # Demo model path - relative to examples directory
 DEMO_MODEL_PATH = os.path.join(SCRIPT_DIR, "demo-model")
 
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run a simple vllm-GR recommendation example",
+    )
+    add_runtime_args(parser, default_model=DEMO_MODEL_PATH)
+    parser.add_argument("--top-k", type=int, default=10, help="Number of recommendations to return.")
+    parser.add_argument("--max-seq-len", type=int, default=64, help="Maximum user history sequence length.")
+    parser.add_argument("--max-candidates", type=int, default=50, help="Maximum number of candidate items.")
+    return parser
+
+
 def main():
     """Run a simple recommendation inference."""
+    args = build_parser().parse_args()
+    from vllm_gr import GRLLM, GRPrompt
     
     print("=" * 60)
     print(" vllm-GR Simple Inference Example")
@@ -49,36 +47,41 @@ def main():
     # GRLLM only accepts runtime/serving parameters (max_seq_len, top_k, etc.).
     
     print(f"\n[Model Path]")
-    print(f"   Using demo model: {DEMO_MODEL_PATH}")
+    print(f"   Using model: {args.model}")
     
     llm = GRLLM(
-        model=DEMO_MODEL_PATH,  # Demo model with config but no weights
-        max_seq_len=64,         # Override config for demo (smaller for speed)
-        max_candidates=50,
-        default_top_k=10,
+        model=args.model,
+        max_seq_len=args.max_seq_len,
+        max_candidates=args.max_candidates,
+        default_top_k=args.top_k,
     )
+    active_device = describe_runtime(llm, expected_device=args.expect_device)
     
     print(f"\n[Configuration]")
     print(f"   Max sequence length: {llm.max_seq_len}")
     print(f"   Max candidates: {llm.max_candidates}")
     print(f"   Default top-k: {llm.default_top_k}")
     print(f"   Engine: {llm.engine_class.__name__}")
-    print(f"   Model: HSTU with randomly initialized weights (demo mode)")
+    print(f"   Device path: {active_device}")
+    print("   Model: HSTU with randomly initialized weights (demo mode)")
     
     # 2. Prepare a recommendation request using GRPrompt format
-    # GRPrompt is the standard input format for vllm-GR
+    # GRPrompt is the standard input format for vllm-GR.
+    # Keep this aligned with examples/demo-model/config.json:
+    #   UIH keys: item_id, timestamp
+    #   candidate keys: item_candidate_id, query_time
     prompt: GRPrompt = {
         "user_id": "user_alice_12345",
         
         # User's interaction history
         "user_history": [
-            {"item_id": 1001, "timestamp": 1609459200, "rating": 5, "action_type": 1},  # The_Matrix
-            {"item_id": 1002, "timestamp": 1609545600, "rating": 4, "action_type": 1},  # Inception
-            {"item_id": 1003, "timestamp": 1609632000, "rating": 5, "action_type": 2},  # Interstellar
-            {"item_id": 1004, "timestamp": 1609718400, "rating": 4, "action_type": 1},  # Blade_Runner_2049
-            {"item_id": 1005, "timestamp": 1609804800, "rating": 5, "action_type": 2},  # Dune
-            {"item_id": 1006, "timestamp": 1609891200, "rating": 3, "action_type": 0},  # Arrival
-            {"item_id": 1007, "timestamp": 1609977600, "rating": 4, "action_type": 1},  # Ex_Machina
+            {"item_id": 1001, "timestamp": 1609459200},  # The_Matrix
+            {"item_id": 1002, "timestamp": 1609545600},  # Inception
+            {"item_id": 1003, "timestamp": 1609632000},  # Interstellar
+            {"item_id": 1004, "timestamp": 1609718400},  # Blade_Runner_2049
+            {"item_id": 1005, "timestamp": 1609804800},  # Dune
+            {"item_id": 1006, "timestamp": 1609891200},  # Arrival
+            {"item_id": 1007, "timestamp": 1609977600},  # Ex_Machina
         ],
         
         # Candidate items to rank (keys use model-internal candidate names)
@@ -116,7 +119,7 @@ def main():
     outputs = llm.recommend(
         prompts=[prompt],
         use_tqdm=False,
-        top_k=10,
+        top_k=args.top_k,
     )
     
     # 4. Display results
@@ -147,7 +150,7 @@ def main():
     
     print("\n" + "=" * 60)
     print(" Example completed successfully!")
-    print(" Full HSTU model forward pass was executed.")
+    print(f" Full HSTU model forward pass was executed on {active_device}.")
     print("=" * 60)
 
 

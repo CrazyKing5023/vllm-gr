@@ -8,7 +8,8 @@ Registers GR-specific model architectures with vLLM's global ModelRegistry
 using the stable public API (ModelRegistry.register_model).
 
 Usage:
-    import vllm_gr  # Auto-registers on import
+    from vllm_gr.plugin import initialize_runtime
+    initialize_runtime()
 
     # Or manually:
     from vllm_gr.model_executor.models.registry import register_gr_models_to_vllm

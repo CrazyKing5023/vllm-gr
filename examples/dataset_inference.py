@@ -24,21 +24,21 @@ Usage:
     python dataset_inference.py kuairand-1k streaming
 """
 
-import sys
 import os
 import time
 import argparse
-from typing import List, Dict, Any
-
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+from typing import TYPE_CHECKING, List, Dict, Any
 
 import logging
 logging.basicConfig(level=logging.INFO, format='%(name)s - %(levelname)s - %(message)s')
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(SCRIPT_DIR))
+from runtime_utils import add_repo_root_to_path, add_runtime_args, describe_runtime
 
-from vllm_gr import GRLLM, GRPrompt, GRRequestOutput
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+add_repo_root_to_path(__file__)
+
+if TYPE_CHECKING:
+    from vllm_gr import GRPrompt, GRRequestOutput
 
 
 # =========================================================================
@@ -60,7 +60,7 @@ def build_movielens_1m_prompts() -> Dict[str, Any]:
     pd.Categorical().cat.codes converts raw values (e.g. zip_code
     "48067") into sequential IDs (e.g. 567).
     """
-    prompts: List[GRPrompt] = [
+    prompts: List["GRPrompt"] = [
         {
             "user_id": "ml_user_001",
             "user_history": [
@@ -114,7 +114,7 @@ def build_kuairand_1k_prompts() -> Dict[str, Any]:
     Tasks:         is_click, is_like, is_follow, is_comment,
                    is_forward, is_hate, long_view, is_profile_enter
     """
-    prompts: List[GRPrompt] = [
+    prompts: List["GRPrompt"] = [
         {
             "user_id": "kr_user_001",
             "user_history": [
@@ -176,7 +176,7 @@ def build_streaming_prompts() -> Dict[str, Any]:
                    item_dummy_watchtime, item_candidate_category_id
     Task:          rating
     """
-    prompts: List[GRPrompt] = [
+    prompts: List["GRPrompt"] = [
         {
             "user_id": "stream_user_001",
             "user_history": [
@@ -229,10 +229,10 @@ def build_debug_prompts() -> Dict[str, Any]:
     Candidates:    item_post_id, item_owner_id, item_surface_type,
                    item_video_length, item_action_weight,
                    item_target_watchtime, item_query_time
-    Context:       viewer_id, dummy_contexual
+    Context:       viewer_id, dummy_contextual
     Task:          vvp100
     """
-    prompts: List[GRPrompt] = [
+    prompts: List["GRPrompt"] = [
         {
             "user_id": "debug_user_001",
             "user_history": [
@@ -253,7 +253,7 @@ def build_debug_prompts() -> Dict[str, Any]:
                 {"item_post_id": 80, "item_owner_id": 700, "item_surface_type": 0, "item_video_length": 0, "item_action_weight": 0, "item_target_watchtime": 0, "item_query_time": 4000},
                 {"item_post_id": 90, "item_owner_id": 600, "item_surface_type": 0, "item_video_length": 0, "item_action_weight": 0, "item_target_watchtime": 0, "item_query_time": 4000},
             ],
-            "context": {"viewer_id": 42, "dummy_contexual": 1},
+            "context": {"viewer_id": 42, "dummy_contextual": 1},
             "num_recommendations": 3,
         },
     ]
@@ -287,8 +287,9 @@ DATASET_BUILDERS = {
 # Runner
 # =========================================================================
 
-def run_dataset(spec: Dict[str, Any]) -> None:
+def run_dataset(spec: Dict[str, Any], args: argparse.Namespace) -> None:
     """Run inference for a single dataset specification."""
+    from vllm_gr import GRLLM, GRRequestOutput
     dataset = spec["dataset"]
     config_dir = spec["config_dir"]
     prompts = spec["prompts"]
@@ -305,17 +306,18 @@ def run_dataset(spec: Dict[str, Any]) -> None:
     print(f"\n  Initializing GRLLM...")
     llm = GRLLM(
         model=config_dir,
-        max_seq_len=64,
-        max_candidates=50,
-        default_top_k=5,
+        max_seq_len=args.max_seq_len,
+        max_candidates=args.max_candidates,
+        default_top_k=args.top_k,
     )
+    active_device = describe_runtime(llm, expected_device=args.expect_device)
 
     print(f"  Running inference ({len(prompts)} request(s))...")
     start = time.time()
     outputs: List[GRRequestOutput] = llm.recommend(
         prompts=prompts,
         use_tqdm=False,
-        top_k=5,
+        top_k=args.top_k,
     )
     elapsed_ms = (time.time() - start) * 1000
 
@@ -326,7 +328,8 @@ def run_dataset(spec: Dict[str, Any]) -> None:
         for item in output.recommendations:
             print(f"    #{item.rank}: {pid}={item.item_id}  score={item.score:.4f}")
 
-    print(f"\n  Latency: {elapsed_ms:.1f}ms")
+    print(f"\n  Device path: {active_device}")
+    print(f"  Latency: {elapsed_ms:.1f}ms")
     llm.shutdown()
 
 
@@ -334,10 +337,14 @@ def main():
     parser = argparse.ArgumentParser(
         description="Run DLRM_v3 inference with different datasets",
     )
+    add_runtime_args(parser, include_model=False)
     parser.add_argument(
         "datasets", nargs="*", default=list(DATASET_BUILDERS.keys()),
         help=f"Datasets to run. Choices: {list(DATASET_BUILDERS.keys())}",
     )
+    parser.add_argument("--top-k", type=int, default=5, help="Number of recommendations to return.")
+    parser.add_argument("--max-seq-len", type=int, default=64, help="Maximum user history sequence length.")
+    parser.add_argument("--max-candidates", type=int, default=50, help="Maximum number of candidate items.")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -353,7 +360,7 @@ def main():
             print(f"\n  [SKIP] Unknown dataset: {name}")
             continue
         spec = DATASET_BUILDERS[name]()
-        run_dataset(spec)
+        run_dataset(spec, args)
 
     print(f"\n{'=' * 60}")
     print(f"  All done! Ran {len(args.datasets)} dataset(s).")

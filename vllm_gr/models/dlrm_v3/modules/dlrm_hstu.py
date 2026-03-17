@@ -41,6 +41,10 @@ from vllm_gr.models.dlrm_v3.modules.preprocessors import ContextualPreprocessor
 from vllm_gr.models.dlrm_v3.modules.stu import STU, STULayer, STULayerConfig, STUStack
 from vllm_gr.ops.jagged_tensors import concat_2D_jagged
 from vllm_gr.ops.layer_norm import LayerNorm, SwishLayerNorm
+from vllm_gr.utils import (
+    ReliableOps,
+    get_hstu_autocast_context,
+)
 
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -48,7 +52,7 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 def _cumsum(lengths: torch.Tensor) -> torch.Tensor:
     """Compute inclusive prefix-sum with leading zero (complete cumsum)."""
-    return torch.ops.fbgemm.asynchronous_complete_cumsum(lengths)
+    return ReliableOps.asynchronous_complete_cumsum(lengths)
 
 
 class SequenceEmbedding(NamedTuple):
@@ -133,22 +137,22 @@ class DlrmHSTU(HammerModule):
         is_inference: bool = True,
         is_dense: bool = False,
         bf16_training: bool = True,
+        embedding_device: Optional[torch.device] = None,
     ) -> None:
         super().__init__(is_inference=is_inference)
         logger.info(f"Initialize HSTU module with configs {hstu_configs}")
 
         self._hstu_configs = hstu_configs
         self._bf16_training: bool = bf16_training
+        self._embedding_device = self._consume_embedding_device(embedding_device)
         set_static_max_seq_lens([self._hstu_configs.max_seq_len])
 
         if not is_dense:
-            # Embeddings live on CPU to avoid GPU OOM for large tables.
-            # HSTUForRecommendation.forward() calls preprocess() on CPU for
-            # embedding lookups, then transfers results to GPU for main_forward().
+            # Phase 1 keeps embedding execution on the conservative runtime device.
             self._embedding_collection: EmbeddingCollection = EmbeddingCollection(
                 tables=list(embedding_tables.values()),
                 need_indices=False,
-                device=torch.device("cpu"),
+                device=self._embedding_device,
             )
 
         # multitask configs must be sorted by task types
@@ -274,6 +278,25 @@ class DlrmHSTU(HammerModule):
             ),
             LayerNorm(hstu_configs.hstu_transducer_embedding_dim),
         ).apply(init_mlp_weights_optional_bias)
+
+    @staticmethod
+    def _consume_embedding_device(
+        embedding_device: Optional[torch.device],
+    ) -> torch.device:
+        """Consume an already-resolved embedding device from runtime policy.
+
+        DlrmHSTU should not infer a platform policy on its own. The caller is
+        expected to pass the resolved phase-1 device explicitly. A CPU fallback
+        is kept only as a compatibility path for older call-sites.
+        """
+        if embedding_device is None:
+            logger.warning(
+                "DlrmHSTU received no explicit embedding_device; "
+                "falling back to CPU for compatibility. "
+                "Callers should pass the resolved runtime policy result."
+            )
+            return torch.device("cpu")
+        return torch.device(embedding_device)
 
     # =========================================================================
     # preprocess: KJT merge → EmbeddingCollection → payload + seq_embeddings
@@ -451,9 +474,8 @@ class DlrmHSTU(HammerModule):
         if (not self.is_inference) and self._bf16_training:
             embedding = embedding.to(torch.bfloat16)
 
-        with torch.autocast(
-            "cuda",
-            dtype=torch.bfloat16,
+        with get_hstu_autocast_context(
+            embedding,
             enabled=(not self.is_inference) and self._bf16_training,
         ):
             candidates_user_embeddings, _ = self._hstu_transducer(

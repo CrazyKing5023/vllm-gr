@@ -85,6 +85,45 @@ class TestExtractFeatures(unittest.TestCase):
         rating_idx = keys.index("rating")
         self.assertEqual(values[rating_idx], [5, 0])
 
+    def test_schema_fingerprint_is_stable(self):
+        from vllm_gr.engine.gr_input_processor import GRInputProcessor
+
+        _, _, _, fp1 = GRInputProcessor.normalize_gr_schema(
+            uih_keys=["item_id", "timestamp"],
+            cand_keys=["item_candidate_id"],
+            ctx_keys=["country", "gender"],
+        )
+        _, _, _, fp2 = GRInputProcessor.normalize_gr_schema(
+            uih_keys=["item_id", "timestamp"],
+            cand_keys=["item_candidate_id"],
+            ctx_keys=["country", "gender"],
+        )
+
+        self.assertEqual(fp1, fp2)
+        self.assertEqual(
+            fp1,
+            "uih:item_id,timestamp|cand:item_candidate_id|ctx:country,gender",
+        )
+
+    def test_schema_normalize_rejects_duplicate_keys(self):
+        from vllm_gr.engine.gr_input_processor import GRInputProcessor
+
+        with self.assertRaisesRegex(ValueError, "duplicate key"):
+            GRInputProcessor.normalize_gr_schema(
+                uih_keys=["item_id", "item_id"],
+                cand_keys=["item_candidate_id"],
+                ctx_keys=[],
+            )
+
+    def test_validate_context_group_requires_scalar_values(self):
+        from vllm_gr.engine.gr_input_processor import GRInputProcessor
+
+        with self.assertRaisesRegex(ValueError, "exactly one value"):
+            GRInputProcessor.validate_context_group(
+                ["country"],
+                [[86, 1]],
+            )
+
 
 # ── Output Construction ──────────────────────────────────────────
 

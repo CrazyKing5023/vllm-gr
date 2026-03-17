@@ -28,6 +28,88 @@ from vllm_gr.engine.gr_output_processor import GROutputProcessor
 logger = logging.getLogger("vllm_gr.engine")
 
 
+def _invoke_shutdown_method(component: Any) -> bool:
+    """Best-effort shutdown for a runtime component."""
+    for method_name in ("shutdown", "close", "terminate", "stop"):
+        method = getattr(component, method_name, None)
+        if callable(method):
+            method()
+            return True
+    return False
+
+
+def _iter_nested_components(component: Any):
+    """Yield common nested runtime children for shutdown traversal."""
+    for attr_name in (
+        "engine_core",
+        "engine_core_client",
+        "model_executor",
+        "executor",
+        "scheduler",
+        "structured_output_manager",
+        "driver_worker",
+        "worker",
+        "workers",
+    ):
+        child = getattr(component, attr_name, None)
+        if child is None:
+            continue
+        if isinstance(child, dict):
+            iterable = child.values()
+        elif isinstance(child, (list, tuple, set)):
+            iterable = child
+        else:
+            iterable = (child,)
+        for nested in iterable:
+            yield attr_name, nested
+
+
+def _shutdown_nested_component(
+    label: str,
+    component: Any,
+    seen: set[int],
+    errors: list[str],
+) -> None:
+    """Release a component and common nested runtime children once."""
+    if component is None:
+        return
+
+    component_id = id(component)
+    if component_id in seen:
+        return
+    seen.add(component_id)
+
+    try:
+        _invoke_shutdown_method(component)
+    except Exception as exc:
+        errors.append(f"{label}: {exc}")
+        logger.warning("Shutdown step failed for %s", label, exc_info=True)
+
+    for attr_name, nested in _iter_nested_components(component):
+        _shutdown_nested_component(f"{label}.{attr_name}", nested, seen, errors)
+
+
+def _destroy_dp_group(dp_group: Any, errors: list[str]) -> None:
+    """Destroy the stateless DP process group when present."""
+    if dp_group is None:
+        return
+
+    try:
+        from vllm.distributed import (
+            stateless_destroy_torch_distributed_process_group,
+        )
+    except Exception as exc:
+        errors.append(f"dp_group_import: {exc}")
+        logger.warning("Failed to import DP group destroy helper", exc_info=True)
+        return
+
+    try:
+        stateless_destroy_torch_distributed_process_group(dp_group)
+    except Exception as exc:
+        errors.append(f"dp_group_destroy: {exc}")
+        logger.warning("Failed to destroy DP group", exc_info=True)
+
+
 class GRLLMEngine(LLMEngine):
     """LLMEngine with GR-specific input/output processors.
 
@@ -67,6 +149,7 @@ class GRLLMEngine(LLMEngine):
 
         self._num_gr_requests_processed = 0
         self._start_time = time.time()
+        self._shutdown_complete = False
 
         logger.info("GRLLMEngine initialized")
 
@@ -152,10 +235,65 @@ class GRLLMEngine(LLMEngine):
         }
 
     def shutdown(self) -> None:
+        if getattr(self, "_shutdown_complete", False):
+            return
+
+        self._shutdown_complete = True
         logger.info(
             "GRLLMEngine shutdown: processed=%d",
             self._num_gr_requests_processed
         )
+
+        super_shutdown = getattr(super(), "shutdown", None)
+        if callable(super_shutdown):
+            try:
+                super_shutdown()
+            except Exception:
+                logger.debug("Base LLMEngine shutdown raised", exc_info=True)
+
+        seen: set[int] = set()
+        errors: list[str] = []
+        for attr_name in (
+            "engine_core",
+            "engine_core_client",
+            "model_executor",
+            "executor",
+        ):
+            _shutdown_nested_component(
+                attr_name,
+                getattr(self, attr_name, None),
+                seen,
+                errors,
+            )
+
+        _shutdown_nested_component(
+            "logger_manager",
+            getattr(self, "logger_manager", None),
+            seen,
+            errors,
+        )
+        _destroy_dp_group(getattr(self, "dp_group", None), errors)
+
+        for attr_name in (
+            "executor",
+            "model_executor",
+            "engine_core",
+            "engine_core_client",
+            "logger_manager",
+            "dp_group",
+            "input_processor",
+            "output_processor",
+            "io_processor",
+            "tokenizer",
+        ):
+            if hasattr(self, attr_name):
+                setattr(self, attr_name, None)
+
+        if errors:
+            logger.warning(
+                "GRLLMEngine shutdown completed with %d cleanup issue(s)",
+                len(errors),
+            )
 
     def __del__(self):
         try:

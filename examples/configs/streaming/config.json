@@ -20,7 +20,7 @@
   "contextual_feature_to_max_length": {"user_id": 1},
 
   "candidates_weight_feature_name": "item_action_weights",
-  "candidates_watchtime_feature_name": "item_rating",
+  "candidates_watchtime_feature_name": "item_candidate_rating",
   "candidates_querytime_feature_name": "item_query_time",
 
   "user_embedding_feature_names": ["item_id", "user_id", "item_category_id"],

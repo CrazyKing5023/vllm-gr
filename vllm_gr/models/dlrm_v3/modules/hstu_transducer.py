@@ -16,14 +16,15 @@ from vllm_gr.models.dlrm_v3.modules.postprocessors import L2NormPostprocessor, O
 from vllm_gr.models.dlrm_v3.modules.preprocessors import InputPreprocessor
 from vllm_gr.models.dlrm_v3.modules.stu import STU
 from vllm_gr.ops.jagged_tensors import split_2D_jagged
+from vllm_gr.utils import ReliableOps
 
 
 logger: logging.Logger = logging.getLogger(__name__)
 
 
 def complete_cumsum(lengths: torch.Tensor) -> torch.Tensor:
-    """Compute complete cumulative sum (starting with 0) via fbgemm only."""
-    return torch.ops.fbgemm.asynchronous_complete_cumsum(lengths)
+    """Compute complete cumulative sum (starting with 0)."""
+    return ReliableOps.asynchronous_complete_cumsum(lengths)
 
 
 @torch.fx.wrap
@@ -301,4 +302,3 @@ class HSTUTransducer(HammerModule):
                 encoded_embeddings = fx_unwrap_optional_tensor(encoded_embeddings).to(orig_dtype)
 
         return (encoded_candidate_embeddings, encoded_embeddings)
-

@@ -35,7 +35,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from runtime_utils import add_repo_root_to_path, add_runtime_args, describe_runtime
+
+add_repo_root_to_path(__file__)
 
 
 def check_model_dir(model_path: str) -> dict:
@@ -65,7 +67,7 @@ def check_model_dir(model_path: str) -> dict:
     return info
 
 
-def run_inference(model_path: str):
+def run_inference(model_path: str, expected_device: str | None = None):
     """Load converted model and run a movielens-1m recommendation request."""
     from vllm_gr import GRLLM, GRPrompt
 
@@ -97,6 +99,7 @@ def run_inference(model_path: str):
         max_candidates=32,
         default_top_k=32,
     )
+    active_device = describe_runtime(llm, expected_device=expected_device)
     print("\n  Model loaded successfully!")
 
     # GRPrompt with movielens-1m feature names.
@@ -163,6 +166,7 @@ def run_inference(model_path: str):
     print(f"  User history:  {len(prompt['user_history'])} interactions")
     print(f"  Candidates:    {len(prompt['candidates'])} items")
     print(f"  Context:       {list(prompt['context'].keys())}")
+    print(f"  Device path:   {active_device}")
 
     outputs = llm.recommend(prompts=[prompt], use_tqdm=False, top_k=20)
     output = outputs[0]
@@ -200,9 +204,10 @@ def main():
         help="Path to converted model directory "
              "(with config.json + model.safetensors)",
     )
+    add_runtime_args(parser, include_model=False)
     args = parser.parse_args()
 
-    run_inference(args.model)
+    run_inference(args.model, expected_device=args.expect_device)
 
 
 if __name__ == "__main__":
