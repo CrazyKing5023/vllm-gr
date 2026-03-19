@@ -2,6 +2,8 @@
 # Ported to vllm-GR with modifications.
 # Licensed under the Apache License, Version 2.0
 
+"""HSTU Positional Encoder"""
+
 from math import sqrt
 from typing import Optional
 
@@ -12,6 +14,11 @@ from vllm_gr.ops.position import add_timestamp_positional_embeddings
 
 
 class HSTUPositionalEncoder(HammerModule):
+    """
+    Positional encoder for HSTU model.
+    Adds position and timestamp embeddings to sequence embeddings.
+    """
+    
     def __init__(
         self,
         num_position_buckets: int,
@@ -23,6 +30,7 @@ class HSTUPositionalEncoder(HammerModule):
         super().__init__(is_inference=is_inference)
         self._embedding_dim: int = embedding_dim
         self._contextual_seq_len: int = contextual_seq_len
+        
         self._position_embeddings_weight: torch.nn.Parameter = torch.nn.Parameter(
             torch.empty(num_position_buckets, embedding_dim).uniform_(
                 -sqrt(1.0 / num_position_buckets),
@@ -45,7 +53,8 @@ class HSTUPositionalEncoder(HammerModule):
         seq_embeddings: torch.Tensor,
         num_targets: Optional[torch.Tensor],
     ) -> torch.Tensor:
-        seq_embeddings = add_timestamp_positional_embeddings(
+        """Add positional and timestamp embeddings using golden semantics."""
+        return add_timestamp_positional_embeddings(
             alpha=self._embedding_dim**0.5,
             max_seq_len=max_seq_len,
             max_contextual_seq_len=self._contextual_seq_len,
@@ -59,4 +68,3 @@ class HSTUPositionalEncoder(HammerModule):
             interleave_targets=False,
             kernel=self.hammer_kernel(),
         )
-        return seq_embeddings

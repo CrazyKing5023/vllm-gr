@@ -4,9 +4,8 @@
 """
 GRInputProcessor — extends vLLM's InputProcessor to handle GRPrompt.
 
-Overrides process_inputs() to detect GRPrompt and convert it into a
-GREngineCoreRequest carrying a serialized GRFeaturesPayload. Standard
-prompts are delegated to the parent InputProcessor unchanged.
+Overrides process_inputs() to require GRPrompt inputs and convert them into a
+GREngineCoreRequest carrying a serialized GRFeaturesPayload.
 """
 
 from typing import Any
@@ -24,6 +23,14 @@ from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import SamplingParams
 from vllm.tokenizers import TokenizerLike
 
+from vllm_gr.gr_schema import (
+    attach_schema_fingerprint as _attach_schema_fingerprint,
+    build_schema_fingerprint as _build_schema_fingerprint,
+    extract_context_features as _extract_context_features_helper,
+    extract_features as _extract_features_helper,
+    validate_context_group as _validate_context_group,
+    validate_feature_group as _validate_feature_group,
+)
 from vllm_gr.inputs.data import GRPrompt, is_gr_prompt
 from vllm_gr.engine import GRFeaturesPayload, GREngineCoreRequest
 
@@ -31,12 +38,11 @@ logger = logging.getLogger("vllm_gr.input_processor")
 
 
 class GRInputProcessor(InputProcessor):
-    """Input processor that adds GRPrompt support on top of vLLM's InputProcessor.
+    """Input processor for the GR-only engine contract.
 
     For GRPrompt inputs, extracts user interaction history and candidate
     features, builds a GRFeaturesPayload, and wraps it in a
-    GREngineCoreRequest. For all other prompt types, delegates to the
-    parent implementation.
+    GREngineCoreRequest.
     """
 
     def __init__(
@@ -46,16 +52,33 @@ class GRInputProcessor(InputProcessor):
         mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
         max_seq_len: int = 512,
         max_candidates: int = 1000,
-        default_top_k: int = 10,
         uih_feature_names: list[str] | None = None,
         candidate_feature_names: list[str] | None = None,
         primary_id_feature_name: str | None = None,
+        full_uih_feature_names: list[str] | None = None,
+        context_feature_names: list[str] | None = None,
     ):
         super().__init__(vllm_config, tokenizer, mm_registry)
         self.max_seq_len = max_seq_len
         self.max_candidates = max_candidates
-        self.default_top_k = default_top_k
-        self.uih_feature_names = uih_feature_names or ["item_id"]
+        self.full_uih_feature_names = list(
+            full_uih_feature_names or uih_feature_names or ["item_id"]
+        )
+        self.context_feature_names = list(context_feature_names or [])
+        unexpected_context_features = [
+            key for key in self.context_feature_names
+            if key not in self.full_uih_feature_names
+        ]
+        if unexpected_context_features:
+            raise ValueError(
+                "Context feature names must be a subset of full UIH schema; "
+                f"unexpected {unexpected_context_features!r}"
+            )
+        context_feature_name_set = set(self.context_feature_names)
+        self.uih_feature_names = [
+            key for key in self.full_uih_feature_names
+            if key not in context_feature_name_set
+        ]
         self.candidate_feature_names = (
             candidate_feature_names or ["item_candidate_id"]
         )
@@ -73,25 +96,18 @@ class GRInputProcessor(InputProcessor):
         priority: int = 0,
         data_parallel_rank: int | None = None,
     ) -> EngineCoreRequest:
-        if is_gr_prompt(prompt):
-            return self._process_gr_prompt(
-                request_id=request_id,
-                prompt=prompt,
-                params=params,
-                arrival_time=arrival_time,
-                lora_request=lora_request,
-                trace_headers=trace_headers,
-                priority=priority,
-                data_parallel_rank=data_parallel_rank,
+        if not is_gr_prompt(prompt):
+            raise TypeError(
+                "GRInputProcessor only supports GRPrompt inputs; "
+                f"got {type(prompt).__name__}"
             )
 
-        return super().process_inputs(
+        return self._process_gr_prompt(
             request_id=request_id,
             prompt=prompt,
             params=params,
             arrival_time=arrival_time,
             lora_request=lora_request,
-            tokenization_kwargs=tokenization_kwargs,
             trace_headers=trace_headers,
             priority=priority,
             data_parallel_rank=data_parallel_rank,
@@ -120,36 +136,43 @@ class GRInputProcessor(InputProcessor):
             arrival_time = time.time()
 
         if not isinstance(params, PoolingParams):
-            params = PoolingParams(task="embed")
+            raise TypeError(
+                "GRInputProcessor only accepts PoolingParams for GR prompts; "
+                f"got {type(params).__name__}"
+            )
 
         user_id = str(prompt.get("user_id", ""))
         user_history = prompt.get("user_history", [])
         candidates = prompt.get("candidates", [])
-        raw_num_recs = prompt.get("num_recommendations")
-        num_recommendations = (
-            int(raw_num_recs) if raw_num_recs is not None and raw_num_recs > 0
-            else self.default_top_k
-        )
-
         recent_history = user_history[-self.max_seq_len:]
-        limited_candidates = candidates[:self.max_candidates]
 
         uih_keys, uih_values_per_key, uih_lengths_per_key = (
-            self._extract_features(recent_history, self.uih_feature_names)
+            self._extract_features(
+                recent_history,
+                self.uih_feature_names,
+                group_name="uih",
+            )
         )
         cand_keys, cand_values_per_key, cand_lengths_per_key = (
-            self._extract_features(limited_candidates, self.candidate_feature_names)
+            self._extract_features(
+                candidates,
+                self.candidate_feature_names,
+                group_name="cand",
+            )
         )
 
         context = prompt.get("context") or {}
-        ctx_keys, ctx_values_per_key = self._extract_context_features(context)
+        ctx_keys, ctx_values_per_key = self._extract_context_features(
+            context,
+            feature_names=self.context_feature_names,
+        )
 
         (
             uih_keys,
             cand_keys,
             ctx_keys,
             schema_fingerprint,
-        ) = self.normalize_gr_schema(
+        ) = self.attach_schema_fingerprint(
             uih_keys=uih_keys,
             cand_keys=cand_keys,
             ctx_keys=ctx_keys,
@@ -177,17 +200,22 @@ class GRInputProcessor(InputProcessor):
             cand_lengths_per_key=cand_lengths_per_key,
             ctx_keys=ctx_keys,
             ctx_values_per_key=ctx_values_per_key,
+            full_uih_keys=list(self.full_uih_feature_names),
             user_id=user_id,
-            num_recommendations=num_recommendations,
-            original_candidates=[dict(c) for c in limited_candidates],
+            original_candidates=[dict(c) for c in candidates],
         )
 
         pid = self.primary_id_feature_name
         if pid in uih_keys:
             idx = uih_keys.index(pid)
             prompt_token_ids = uih_values_per_key[idx]
+        elif recent_history:
+            raise ValueError(
+                f"UIH features are missing primary id feature {pid!r}; "
+                "request schema does not match model configuration"
+            )
         else:
-            prompt_token_ids = [0] * len(recent_history) if recent_history else [0]
+            prompt_token_ids = [0]
 
         request = GREngineCoreRequest(
             request_id=request_id,
@@ -207,31 +235,27 @@ class GRInputProcessor(InputProcessor):
 
         logger.debug(
             "Processed GR request %s: uih_keys=%s, uih_len=%d, "
-            "cand_keys=%s, cand_len=%d, num_recs=%d, schema=%s",
+            "cand_keys=%s, cand_len=%d, schema=%s",
             request_id, uih_keys, len(recent_history),
-            cand_keys, len(limited_candidates), num_recommendations,
+            cand_keys, len(candidates),
             schema_fingerprint,
         )
 
         return request
 
     @staticmethod
-    def normalize_gr_schema(
+    def attach_schema_fingerprint(
         *,
         uih_keys: list[str],
         cand_keys: list[str],
         ctx_keys: list[str],
     ) -> tuple[list[str], list[str], list[str], str]:
-        """Normalize and validate the per-request schema boundary."""
-        normalized_uih = GRInputProcessor._normalize_keys("uih_keys", uih_keys)
-        normalized_cand = GRInputProcessor._normalize_keys("cand_keys", cand_keys)
-        normalized_ctx = GRInputProcessor._normalize_keys("ctx_keys", ctx_keys)
-        fingerprint = GRInputProcessor.build_schema_fingerprint(
-            uih_keys=normalized_uih,
-            cand_keys=normalized_cand,
-            ctx_keys=normalized_ctx,
+        """Attach a stable request-schema fingerprint for logging/debugging."""
+        return _attach_schema_fingerprint(
+            uih_keys=uih_keys,
+            cand_keys=cand_keys,
+            ctx_keys=ctx_keys,
         )
-        return normalized_uih, normalized_cand, normalized_ctx, fingerprint
 
     @staticmethod
     def build_schema_fingerprint(
@@ -241,10 +265,10 @@ class GRInputProcessor(InputProcessor):
         ctx_keys: list[str],
     ) -> str:
         """Return a stable local fingerprint for a request schema."""
-        return (
-            f"uih:{','.join(uih_keys)}|"
-            f"cand:{','.join(cand_keys)}|"
-            f"ctx:{','.join(ctx_keys)}"
+        return _build_schema_fingerprint(
+            uih_keys=uih_keys,
+            cand_keys=cand_keys,
+            ctx_keys=ctx_keys,
         )
 
     @staticmethod
@@ -255,20 +279,12 @@ class GRInputProcessor(InputProcessor):
         lengths_per_key: list[int],
     ) -> None:
         """Ensure a serialized feature group is internally consistent."""
-        if len(keys) != len(values_per_key) or len(keys) != len(lengths_per_key):
-            raise ValueError(
-                f"{group_name} schema is inconsistent: "
-                f"len(keys)={len(keys)}, "
-                f"len(values_per_key)={len(values_per_key)}, "
-                f"len(lengths_per_key)={len(lengths_per_key)}"
-            )
-
-        for key, values, length in zip(keys, values_per_key, lengths_per_key):
-            if int(length) != len(values):
-                raise ValueError(
-                    f"{group_name} feature {key!r} has length metadata {length} "
-                    f"but {len(values)} values"
-                )
+        _validate_feature_group(
+            group_name=group_name,
+            keys=keys,
+            values_per_key=values_per_key,
+            lengths_per_key=lengths_per_key,
+        )
 
     @staticmethod
     def validate_context_group(
@@ -276,85 +292,29 @@ class GRInputProcessor(InputProcessor):
         ctx_values_per_key: list[list[int]],
     ) -> None:
         """Context features are per-request scalars and must stay 1:1."""
-        if len(ctx_keys) != len(ctx_values_per_key):
-            raise ValueError(
-                f"context schema is inconsistent: len(ctx_keys)={len(ctx_keys)}, "
-                f"len(ctx_values_per_key)={len(ctx_values_per_key)}"
-            )
-
-        for key, values in zip(ctx_keys, ctx_values_per_key):
-            if len(values) != 1:
-                raise ValueError(
-                    f"context feature {key!r} must contain exactly one value, "
-                    f"got {len(values)}"
-                )
+        _validate_context_group(
+            ctx_keys=ctx_keys,
+            ctx_values_per_key=ctx_values_per_key,
+        )
 
     @staticmethod
     def _extract_context_features(
         context: Mapping[str, Any],
+        feature_names: list[str] | None = None,
     ) -> tuple[list[str], list[list[int]]]:
-        ctx_keys = sorted(context.keys())
-        try:
-            ctx_values_per_key = [[int(context[k])] for k in ctx_keys]
-        except (ValueError, TypeError) as e:
-            raise ValueError(
-                f"Context values must be convertible to int. "
-                f"Got context={context!r}: {e}"
-            ) from e
-        return ctx_keys, ctx_values_per_key
-
-    @staticmethod
-    def _normalize_keys(group_name: str, keys: list[str]) -> list[str]:
-        normalized_keys: list[str] = []
-        seen: set[str] = set()
-
-        for key in keys:
-            if not isinstance(key, str) or not key:
-                raise ValueError(
-                    f"{group_name} contains an invalid key: {key!r}"
-                )
-            if key in seen:
-                raise ValueError(
-                    f"{group_name} contains duplicate key: {key!r}"
-                )
-            normalized_keys.append(key)
-            seen.add(key)
-
-        return normalized_keys
+        return _extract_context_features_helper(
+            context,
+            feature_names=feature_names,
+        )
 
     @staticmethod
     def _extract_features(
         records: list[dict[str, Any]],
         feature_names: list[str],
+        group_name: str = "features",
     ) -> tuple[list[str], list[list[int]], list[int]]:
-        """
-        Extract multi-key features from a list of records.
-
-        For each feature_name in feature_names, extracts the value from
-        each record. Missing values default to 0. Returns flat int lists
-        suitable for msgspec serialization.
-        """
-        active_keys = [key for key in feature_names
-                       if any(key in record for record in records)]
-
-        if not active_keys and records:
-            if feature_names:
-                active_keys = [feature_names[0]]
-            else:
-                first_record_keys = list(records[0].keys())
-                active_keys = [first_record_keys[0]] if first_record_keys else []
-            logger.warning(
-                "No matching feature keys found in records; "
-                "falling back to %s", active_keys,
-            )
-
-        values_per_key: list[list[int]] = []
-        lengths_per_key: list[int] = []
-
-        for key in active_keys:
-            values = [int(record.get(key, 0)) for record in records]
-            lengths = len(values)
-            values_per_key.append(values)
-            lengths_per_key.append(lengths)
-
-        return active_keys, values_per_key, lengths_per_key
+        return _extract_features_helper(
+            records=records,
+            feature_names=feature_names,
+            group_name=group_name,
+        )

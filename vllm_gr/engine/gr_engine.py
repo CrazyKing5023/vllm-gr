@@ -9,8 +9,6 @@ with GR-specific versions (GRInputProcessor, GROutputProcessor) so the
 existing add_request() / step() pipeline handles GRPrompt transparently.
 """
 
-from typing import Any
-import time
 import logging
 
 from vllm.config import VllmConfig
@@ -26,88 +24,6 @@ from vllm_gr.engine.gr_input_processor import GRInputProcessor
 from vllm_gr.engine.gr_output_processor import GROutputProcessor
 
 logger = logging.getLogger("vllm_gr.engine")
-
-
-def _invoke_shutdown_method(component: Any) -> bool:
-    """Best-effort shutdown for a runtime component."""
-    for method_name in ("shutdown", "close", "terminate", "stop"):
-        method = getattr(component, method_name, None)
-        if callable(method):
-            method()
-            return True
-    return False
-
-
-def _iter_nested_components(component: Any):
-    """Yield common nested runtime children for shutdown traversal."""
-    for attr_name in (
-        "engine_core",
-        "engine_core_client",
-        "model_executor",
-        "executor",
-        "scheduler",
-        "structured_output_manager",
-        "driver_worker",
-        "worker",
-        "workers",
-    ):
-        child = getattr(component, attr_name, None)
-        if child is None:
-            continue
-        if isinstance(child, dict):
-            iterable = child.values()
-        elif isinstance(child, (list, tuple, set)):
-            iterable = child
-        else:
-            iterable = (child,)
-        for nested in iterable:
-            yield attr_name, nested
-
-
-def _shutdown_nested_component(
-    label: str,
-    component: Any,
-    seen: set[int],
-    errors: list[str],
-) -> None:
-    """Release a component and common nested runtime children once."""
-    if component is None:
-        return
-
-    component_id = id(component)
-    if component_id in seen:
-        return
-    seen.add(component_id)
-
-    try:
-        _invoke_shutdown_method(component)
-    except Exception as exc:
-        errors.append(f"{label}: {exc}")
-        logger.warning("Shutdown step failed for %s", label, exc_info=True)
-
-    for attr_name, nested in _iter_nested_components(component):
-        _shutdown_nested_component(f"{label}.{attr_name}", nested, seen, errors)
-
-
-def _destroy_dp_group(dp_group: Any, errors: list[str]) -> None:
-    """Destroy the stateless DP process group when present."""
-    if dp_group is None:
-        return
-
-    try:
-        from vllm.distributed import (
-            stateless_destroy_torch_distributed_process_group,
-        )
-    except Exception as exc:
-        errors.append(f"dp_group_import: {exc}")
-        logger.warning("Failed to import DP group destroy helper", exc_info=True)
-        return
-
-    try:
-        stateless_destroy_torch_distributed_process_group(dp_group)
-    except Exception as exc:
-        errors.append(f"dp_group_destroy: {exc}")
-        logger.warning("Failed to destroy DP group", exc_info=True)
 
 
 class GRLLMEngine(LLMEngine):
@@ -147,11 +63,14 @@ class GRLLMEngine(LLMEngine):
 
         self._replace_processors()
 
-        self._num_gr_requests_processed = 0
-        self._start_time = time.time()
-        self._shutdown_complete = False
-
         logger.info("GRLLMEngine initialized")
+
+    def shutdown(self) -> None:
+        engine_core = getattr(self, "engine_core", None)
+        if engine_core is not None:
+            engine_core.shutdown()
+            self.engine_core = None
+        logger.info("GRLLMEngine shutdown complete")
 
     def _replace_processors(self) -> None:
         """Replace default processors with GR-specific versions.
@@ -170,7 +89,19 @@ class GRLLMEngine(LLMEngine):
             hf_config.hstu_candidate_feature_names
             or hf_config.item_embedding_feature_names
         )
+        configured_context_feature_names = list(dict.fromkeys(
+            list(getattr(hf_config, "contextual_feature_to_max_length", {}).keys())
+            + list(getattr(hf_config, "contextual_feature_to_min_uih_length", {}).keys())
+        ))
+        context_feature_names = [
+            key for key in uih_feature_names
+            if key in set(configured_context_feature_names)
+        ]
         primary_id_feature_name = hf_config.uih_post_id_feature_name
+        candidate_primary_id_key = self._resolve_candidate_primary_id_key(
+            hf_config=hf_config,
+            candidate_feature_names=candidate_feature_names,
+        )
         task_names = list(hf_config.task_names)
         primary_task = task_names[0] if task_names else ""
 
@@ -179,10 +110,11 @@ class GRLLMEngine(LLMEngine):
             tokenizer=self.tokenizer,
             max_seq_len=cfg.max_seq_len,
             max_candidates=cfg.max_candidates,
-            default_top_k=cfg.default_top_k,
             uih_feature_names=uih_feature_names,
             candidate_feature_names=candidate_feature_names,
             primary_id_feature_name=primary_id_feature_name,
+            full_uih_feature_names=uih_feature_names,
+            context_feature_names=context_feature_names,
         )
 
         stream_interval = self.vllm_config.scheduler_config.stream_interval
@@ -192,6 +124,34 @@ class GRLLMEngine(LLMEngine):
             stream_interval=stream_interval,
             task_names=task_names,
             primary_task=primary_task,
+            primary_id_key=candidate_primary_id_key,
+        )
+
+    @staticmethod
+    def _resolve_candidate_primary_id_key(
+        *,
+        hf_config,
+        candidate_feature_names: list[str],
+    ) -> str:
+        explicit_candidate_id_key = str(
+            getattr(hf_config, "candidate_primary_id_feature_name", "") or ""
+        )
+        if explicit_candidate_id_key:
+            return explicit_candidate_id_key
+
+        merge_mapping = list(
+            getattr(hf_config, "merge_uih_candidate_feature_mapping", []) or []
+        )
+        primary_uih_id_key = getattr(hf_config, "uih_post_id_feature_name", "")
+        for uih_key, candidate_key in merge_mapping:
+            if uih_key == primary_uih_id_key:
+                return candidate_key
+
+        raise ValueError(
+            "Unable to resolve candidate primary id feature. Configure "
+            "`candidate_primary_id_feature_name` explicitly or provide a "
+            "`merge_uih_candidate_feature_mapping` entry that maps "
+            f"{primary_uih_id_key!r} to one of {candidate_feature_names!r}."
         )
 
     @classmethod
@@ -210,7 +170,6 @@ class GRLLMEngine(LLMEngine):
         gr_config = GRConfig(
             max_seq_len=engine_args.max_seq_len,
             max_candidates=engine_args.max_candidates,
-            default_top_k=engine_args.default_top_k,
         )
 
         return cls(
@@ -222,81 +181,3 @@ class GRLLMEngine(LLMEngine):
             multiprocess_mode=enable_multiprocessing,
             gr_config=gr_config,
         )
-
-    def get_gr_stats(self) -> dict[str, Any]:
-        elapsed = time.time() - self._start_time
-        return {
-            "num_gr_requests_processed": self._num_gr_requests_processed,
-            "elapsed_time": elapsed,
-            "gr_throughput": (
-                self._num_gr_requests_processed / max(elapsed, 1e-6)
-            ),
-            "pending_requests": self.output_processor.num_pending_requests,
-        }
-
-    def shutdown(self) -> None:
-        if getattr(self, "_shutdown_complete", False):
-            return
-
-        self._shutdown_complete = True
-        logger.info(
-            "GRLLMEngine shutdown: processed=%d",
-            self._num_gr_requests_processed
-        )
-
-        super_shutdown = getattr(super(), "shutdown", None)
-        if callable(super_shutdown):
-            try:
-                super_shutdown()
-            except Exception:
-                logger.debug("Base LLMEngine shutdown raised", exc_info=True)
-
-        seen: set[int] = set()
-        errors: list[str] = []
-        for attr_name in (
-            "engine_core",
-            "engine_core_client",
-            "model_executor",
-            "executor",
-        ):
-            _shutdown_nested_component(
-                attr_name,
-                getattr(self, attr_name, None),
-                seen,
-                errors,
-            )
-
-        _shutdown_nested_component(
-            "logger_manager",
-            getattr(self, "logger_manager", None),
-            seen,
-            errors,
-        )
-        _destroy_dp_group(getattr(self, "dp_group", None), errors)
-
-        for attr_name in (
-            "executor",
-            "model_executor",
-            "engine_core",
-            "engine_core_client",
-            "logger_manager",
-            "dp_group",
-            "input_processor",
-            "output_processor",
-            "io_processor",
-            "tokenizer",
-        ):
-            if hasattr(self, attr_name):
-                setattr(self, attr_name, None)
-
-        if errors:
-            logger.warning(
-                "GRLLMEngine shutdown completed with %d cleanup issue(s)",
-                len(errors),
-            )
-
-    def __del__(self):
-        try:
-            self.shutdown()
-        except Exception:
-            pass

@@ -6,7 +6,7 @@ GROutputProcessor — extends vLLM's OutputProcessor for recommendation output.
 
 Introduces GRRequestState (extending RequestState) to carry per-request GR
 metadata and override make_request_output() to convert raw pooling scores
-into ranked GRRequestOutput with Top-K selection.
+into candidate-score GRRequestOutput objects.
 """
 
 from typing import Any
@@ -31,11 +31,11 @@ logger = logging.getLogger("vllm_gr.output_processor")
 
 
 class GRRequestState(RequestState):
-    """RequestState extended with GR metadata (user_id, candidates, top-k, tasks)."""
+    """RequestState extended with GR metadata (user_id, candidates, tasks)."""
 
     def __init__(self, *args, **kwargs):
+        is_gr_request = kwargs.pop("is_gr_request", False)
         gr_user_id = kwargs.pop("gr_user_id", None)
-        gr_num_recommendations = kwargs.pop("gr_num_recommendations", 10)
         gr_original_candidates = kwargs.pop("gr_original_candidates", None)
         gr_task_names = kwargs.pop("gr_task_names", None)
         gr_primary_task = kwargs.pop("gr_primary_task", "")
@@ -43,8 +43,8 @@ class GRRequestState(RequestState):
 
         super().__init__(*args, **kwargs)
 
+        self.is_gr_request: bool = is_gr_request
         self.gr_user_id: Any = gr_user_id
-        self.gr_num_recommendations: int = gr_num_recommendations
         self.gr_original_candidates: list[dict] = gr_original_candidates or []
         self.gr_task_names: list[str] = gr_task_names or []
         self.gr_primary_task: str = gr_primary_task
@@ -63,19 +63,14 @@ class GRRequestState(RequestState):
         stream_interval: int,
         task_names: list[str] | None = None,
         primary_task: str = "",
+        primary_id_key: str = "item_id",
     ) -> "GRRequestState":
         from vllm.v1.engine.detokenizer import IncrementalDetokenizer
         from vllm.v1.engine.logprobs import LogprobsProcessor
 
         gr_features = getattr(request, "gr_features", None)
         gr_user_id = gr_features.user_id if gr_features else None
-        gr_num_recs = gr_features.num_recommendations if gr_features else 10
         gr_candidates = list(gr_features.original_candidates) if gr_features else []
-        gr_primary_id_key = (
-            gr_features.cand_keys[0]
-            if gr_features and gr_features.cand_keys
-            else "item_id"
-        )
 
         if sampling_params := request.sampling_params:
             if not sampling_params.detokenize:
@@ -120,10 +115,10 @@ class GRRequestState(RequestState):
             queue=queue,
             log_stats=log_stats,
             stream_interval=stream_interval,
+            is_gr_request=gr_features is not None,
             gr_user_id=gr_user_id,
-            gr_num_recommendations=gr_num_recs,
             gr_original_candidates=gr_candidates,
-            gr_primary_id_key=gr_primary_id_key,
+            gr_primary_id_key=primary_id_key,
             gr_task_names=task_names or [],
             gr_primary_task=primary_task,
         )
@@ -137,27 +132,45 @@ class GRRequestState(RequestState):
         kv_transfer_params: dict[str, Any] | None = None,
         routed_experts: np.ndarray | None = None,
     ) -> RequestOutput | PoolingRequestOutput | GRRequestOutput | None:
-        """For GR requests, convert pooling scores to ranked GRRequestOutput."""
-        if pooling_output is not None and self.gr_original_candidates:
+        """For GR requests, convert pooling scores to GRRequestOutput."""
+        if self.is_gr_request and not self.gr_original_candidates:
+            return self._make_empty_gr_output(
+                pooling_output=pooling_output,
+                finish_reason=finish_reason,
+            )
+
+        if self.is_gr_request and pooling_output is not None:
             return self._make_gr_output(pooling_output, finish_reason)
 
         return super().make_request_output(
             new_token_ids, pooling_output, finish_reason,
             stop_reason, kv_transfer_params, routed_experts)
 
+    def _make_empty_gr_output(
+        self,
+        pooling_output: torch.Tensor | None,
+        finish_reason: FinishReason | None,
+    ) -> GRRequestOutput:
+        return GRRequestOutput(
+            request_id=self.external_req_id,
+            user_id=self.gr_user_id,
+            recommendations=[],
+            all_scores=pooling_output,
+            finished=finish_reason is not None,
+        )
+
     def _make_gr_output(
         self,
         pooling_output: torch.Tensor,
         finish_reason: FinishReason | None,
     ) -> GRRequestOutput:
-        """Select Top-K candidates by score and build GRRequestOutput.
+        """Build a GRRequestOutput in the original candidate order.
 
-        Supports both 1D scores (single task) and 2D scores (num_tasks, num_candidates).
-        For multi-task, uses gr_primary_task to select ranking scores and attaches
-        per-candidate task_scores from all tasks.
+        Supports both 1D scores (single task) and 2D scores
+        (num_tasks, num_candidates). For multi-task, uses gr_primary_task to
+        select the primary score view and attaches all per-task scores.
         """
         candidates = self.gr_original_candidates
-        num_recs = self.gr_num_recommendations
         scores = pooling_output.float()
 
         all_task_scores: dict[str, list[float]] | None = None
@@ -167,44 +180,37 @@ class GRRequestState(RequestState):
                 primary_idx = self.gr_task_names.index(self.gr_primary_task)
             else:
                 primary_idx = 0
-            ranking_scores = scores[primary_idx]
+            primary_scores = scores[primary_idx]
             all_task_scores = {
                 name: scores[i].tolist()
                 for i, name in enumerate(self.gr_task_names)
             }
         elif scores.dim() == 2:
-            ranking_scores = scores[0]
+            primary_scores = scores[0]
         else:
-            ranking_scores = scores
-
-        top_k = min(num_recs, len(candidates), len(ranking_scores))
-        if top_k > 0:
-            top_scores, top_indices = torch.topk(ranking_scores, k=top_k)
-            top_scores_list = top_scores.tolist()
-            top_indices_list = top_indices.tolist()
-        else:
-            top_scores_list = []
-            top_indices_list = []
+            primary_scores = scores
 
         pid_key = self.gr_primary_id_key
         recommendations = []
-        for rank, (idx, score) in enumerate(
-            zip(top_indices_list, top_scores_list)
-        ):
-            if idx < len(candidates):
-                candidate = candidates[idx]
-                item_task_scores = None
-                if all_task_scores is not None:
-                    item_task_scores = {
-                        t: all_task_scores[t][idx] for t in all_task_scores
-                    }
-                recommendations.append(RecommendedItem(
-                    item_id=candidate.get(pid_key, idx),
-                    score=float(score),
-                    rank=rank + 1,
-                    features=candidate,
-                    task_scores=item_task_scores,
-                ))
+        if len(candidates) != len(primary_scores):
+            raise ValueError(
+                "GR candidate/score count mismatch: "
+                f"candidates={len(candidates)}, scores={len(primary_scores)}"
+            )
+
+        for idx in range(len(candidates)):
+            candidate = candidates[idx]
+            item_task_scores = None
+            if all_task_scores is not None:
+                item_task_scores = {
+                    t: all_task_scores[t][idx] for t in all_task_scores
+                }
+            recommendations.append(RecommendedItem(
+                item_id=candidate.get(pid_key, idx),
+                score=float(primary_scores[idx]),
+                features=candidate,
+                task_scores=item_task_scores,
+            ))
 
         return GRRequestOutput(
             request_id=self.external_req_id,
@@ -231,6 +237,7 @@ class GROutputProcessor(VLLMOutputProcessor):
         stream_interval: int = 1,
         task_names: list[str] | None = None,
         primary_task: str = "",
+        primary_id_key: str = "item_id",
     ):
         super().__init__(
             tokenizer=tokenizer,
@@ -239,6 +246,7 @@ class GROutputProcessor(VLLMOutputProcessor):
         )
         self.task_names: list[str] = task_names or []
         self.primary_task: str = primary_task
+        self.primary_id_key: str = primary_id_key
         self.request_states: dict[str, GRRequestState] = {}
 
     @property
@@ -268,6 +276,7 @@ class GROutputProcessor(VLLMOutputProcessor):
             stream_interval=self.stream_interval,
             task_names=self.task_names,
             primary_task=self.primary_task,
+            primary_id_key=self.primary_id_key,
         )
         if self._requests_drained.is_set():
             self._requests_drained.clear()

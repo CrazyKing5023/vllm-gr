@@ -11,13 +11,37 @@ This module is the formal runtime initialization boundary for vllm-GR.
 It is responsible only for:
 
 - applying GR monkey patches
-- registering HSTU config hooks
-- registering GR models with vLLM
+- registering GR config hooks
+- registering GR model architectures with vLLM
 """
 
+from importlib import import_module
 import logging
 
 logger = logging.getLogger("vllm_gr.plugin")
+
+
+def register_gr_configs() -> bool:
+    """Register all GR config integrations with the active runtime."""
+    from vllm_gr.config.hstu_vllm_registration import (
+        ensure_hstu_config_registered,
+    )
+
+    return ensure_hstu_config_registered()
+
+
+def register_gr_model_architectures() -> bool:
+    """Register all GR model architectures with vLLM."""
+    model_registry = import_module("vllm_gr.model_executor.models.registry")
+
+    register_fn = getattr(
+        model_registry,
+        "register_gr_model_architectures",
+        None,
+    )
+    if register_fn is None:
+        register_fn = model_registry.register_gr_models_to_vllm
+    return register_fn()
 
 
 def initialize_runtime() -> dict[str, int | bool]:
@@ -28,18 +52,26 @@ def initialize_runtime() -> dict[str, int | bool]:
     explicit engine startup paths in the main process.
     """
     from vllm_gr.patch import re_apply_patches
-    from vllm_gr.config.hstu_hf_config import ensure_hstu_config_registered
-    from vllm_gr.model_executor.models.registry import register_gr_models_to_vllm
 
     patch_count = re_apply_patches()
-    config_registered = ensure_hstu_config_registered()
-    models_registered = register_gr_models_to_vllm()
+    config_registered = register_gr_configs()
+    models_registered = register_gr_model_architectures()
 
     state = {
         "patch_count": patch_count,
         "config_registered": config_registered,
         "models_registered": models_registered,
     }
+    if not config_registered:
+        raise RuntimeError(
+            "vllm-GR runtime initialization failed: "
+            "HSTU config registration did not succeed"
+        )
+    if not models_registered:
+        raise RuntimeError(
+            "vllm-GR runtime initialization failed: "
+            "GR model architecture registration did not succeed"
+        )
     logger.debug(
         "vllm-GR runtime initialized: patches=%d, config_registered=%s, "
         "models_registered=%s",

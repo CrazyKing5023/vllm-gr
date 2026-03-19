@@ -60,19 +60,26 @@ def get_default_device() -> torch.device:
     return torch.device(DeviceType.CPU)
 
 
-def check_recsdk_available() -> bool:
-    """Return whether RecSDK custom ops are available."""
+def check_torchrec_available() -> bool:
+    """Return whether the torchrec or torchrec-npu runtime is available."""
     try:
-        torch.ops.mxrec.hstu_dense
+        import torchrec  # noqa: F401
         return True
-    except (RuntimeError, AttributeError):
+    except ImportError:
         return False
 
 
+def check_recsdk_available() -> bool:
+    """Backward-compatible alias for the torchrec runtime availability check."""
+    return check_torchrec_available()
+
+
 def check_fbgemm_available() -> bool:
-    """Return whether fbgemm custom ops are available."""
+    """Return whether the required fbgemm custom ops are available."""
     try:
         torch.ops.fbgemm.asynchronous_complete_cumsum
+        torch.ops.fbgemm.jagged_to_padded_dense
+        torch.ops.fbgemm.dense_to_jagged
         return True
     except (RuntimeError, AttributeError):
         return False
@@ -83,13 +90,13 @@ class DeviceAdapter:
 
     def __init__(self) -> None:
         self._device_backend = self._detect_device_backend()
-        self._recsdk_available = check_recsdk_available()
+        self._torchrec_available = check_torchrec_available()
         self._fbgemm_available = check_fbgemm_available()
 
         logger.debug(
-            "DeviceAdapter backend=%s recsdk=%s fbgemm=%s",
+            "DeviceAdapter backend=%s torchrec=%s fbgemm=%s",
             self._device_backend,
-            self._recsdk_available,
+            self._torchrec_available,
             self._fbgemm_available,
         )
 
@@ -116,15 +123,28 @@ class DeviceAdapter:
     def is_cpu(self) -> bool:
         return self._device_backend == DeviceType.CPU
 
-    def should_use_recsdk(self, device: Optional[torch.device] = None) -> bool:
-        """Return whether RecSDK-backed execution is usable for a device."""
+    def should_use_torchrec(self, device: Optional[torch.device] = None) -> bool:
+        """Return whether a torchrec-backed NPU environment is available."""
         target = self.device_backend if device is None else get_device_backend(device)
-        return target == DeviceType.NPU and self._recsdk_available
+        return target == DeviceType.NPU and self._torchrec_available
+
+    def should_use_recsdk(self, device: Optional[torch.device] = None) -> bool:
+        """Backward-compatible alias for the torchrec-backed NPU check."""
+        return self.should_use_torchrec(device)
 
     def should_use_fbgemm(self, device: Optional[torch.device] = None) -> bool:
         """Return whether fbgemm-backed execution is usable for a device."""
         target = self.device_backend if device is None else get_device_backend(device)
-        return target == DeviceType.CUDA and self._fbgemm_available
+        if not self._fbgemm_available:
+            return False
+
+        if target == DeviceType.CUDA:
+            return True
+
+        if target == DeviceType.NPU:
+            return self._torchrec_available
+
+        return False
 
 
 _global_adapter: Optional[DeviceAdapter] = None

@@ -6,7 +6,9 @@
 HSTU Compute Operators
 
 Contains UVQK projection, attention computation, and output projection operations.
-Currently uses PyTorch implementation.
+This module keeps the upstream kernel-shaped API, but the current fork still
+executes the linear, normalization, and output-projection pieces through
+PyTorch implementations.
 """
 
 from typing import Optional, Tuple
@@ -26,7 +28,8 @@ def addmm(
     weight: torch.Tensor,
     kernel: HammerKernel = HammerKernel.PYTORCH,
 ) -> torch.Tensor:
-    """Matrix multiplication with bias, using torch.addmm implementation."""
+    """Matrix multiplication with bias, using torch.addmm only."""
+    del kernel
     return torch.addmm(bias, input, weight)
 
 
@@ -53,7 +56,8 @@ def hstu_compute_uqvk(
         attn_dim: Attention dimension
         hidden_dim: Hidden dimension
         uvqk_weight, uvqk_bias: Projection parameters
-        kernel: Kernel implementation type (current version uses PyTorch)
+        kernel: Requested kernel type. Specialized paths are not implemented
+            here beyond the downstream PyTorch-backed attention entry point.
     
     Returns:
         (u, q, k, v) tensors
@@ -107,9 +111,11 @@ def hstu_compute_output(
 ) -> torch.Tensor:
     """
     Compute HSTU output
-    
+
     Includes normalization, gating, dropout, and residual connection.
+    The current fork always uses the PyTorch output-projection helper.
     """
+    del recompute_y_in_backward, kernel
     return pytorch_hstu_compute_output(
         attn=attn,
         u=u,
@@ -153,9 +159,13 @@ def hstu_preprocess_and_attention(
 ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
     """
     Combined HSTU preprocessing and attention computation
-    
+
     Includes UVQK projection and multi-head attention computation.
+    The projection and output-side pieces in this helper stay on PyTorch in the
+    current fork; only the downstream attention entry point interprets the
+    requested kernel value, and it remains conservatively PyTorch-backed today.
     """
+    del recompute_uvqk_in_backward, recompute_normed_x_in_backward, prefill
     # Compute U, Q, K, V
     u, q, k, v = hstu_compute_uqvk(
         x=x,

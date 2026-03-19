@@ -15,6 +15,49 @@ HSTU_EMBEDDING_DIM = 512
 HASH_SIZE = 10_000_000
 HASH_SIZE_1B = 1_000_000_000
 
+_MOVIELENS_DATASETS = {
+    "movielens-1m",
+    "movielens-20m",
+    "movielens-13b",
+    "movielens-18b",
+}
+_STREAMING_DATASETS = {
+    "streaming",
+    "streaming-400m",
+    "streaming-200b",
+    "streaming-100b",
+    "sampled-streaming-100b",
+}
+_KUAIRAND_DATASETS = {
+    "kuairand-1k",
+    "kuairand-27k",
+}
+_DEBUG_DATASETS = {
+    "debug",
+}
+
+SUPPORTED_DATASETS = sorted(
+    _MOVIELENS_DATASETS
+    | _STREAMING_DATASETS
+    | _KUAIRAND_DATASETS
+    | _DEBUG_DATASETS
+)
+
+
+def _resolve_dataset_family(dataset: str) -> str:
+    """Return the canonical dataset family for supported presets."""
+    if dataset in _MOVIELENS_DATASETS:
+        return "movielens"
+    if dataset in _STREAMING_DATASETS:
+        return "streaming"
+    if dataset in _KUAIRAND_DATASETS:
+        return "kuairand"
+    if dataset in _DEBUG_DATASETS:
+        return "debug"
+    raise ValueError(
+        f"Unsupported dataset: {dataset!r}. Supported datasets: {SUPPORTED_DATASETS}"
+    )
+
 
 def get_hstu_config_overrides(dataset: str) -> Dict[str, Any]:
     """Return HSTUConfig field overrides for a given dataset.
@@ -31,14 +74,17 @@ def get_hstu_config_overrides(dataset: str) -> Dict[str, Any]:
         "hstu_transducer_embedding_dim": HSTU_EMBEDDING_DIM,
         "hstu_input_dropout_ratio": 0.2,
         "hstu_linear_dropout_rate": 0.1,
+        "hash_size": HASH_SIZE,
     }
+    dataset_family = _resolve_dataset_family(dataset)
 
-    if "movielens" in dataset:
-        assert dataset in [
-            "movielens-1m", "movielens-20m", "movielens-13b", "movielens-18b",
-        ], f"Unsupported movielens variant: {dataset}"
-
+    if dataset_family == "movielens":
+        if dataset != "movielens-1m":
+            overrides["hash_size"] = HASH_SIZE_1B
         overrides["max_num_candidates"] = 10
+        overrides["max_num_candidates_inference"] = (
+            2048 if dataset in {"movielens-13b", "movielens-18b"} else 5
+        )
         overrides["contextual_feature_to_max_length"] = (
             {"user_id": 1, "sex": 1, "age_group": 1, "occupation": 1, "zip_code": 1}
             if dataset == "movielens-1m"
@@ -87,8 +133,10 @@ def get_hstu_config_overrides(dataset: str) -> Dict[str, Any]:
         overrides["action_weights"] = [1, 2, 4, 8, 16]
         overrides["task_names"] = ["rating"]
 
-    elif "streaming" in dataset:
+    elif dataset_family == "streaming":
+        overrides["hash_size"] = HASH_SIZE_1B
         overrides["max_num_candidates"] = 32
+        overrides["max_num_candidates_inference"] = 2048
         overrides["contextual_feature_to_max_length"] = {"user_id": 1}
         overrides["contextual_feature_to_min_uih_length"] = {"user_id": 20}
         overrides["candidates_weight_feature_name"] = "item_action_weights"
@@ -121,9 +169,10 @@ def get_hstu_config_overrides(dataset: str) -> Dict[str, Any]:
             ["item_category_id", "item_candidate_category_id"],
         ]
         overrides["action_weights"] = [1, 2, 4, 8, 16]
+        overrides["action_embedding_init_std"] = 5.0
         overrides["task_names"] = ["rating"]
 
-    elif "kuairand" in dataset:
+    elif dataset_family == "kuairand":
         overrides["contextual_feature_to_max_length"] = {
             "user_id": 1, "user_active_degree": 1,
             "follow_user_num_range": 1, "fans_user_num_range": 1,
@@ -165,16 +214,16 @@ def get_hstu_config_overrides(dataset: str) -> Dict[str, Any]:
 
     else:
         overrides["contextual_feature_to_max_length"] = {
-            "viewer_id": 1, "dummy_contextual": 1,
+            "viewer_id": 1, "dummy_contexual": 1,
         }
         overrides["contextual_feature_to_min_uih_length"] = {
-            "viewer_id": 128, "dummy_contextual": 128,
+            "viewer_id": 128, "dummy_contexual": 128,
         }
         overrides["candidates_weight_feature_name"] = "item_action_weight"
         overrides["candidates_watchtime_feature_name"] = "item_target_watchtime"
         overrides["candidates_querytime_feature_name"] = "item_query_time"
         overrides["user_embedding_feature_names"] = [
-            "uih_post_id", "uih_owner_id", "viewer_id", "dummy_contextual",
+            "uih_post_id", "uih_owner_id", "viewer_id", "dummy_contexual",
         ]
         overrides["item_embedding_feature_names"] = [
             "item_post_id", "item_owner_id",
@@ -184,7 +233,7 @@ def get_hstu_config_overrides(dataset: str) -> Dict[str, Any]:
         overrides["hstu_uih_feature_names"] = [
             "uih_post_id", "uih_action_time", "uih_weight",
             "uih_owner_id", "uih_watchtime", "uih_surface_type",
-            "uih_video_length", "viewer_id", "dummy_contextual",
+            "uih_video_length", "viewer_id", "dummy_contexual",
         ]
         overrides["hstu_candidate_feature_names"] = [
             "item_post_id", "item_owner_id", "item_surface_type",
@@ -212,11 +261,9 @@ def get_embedding_table_overrides(dataset: str) -> List[Dict[str, Any]]:
     get_embedding_table_config().
     """
     dim = HSTU_EMBEDDING_DIM
+    dataset_family = _resolve_dataset_family(dataset)
 
-    if "movielens" in dataset:
-        assert dataset in [
-            "movielens-1m", "movielens-20m", "movielens-13b", "movielens-18b",
-        ]
+    if dataset_family == "movielens":
         if dataset == "movielens-1m":
             return [
                 {"name": "movie_id", "embedding_dim": dim,
@@ -248,20 +295,22 @@ def get_embedding_table_overrides(dataset: str) -> List[Dict[str, Any]]:
                  "feature_names": ["user_id"]},
             ]
 
-    elif "streaming" in dataset:
+    elif dataset_family == "streaming":
         return [
             {"name": "item_id", "embedding_dim": dim,
              "num_embeddings": HASH_SIZE_1B,
              "feature_names": ["item_id", "item_candidate_id"]},
             {"name": "item_category_id", "embedding_dim": dim,
              "num_embeddings": 128,
+             "weight_init_max": 1.0,
+             "weight_init_min": -1.0,
              "feature_names": ["item_category_id", "item_candidate_category_id"]},
             {"name": "user_id", "embedding_dim": dim,
              "num_embeddings": HASH_SIZE,
              "feature_names": ["user_id"]},
         ]
 
-    elif "kuairand" in dataset:
+    elif dataset_family == "kuairand":
         return [
             {"name": "video_id", "embedding_dim": dim,
              "num_embeddings": HASH_SIZE,
@@ -286,18 +335,17 @@ def get_embedding_table_overrides(dataset: str) -> List[Dict[str, Any]]:
              "feature_names": ["register_days_range"]},
         ]
 
-    else:
-        return [
-            {"name": "post_id", "embedding_dim": dim,
-             "num_embeddings": HASH_SIZE,
-             "feature_names": [
-                 "uih_post_id", "item_post_id",
-                 "uih_owner_id", "item_owner_id",
-             ]},
-            {"name": "viewer_id", "embedding_dim": dim,
-             "num_embeddings": HASH_SIZE,
-             "feature_names": ["viewer_id"]},
-            {"name": "dummy_contextual", "embedding_dim": dim,
-             "num_embeddings": HASH_SIZE,
-             "feature_names": ["dummy_contextual"]},
-        ]
+    return [
+        {"name": "post_id", "embedding_dim": dim,
+         "num_embeddings": HASH_SIZE,
+         "feature_names": [
+             "uih_post_id", "item_post_id",
+             "uih_owner_id", "item_owner_id",
+         ]},
+        {"name": "viewer_id", "embedding_dim": dim,
+         "num_embeddings": HASH_SIZE,
+         "feature_names": ["viewer_id"]},
+        {"name": "dummy_contexual", "embedding_dim": dim,
+         "num_embeddings": HASH_SIZE,
+         "feature_names": ["dummy_contexual"]},
+    ]

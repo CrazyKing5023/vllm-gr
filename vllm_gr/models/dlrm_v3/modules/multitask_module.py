@@ -2,7 +2,12 @@
 # Ported to vllm-GR with modifications.
 # Licensed under the Apache License, Version 2.0
 
-"""Multitask module for HSTU model"""
+"""Multitask module for HSTU model.
+
+This fork keeps the inference-time prediction path and intentionally omits the
+full upstream supervision-label / weight / loss computation pipeline. Training
+parity is out of scope for the inference-only recommendation runtime.
+"""
 
 import abc
 import logging
@@ -78,7 +83,11 @@ def _compute_pred_and_logits(
 
 
 class DefaultMultitaskModule(MultitaskModule):
-    """Default implementation of multitask module."""
+    """Default implementation of multitask module.
+
+    Only prediction tensors are produced. Training labels, weights, and losses
+    are not materialized in this inference-oriented fork.
+    """
     
     def __init__(
         self,
@@ -140,4 +149,3 @@ class DefaultMultitaskModule(MultitaskModule):
             mt_preds = mt_preds.to(orig_dtype)
 
         return (mt_preds, mt_labels, mt_weights, mt_losses)
-

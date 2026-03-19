@@ -5,8 +5,8 @@
 
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
-from vllm_gr.worker.gr_runner_mixin import GRRunnerMixin
+from vllm_gr.worker.gr_runner_mixin import GRFeatureRunnerMixin
 
 
-class GRModelRunner(GRRunnerMixin, GPUModelRunner):
+class GRModelRunner(GRFeatureRunnerMixin, GPUModelRunner):
     """GPU model runner that injects GR features into HSTU inputs."""

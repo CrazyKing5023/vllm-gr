@@ -41,7 +41,6 @@ class GRPrompt(TypedDict):
                 {"item_movie_id": 48},
             ],
             "context": {"user_id": 1, "sex": 0, "age_group": 3},
-            "num_recommendations": 10,
         }
     """
 
@@ -52,8 +51,6 @@ class GRPrompt(TypedDict):
 
     candidates: List[Dict[str, int]]
     """Candidate feature dicts keyed by model candidate feature names."""
-
-    num_recommendations: NotRequired[int]
 
     context: NotRequired[Dict[str, int]]
     """Contextual features (user-level attributes, one value each)."""

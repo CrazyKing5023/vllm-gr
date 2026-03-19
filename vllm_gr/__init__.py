@@ -16,20 +16,25 @@ point ``vllm_gr.plugin:register``.
 
 from importlib import import_module
 from typing import Any
+import warnings
 
 __version__ = "0.3.0"
 
-_LAZY_EXPORTS: dict[str, tuple[str, str, bool]] = {
-    "HSTUConfig": ("vllm_gr.config.hstu_hf_config", "HSTUConfig", True),
-    "ensure_hstu_config_registered": (
-        "vllm_gr.config.hstu_hf_config",
-        "ensure_hstu_config_registered",
-        True,
-    ),
+_PUBLIC_EXPORTS: dict[str, tuple[str, str, bool]] = {
     "GRPrompt": ("vllm_gr.inputs.data", "GRPrompt", False),
     "is_gr_prompt": ("vllm_gr.inputs.data", "is_gr_prompt", False),
     "RecommendedItem": ("vllm_gr.outputs", "RecommendedItem", True),
     "GRRequestOutput": ("vllm_gr.outputs", "GRRequestOutput", True),
+    "GRLLM": ("vllm_gr.entrypoint.gr", "GRLLM", True),
+}
+
+_COMPAT_EXPORTS: dict[str, tuple[str, str, bool]] = {
+    "HSTUConfig": ("vllm_gr.config.hstu_config", "HSTUConfig", False),
+    "ensure_hstu_config_registered": (
+        "vllm_gr.config.hstu_vllm_registration",
+        "ensure_hstu_config_registered",
+        True,
+    ),
     "GRRequest": ("vllm_gr.request", "GRRequest", True),
     "is_gr_request": ("vllm_gr.request", "is_gr_request", True),
     "GRFeaturesPayload": ("vllm_gr.engine", "GRFeaturesPayload", True),
@@ -54,29 +59,16 @@ _LAZY_EXPORTS: dict[str, tuple[str, str, bool]] = {
     "GRLLMEngine": ("vllm_gr.engine.gr_engine", "GRLLMEngine", True),
     "GRWorker": ("vllm_gr.worker.gr_worker", "GRWorker", True),
     "GRModelRunner": ("vllm_gr.worker.gr_model_runner", "GRModelRunner", True),
-    "GRLLM": ("vllm_gr.entrypoint.gr", "GRLLM", True),
 }
+
+_LAZY_EXPORTS = {**_PUBLIC_EXPORTS, **_COMPAT_EXPORTS}
 
 __all__ = [
     "__version__",
-    "HSTUConfig",
-    "ensure_hstu_config_registered",
     "GRPrompt",
     "is_gr_prompt",
     "RecommendedItem",
     "GRRequestOutput",
-    "GRRequest",
-    "is_gr_request",
-    "GRFeaturesPayload",
-    "GREngineCoreRequest",
-    "GRNewRequestData",
-    "GRInputProcessor",
-    "GROutputProcessor",
-    "GRRequestState",
-    "GREngineArgs",
-    "GRLLMEngine",
-    "GRWorker",
-    "GRModelRunner",
     "GRLLM",
 ]
 
@@ -92,6 +84,17 @@ def __getattr__(name: str) -> Any:
         module_name, attr_name, needs_env_check = _LAZY_EXPORTS[name]
     except KeyError as exc:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+    if name in _COMPAT_EXPORTS:
+        warnings.warn(
+            (
+                f"`vllm_gr.{name}` is deprecated as a top-level import and will "
+                "move behind its module namespace in a future cleanup. "
+                "Prefer importing it from its defining submodule."
+            ),
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     if needs_env_check:
         _check_env_before_vllm_import()

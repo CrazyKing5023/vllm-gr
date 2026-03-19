@@ -41,6 +41,10 @@ def _build_fake_hf_config():
         hstu_candidate_feature_names=["item_candidate_id"],
         item_embedding_feature_names=["item_candidate_id"],
         uih_post_id_feature_name="item_id",
+        candidate_primary_id_feature_name="item_candidate_id",
+        merge_uih_candidate_feature_mapping=[
+            ["item_id", "item_candidate_id"],
+        ],
         task_names=["is_click"],
     )
 
@@ -55,6 +59,7 @@ class SmokeHarness:
 
     def create_llm(self, **kwargs):
         module = importlib.import_module("vllm_gr.entrypoint.gr")
+        kwargs.setdefault("model_family", "hstu")
         return module.GRLLM(model="test-model", **kwargs)
 
     def prompt(self) -> dict[str, object]:
@@ -65,7 +70,6 @@ class SmokeHarness:
                 {"item_candidate_id": 11},
                 {"item_candidate_id": 12},
             ],
-            "num_recommendations": 2,
         }
 
 
@@ -300,6 +304,16 @@ def smoke_harness(initial_device_type: str = "cuda"):
             return self.executor.run_requests(requests)
 
         def shutdown(self):
+            if getattr(self, "_shutdown_complete", False):
+                return None
+            self._shutdown_complete = True
+
+            executor = getattr(self, "executor", None)
+            if executor is not None:
+                shutdown = getattr(executor, "shutdown", None)
+                if callable(shutdown):
+                    shutdown()
+
             return None
 
     class EngineCoreRequest:
@@ -314,10 +328,9 @@ def smoke_harness(initial_device_type: str = "cuda"):
         pass
 
     class FakeGRConfig:
-        def __init__(self, max_seq_len=512, max_candidates=1000, default_top_k=10):
+        def __init__(self, max_seq_len=512, max_candidates=1000):
             self.max_seq_len = max_seq_len
             self.max_candidates = max_candidates
-            self.default_top_k = default_top_k
 
     class FakeGRInputProcessor:
         def __init__(self, **kwargs):
@@ -337,7 +350,7 @@ def smoke_harness(initial_device_type: str = "cuda"):
             candidates = prompt["candidates"]
             return [
                 candidate["item_candidate_id"]
-                for candidate in candidates[: prompt.get("num_recommendations", 1)]
+                for candidate in candidates
             ]
 
     class BaseGRRunner:
@@ -354,7 +367,7 @@ def smoke_harness(initial_device_type: str = "cuda"):
 
             item_ids = self.model.recommend(request["prompt"])
             recommendations = [
-                RecommendedItem(item_id=item_id, score=1.0 / (idx + 1), rank=idx + 1)
+                RecommendedItem(item_id=item_id, score=1.0 / (idx + 1))
                 for idx, item_id in enumerate(item_ids)
             ]
             return GRRequestOutput(
@@ -406,7 +419,7 @@ def smoke_harness(initial_device_type: str = "cuda"):
     fake_gr_input = types.ModuleType("vllm_gr.engine.gr_input_processor")
     fake_gr_output = types.ModuleType("vllm_gr.engine.gr_output_processor")
     fake_patch = types.ModuleType("vllm_gr.patch")
-    fake_hf_config = types.ModuleType("vllm_gr.config.hstu_hf_config")
+    fake_hf_config = types.ModuleType("vllm_gr.config.hstu_vllm_registration")
     fake_registry = types.ModuleType("vllm_gr.model_executor.models.registry")
     fake_hstu_module = types.ModuleType("vllm_gr.model_executor.models.hstu_vllm")
     fake_gr_model_runner = types.ModuleType("vllm_gr.worker.gr_model_runner")
@@ -464,7 +477,7 @@ def smoke_harness(initial_device_type: str = "cuda"):
         "vllm_gr.engine.gr_input_processor": fake_gr_input,
         "vllm_gr.engine.gr_output_processor": fake_gr_output,
         "vllm_gr.patch": fake_patch,
-        "vllm_gr.config.hstu_hf_config": fake_hf_config,
+        "vllm_gr.config.hstu_vllm_registration": fake_hf_config,
         "vllm_gr.model_executor.models.registry": fake_registry,
         "vllm_gr.model_executor.models.hstu_vllm": fake_hstu_module,
         "vllm_gr.worker.gr_model_runner": fake_gr_model_runner,

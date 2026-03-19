@@ -64,7 +64,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-users", type=int, default=10, help="Number of users to generate.")
     parser.add_argument("--seq-length", type=int, default=20, help="History length per user.")
     parser.add_argument("--num-candidates", type=int, default=30, help="Candidates per user.")
-    parser.add_argument("--top-k", type=int, default=5, help="Number of recommendations to return.")
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size for recommend_batch().")
     parser.add_argument("--max-seq-len", type=int, default=64, help="Maximum user history sequence length.")
     parser.add_argument("--max-candidates", type=int, default=50, help="Maximum number of candidate items.")
@@ -86,9 +85,9 @@ def main():
     # - Production: GRLLM(model="path/to/pretrained_model")
     #   -> Loads config.json and weights from the directory
     # 
-    # - Demo mode: GRLLM(model="path/to/demo-model")
+    # - Demo mode: GRLLM(model="path/to/demo-model", allow_missing_weights=True)
     #   -> Loads config.json for architecture parameters
-    #   -> Uses randomly initialized weights (no weights file present)
+    #   -> Uses randomly initialized weights (explicit opt-in only)
     #   -> Useful for validating the complete inference pipeline
     
     print(f"\n[Model Path]")
@@ -98,26 +97,24 @@ def main():
         model=args.model,
         max_seq_len=args.max_seq_len,
         max_candidates=args.max_candidates,
-        default_top_k=args.top_k,
+        allow_missing_weights=True,
     )
-    active_device = describe_runtime(llm, expected_device=args.expect_device)
+    active_device = describe_runtime(expected_device=args.expect_device)
     
     print(f"\n[GRLLM Initialized]")
     print(f"   Engine: {llm.engine_class.__name__}")
     print(f"   Device path: {active_device}")
-    print("   Model: HSTU with randomly initialized weights (demo mode)")
+    print("   Model: HSTU with randomly initialized weights (explicit demo mode)")
     
     # 2. Test parameters
     num_users = args.num_users
     seq_length = args.seq_length
     num_candidates = args.num_candidates
-    top_k = args.top_k
     
     print(f"\n[Batch Test Parameters]")
     print(f"   Number of users: {num_users}")
     print(f"   Sequence length: {seq_length}")
     print(f"   Candidates per user: {num_candidates}")
-    print(f"   Top-K: {top_k}")
     
     # 3. Generate GRPrompt requests
     prompts = generate_sample_prompts(num_users, seq_length, num_candidates)
@@ -130,7 +127,6 @@ def main():
     outputs: List[GRRequestOutput] = llm.recommend(
         prompts=prompts,
         use_tqdm=False,
-        top_k=top_k,
     )
     method1_time = (time.time() - start_time) * 1000
     print(f"   Time: {method1_time:.2f}ms")
@@ -142,7 +138,6 @@ def main():
     outputs_batch: List[GRRequestOutput] = llm.recommend_batch(
         prompts=prompts,
         batch_size=args.batch_size,
-        top_k=top_k,
     )
     method2_time = (time.time() - start_time) * 1000
     print(f"   Time: {method2_time:.2f}ms")
@@ -150,14 +145,14 @@ def main():
     
     # 6. Display sample results
     print(f"\n[Sample Results (first 3 users)]")
-    print(f"   (Note: Scores are from randomly initialized model)")
+    print(f"   (Note: Scores are from explicitly enabled random-init demo mode)")
     for i, output in enumerate(outputs[:3]):
-        top_items = [item.item_id for item in output.recommendations[:3]]
-        top_scores = [f"{item.score:.3f}" for item in output.recommendations[:3]]
+        sample_items = [item.item_id for item in output.recommendations[:3]]
+        sample_scores = [f"{item.score:.3f}" for item in output.recommendations[:3]]
         print(f"\n   User {i}: {output.user_id}")
         print(f"     Request ID: {output.request_id}")
-        print(f"     Top items: {top_items}")
-        print(f"     Top scores: {top_scores}")
+        print(f"     Candidate IDs: {sample_items}")
+        print(f"     Candidate scores: {sample_scores}")
     
     # 7. Summary statistics
     print(f"\n[Performance Summary]")
@@ -171,7 +166,7 @@ def main():
     print(f"   Type: {type(sample).__name__}")
     print(f"   Attributes: request_id, user_id, recommendations, finished, metrics")
     print(f"   Recommendation type: {type(sample.recommendations[0]).__name__}")
-    print(f"   Item attributes: item_id, score, rank, features")
+    print(f"   Item attributes: item_id, score, features")
     
     # 9. Serialization example
     print(f"\n[Serialization Example]")

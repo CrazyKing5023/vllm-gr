@@ -44,9 +44,9 @@ class GRFeaturesPayload(msgspec.Struct):
 
     ctx_keys: list[str] = []
     ctx_values_per_key: list[list[int]] = []
+    full_uih_keys: list[str] = []
 
     user_id: str = ""
-    num_recommendations: int = 10
     original_candidates: list[dict[str, Any]] = []
 
 

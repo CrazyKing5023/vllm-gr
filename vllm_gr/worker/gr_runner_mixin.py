@@ -11,18 +11,35 @@ from torchrec.sparse.jagged_tensor import KeyedJaggedTensor
 from vllm.logger import init_logger
 from vllm.sequence import IntermediateTensors
 
+from vllm_gr.gr_schema import (
+    attach_schema_fingerprint,
+    validate_context_group,
+    validate_feature_group,
+)
+
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
 
 logger = init_logger(__name__)
 
 
-class GRRunnerMixin:
-    """Inject GR feature decode and KJT building into a vLLM model runner."""
+def _concat_1d_int_tensors(
+    tensor_parts: list[torch.Tensor],
+    *,
+    device: torch.device,
+) -> torch.Tensor:
+    if not tensor_parts:
+        return torch.empty(0, dtype=torch.int64, device=device)
+    return torch.cat(tensor_parts, dim=0)
+
+
+class GRFeatureRunnerMixin:
+    """Inject GR feature decode and KJT model-kwargs building into a runner."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._gr_features_cache: dict[str, dict[str, Any]] = {}
+        self._gr_feature_errors: dict[str, str] = {}
 
     def _update_states(self, scheduler_output: "SchedulerOutput") -> None:
         for new_req_data in scheduler_output.scheduled_new_reqs:
@@ -32,6 +49,7 @@ class GRRunnerMixin:
                 try:
                     decoded = self._decode_gr_features(gr_features)
                     self._gr_features_cache[req_id] = decoded
+                    self._gr_feature_errors.pop(req_id, None)
                     logger.debug(
                         "Decoded GR features for request %s: uih_keys=%s, cand_keys=%s",
                         req_id,
@@ -39,6 +57,8 @@ class GRRunnerMixin:
                         decoded.get("cand_keys"),
                     )
                 except Exception as e:
+                    self._gr_features_cache.pop(req_id, None)
+                    self._gr_feature_errors[req_id] = str(e)
                     logger.error(
                         "Error decoding GR features for %s: %s",
                         req_id,
@@ -52,12 +72,11 @@ class GRRunnerMixin:
 
         for req_id in scheduler_output.finished_req_ids:
             self._gr_features_cache.pop(req_id, None)
+            self._gr_feature_errors.pop(req_id, None)
 
         super()._update_states(scheduler_output)
 
     def _decode_gr_features(self, payload: Any) -> dict[str, Any]:
-        from vllm_gr.engine.gr_input_processor import GRInputProcessor
-
         uih_keys = list(payload.uih_keys)
         cand_keys = list(payload.cand_keys)
         ctx_keys = list(payload.ctx_keys)
@@ -66,27 +85,38 @@ class GRRunnerMixin:
             cand_keys,
             ctx_keys,
             schema_fingerprint,
-        ) = GRInputProcessor.normalize_gr_schema(
+        ) = attach_schema_fingerprint(
             uih_keys=uih_keys,
             cand_keys=cand_keys,
             ctx_keys=ctx_keys,
         )
-        GRInputProcessor.validate_feature_group(
+        validate_feature_group(
             "uih",
             uih_keys,
             list(payload.uih_values_per_key),
             list(payload.uih_lengths_per_key),
         )
-        GRInputProcessor.validate_feature_group(
+        validate_feature_group(
             "cand",
             cand_keys,
             list(payload.cand_values_per_key),
             list(payload.cand_lengths_per_key),
         )
-        GRInputProcessor.validate_context_group(
+        validate_context_group(
             ctx_keys,
             list(payload.ctx_values_per_key),
         )
+
+        full_uih_keys = list(getattr(payload, "full_uih_keys", []) or (uih_keys + ctx_keys))
+        combined_uih_keys = uih_keys + ctx_keys
+        if (
+            len(full_uih_keys) != len(combined_uih_keys)
+            or set(full_uih_keys) != set(combined_uih_keys)
+        ):
+            raise ValueError(
+                "GR payload full_uih_keys do not match decoded UIH/context keys: "
+                f"full_uih_keys={full_uih_keys!r}, combined_keys={combined_uih_keys!r}"
+            )
 
         return {
             "uih_keys": uih_keys,
@@ -112,6 +142,7 @@ class GRRunnerMixin:
                 torch.tensor(values, dtype=torch.int64)
                 for values in payload.ctx_values_per_key
             ],
+            "full_uih_keys": full_uih_keys,
             "schema_fingerprint": schema_fingerprint,
         }
 
@@ -150,10 +181,24 @@ class GRRunnerMixin:
         )
 
     def _build_gr_model_kwargs(self) -> dict[str, Any]:
+        batch_req_ids = list(self.input_batch.req_ids)
+        failed_req_ids = [
+            req_id for req_id in batch_req_ids
+            if req_id in self._gr_feature_errors
+        ]
+        if failed_req_ids:
+            error_text = ", ".join(
+                f"{req_id}: {self._gr_feature_errors[req_id]}"
+                for req_id in failed_req_ids
+            )
+            raise ValueError(
+                "GR feature decode failed for scheduled requests: "
+                f"{error_text}"
+            )
+
         if not self._gr_features_cache:
             return {}
 
-        batch_req_ids = list(self.input_batch.req_ids)
         gr_reqs = [
             (req_id, self._gr_features_cache[req_id])
             for req_id in batch_req_ids
@@ -161,6 +206,15 @@ class GRRunnerMixin:
         ]
         if not gr_reqs:
             return {}
+        if len(gr_reqs) != len(batch_req_ids):
+            missing_req_ids = [
+                req_id for req_id in batch_req_ids
+                if req_id not in self._gr_features_cache
+            ]
+            raise ValueError(
+                "Incomplete GR feature batch: missing decoded features for "
+                f"requests {missing_req_ids}"
+            )
 
         self._validate_batch_schema(gr_reqs)
 
@@ -168,6 +222,10 @@ class GRRunnerMixin:
         uih_keys: list[str] = gr_reqs[0][1]["uih_keys"]
         cand_keys: list[str] = gr_reqs[0][1]["cand_keys"]
         ctx_keys: list[str] = gr_reqs[0][1]["ctx_keys"]
+        full_uih_keys: list[str] = gr_reqs[0][1].get(
+            "full_uih_keys",
+            uih_keys + ctx_keys,
+        )
         num_uih_keys = len(uih_keys)
         num_cand_keys = len(cand_keys)
         num_ctx_keys = len(ctx_keys)
@@ -206,33 +264,50 @@ class GRRunnerMixin:
                 values = features["ctx_values_per_key"][key_idx].reshape(-1).to(device)
                 ctx_values_by_key[key_idx].append(values)
 
-        all_uih_keys = uih_keys + ctx_keys
+        uih_key_to_idx = {key: idx for idx, key in enumerate(uih_keys)}
+        ctx_key_to_idx = {key: idx for idx, key in enumerate(ctx_keys)}
         all_uih_value_parts: list[torch.Tensor] = []
         all_uih_lengths: list[int] = []
-
-        for key_idx in range(num_uih_keys):
-            values_per_request = uih_values_by_key[key_idx]
-            if values_per_request:
-                all_uih_value_parts.append(torch.cat(values_per_request, dim=0))
-            all_uih_lengths.extend(uih_lengths_by_key[key_idx])
-
         batch_size = len(gr_reqs)
-        for key_idx in range(num_ctx_keys):
-            values_per_request = ctx_values_by_key[key_idx]
-            if values_per_request:
-                all_uih_value_parts.append(torch.cat(values_per_request, dim=0))
-            all_uih_lengths.extend([1] * batch_size)
 
-        uih_values = torch.cat(all_uih_value_parts, dim=0)
+        for key in full_uih_keys:
+            if key in uih_key_to_idx:
+                key_idx = uih_key_to_idx[key]
+                values_per_request = uih_values_by_key[key_idx]
+                if values_per_request:
+                    all_uih_value_parts.append(torch.cat(values_per_request, dim=0))
+                all_uih_lengths.extend(uih_lengths_by_key[key_idx])
+                continue
+
+            if key in ctx_key_to_idx:
+                key_idx = ctx_key_to_idx[key]
+                values_per_request = ctx_values_by_key[key_idx]
+                if values_per_request:
+                    all_uih_value_parts.append(torch.cat(values_per_request, dim=0))
+                all_uih_lengths.extend([1] * batch_size)
+                continue
+
+            raise ValueError(
+                "Full UIH schema contains unknown key not present in GR payload: "
+                f"{key!r}"
+            )
+
+        uih_values = _concat_1d_int_tensors(
+            all_uih_value_parts,
+            device=device,
+        )
         uih_kjt = KeyedJaggedTensor.from_lengths_sync(
-            keys=all_uih_keys,
+            keys=full_uih_keys,
             values=uih_values,
             lengths=torch.tensor(all_uih_lengths, dtype=torch.int64, device=device),
         )
 
-        cand_values = torch.cat(
-            [torch.cat(values_per_key, dim=0) for values_per_key in cand_values_by_key],
-            dim=0,
+        cand_values = _concat_1d_int_tensors(
+            [
+                _concat_1d_int_tensors(values_per_key, device=device)
+                for values_per_key in cand_values_by_key
+            ],
+            device=device,
         )
         cand_lengths = torch.tensor(
             [
@@ -328,15 +403,10 @@ class GRRunnerMixin:
             raw_outputs = list(raw_pooler_output)
 
         if len(raw_outputs) != num_reqs:
-            logger.warning(
-                "GR pooling output count mismatch: num_reqs=%d, outputs=%d",
-                num_reqs,
-                len(raw_outputs),
+            raise ValueError(
+                "GR pooling output count mismatch: "
+                f"num_reqs={num_reqs}, outputs={len(raw_outputs)}"
             )
-            if len(raw_outputs) < num_reqs:
-                raw_outputs.extend([None] * (num_reqs - len(raw_outputs)))
-            else:
-                raw_outputs = raw_outputs[:num_reqs]
 
         raw_outputs = [
             None
@@ -362,14 +432,30 @@ class GRRunnerMixin:
         """Fail fast when mixed GR requests carry different schemas."""
         base_req_id, base_features = gr_reqs[0]
         expected = str(base_features["schema_fingerprint"])
+        expected_full_uih_keys = list(
+            base_features.get(
+                "full_uih_keys",
+                base_features["uih_keys"] + base_features["ctx_keys"],
+            )
+        )
         mismatches: list[str] = []
 
         for req_id, features in gr_reqs[1:]:
             actual = str(features["schema_fingerprint"])
-            if actual != expected:
-                mismatches.append(
-                    f"{req_id}={actual}"
+            actual_full_uih_keys = list(
+                features.get(
+                    "full_uih_keys",
+                    features["uih_keys"] + features["ctx_keys"],
                 )
+            )
+            if actual != expected or actual_full_uih_keys != expected_full_uih_keys:
+                mismatch_desc = f"{req_id}={actual}"
+                if actual_full_uih_keys != expected_full_uih_keys:
+                    mismatch_desc += (
+                        " full_uih_keys="
+                        f"{actual_full_uih_keys!r}"
+                    )
+                mismatches.append(mismatch_desc)
 
         if mismatches:
             mismatch_text = ", ".join(mismatches)

@@ -86,7 +86,6 @@ def build_movielens_1m_prompts() -> Dict[str, Any]:
                 "user_id": 1, "sex": 0, "age_group": 3,
                 "occupation": 7, "zip_code": 567,
             },
-            "num_recommendations": 3,
         },
     ]
     return {
@@ -148,7 +147,6 @@ def build_kuairand_1k_prompts() -> Dict[str, Any]:
                 "follow_user_num_range": 5, "fans_user_num_range": 4,
                 "friend_user_num_range": 2, "register_days_range": 6,
             },
-            "num_recommendations": 5,
         },
     ]
     return {
@@ -200,7 +198,6 @@ def build_streaming_prompts() -> Dict[str, Any]:
                 {"item_candidate_id": 2008, "item_candidate_rating": 0, "item_query_time": 1650020000, "item_action_weights": 0, "item_dummy_watchtime": 0, "item_candidate_category_id": 12},
             ],
             "context": {"user_id": 100},
-            "num_recommendations": 5,
         },
     ]
     return {
@@ -229,7 +226,7 @@ def build_debug_prompts() -> Dict[str, Any]:
     Candidates:    item_post_id, item_owner_id, item_surface_type,
                    item_video_length, item_action_weight,
                    item_target_watchtime, item_query_time
-    Context:       viewer_id, dummy_contextual
+    Context:       viewer_id, dummy_contexual
     Task:          vvp100
     """
     prompts: List["GRPrompt"] = [
@@ -253,8 +250,7 @@ def build_debug_prompts() -> Dict[str, Any]:
                 {"item_post_id": 80, "item_owner_id": 700, "item_surface_type": 0, "item_video_length": 0, "item_action_weight": 0, "item_target_watchtime": 0, "item_query_time": 4000},
                 {"item_post_id": 90, "item_owner_id": 600, "item_surface_type": 0, "item_video_length": 0, "item_action_weight": 0, "item_target_watchtime": 0, "item_query_time": 4000},
             ],
-            "context": {"viewer_id": 42, "dummy_contextual": 1},
-            "num_recommendations": 3,
+            "context": {"viewer_id": 42, "dummy_contexual": 1},
         },
     ]
     return {
@@ -304,33 +300,37 @@ def run_dataset(spec: Dict[str, Any], args: argparse.Namespace) -> None:
     print(f"  Primary ID:         {spec['primary_id']}")
 
     print(f"\n  Initializing GRLLM...")
-    llm = GRLLM(
+    with GRLLM(
         model=config_dir,
         max_seq_len=args.max_seq_len,
         max_candidates=args.max_candidates,
-        default_top_k=args.top_k,
-    )
-    active_device = describe_runtime(llm, expected_device=args.expect_device)
+        allow_missing_weights=True,
+    ) as llm:
+        active_device = describe_runtime(expected_device=args.expect_device)
 
-    print(f"  Running inference ({len(prompts)} request(s))...")
-    start = time.time()
-    outputs: List[GRRequestOutput] = llm.recommend(
-        prompts=prompts,
-        use_tqdm=False,
-        top_k=args.top_k,
-    )
-    elapsed_ms = (time.time() - start) * 1000
+        print(f"  Running inference ({len(prompts)} request(s))...")
+        start = time.time()
+        outputs: List[GRRequestOutput] = llm.recommend(
+            prompts=prompts,
+            use_tqdm=False,
+        )
+        elapsed_ms = (time.time() - start) * 1000
 
-    for output in outputs:
-        print(f"\n  User: {output.user_id}")
-        print(f"  Recommendations ({len(output.recommendations)}):")
-        pid = spec["primary_id"]
-        for item in output.recommendations:
-            print(f"    #{item.rank}: {pid}={item.item_id}  score={item.score:.4f}")
+        for output in outputs:
+            print(f"\n  User: {output.user_id}")
+            print(
+                "  Returned scores for all candidates "
+                f"({len(output.recommendations)}):"
+            )
+            pid = spec["primary_id"]
+            for item in output.recommendations:
+                print(f"    {pid}={item.item_id}  score={item.score:.4f}")
 
-    print(f"\n  Device path: {active_device}")
-    print(f"  Latency: {elapsed_ms:.1f}ms")
-    llm.shutdown()
+        print("\n  Output contract: no top-k truncation is applied in the example.")
+        print("  Caller-side ranking / filtering should be done downstream.")
+        print("  Demo path: config-only example run with explicit random-init opt-in.")
+        print(f"  Device path: {active_device}")
+        print(f"  Latency: {elapsed_ms:.1f}ms")
 
 
 def main():
@@ -339,10 +339,12 @@ def main():
     )
     add_runtime_args(parser, include_model=False)
     parser.add_argument(
-        "datasets", nargs="*", default=list(DATASET_BUILDERS.keys()),
+        "datasets",
+        nargs="*",
+        default=list(DATASET_BUILDERS.keys()),
+        choices=sorted(DATASET_BUILDERS.keys()),
         help=f"Datasets to run. Choices: {list(DATASET_BUILDERS.keys())}",
     )
-    parser.add_argument("--top-k", type=int, default=5, help="Number of recommendations to return.")
     parser.add_argument("--max-seq-len", type=int, default=64, help="Maximum user history sequence length.")
     parser.add_argument("--max-candidates", type=int, default=50, help="Maximum number of candidate items.")
     args = parser.parse_args()
@@ -356,9 +358,6 @@ def main():
     print("=" * 60)
 
     for name in args.datasets:
-        if name not in DATASET_BUILDERS:
-            print(f"\n  [SKIP] Unknown dataset: {name}")
-            continue
         spec = DATASET_BUILDERS[name]()
         run_dataset(spec, args)
 

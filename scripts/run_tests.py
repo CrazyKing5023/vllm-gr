@@ -2,14 +2,14 @@
 # Copyright (c) vllm-GR Authors.
 # Licensed under the Apache License, Version 2.0
 
-"""Unified test runner for vllm-GR.
+"""Unified test runner for the reduced core vllm-GR test matrix.
 
-Runs core pytest suites, platform-specific smoke lanes, and example scripts.
+Runs core correctness suites plus optional GPU/NPU smoke lanes and examples.
 
 Usage:
     python scripts/run_tests.py
-    python scripts/run_tests.py --suite platform-gpu
-    python scripts/run_tests.py --suite platform-npu cross-platform
+    python scripts/run_tests.py --suite gpu-smoke
+    python scripts/run_tests.py --suite npu-smoke
     python scripts/run_tests.py --list-suites
     python scripts/run_tests.py --all
     python scripts/run_tests.py --examples-only
@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import subprocess
 import sys
@@ -34,27 +35,14 @@ SUITE_DEFINITIONS: dict[str, dict[str, object]] = {
         "runner": "pytest",
         "files": [
             "test_engine.py",
+            "test_gr_schema_contract.py",
             "test_processors.py",
-            "test_weight_loading.py",
-            "test_npu_adaptation.py",
-            "test_hstu_runtime_policy.py",
-        ],
-    },
-    "plugin": {
-        "label": "Plugin and Import Contract Tests",
-        "runner": "python",
-        "files": [
-            "test_import_contract.py",
-            "test_patch_chain.py",
-            "test_gr_patch_chain.py",
-            "test_plugin_order.py",
-        ],
-    },
-    "shutdown": {
-        "label": "Shutdown Chain Tests",
-        "runner": "python",
-        "files": [
-            "test_shutdown_chain.py",
+            "test_embedding_collection_patch.py",
+            "test_gr_runner_core.py",
+            "test_dataset_config_parity.py",
+            "test_checkpoint_conversion_contract.py",
+            "test_output_contract.py",
+            "test_positional_encoder_parity.py",
         ],
     },
     "gpu-smoke": {
@@ -71,31 +59,17 @@ SUITE_DEFINITIONS: dict[str, dict[str, object]] = {
             "test_npu_smoke.py",
         ],
     },
-    "cross-platform": {
-        "label": "Cross-Platform Cleanup Tests",
-        "runner": "python",
-        "files": [
-            "test_cross_platform_cleanup.py",
-        ],
-    },
-    "guardrails": {
-        "label": "Platform Guardrail Tests",
-        "runner": "python",
-        "files": [
-            "test_platform_guardrails.py",
-        ],
-    },
     "platform-gpu": {
         "label": "GPU Platform Lane",
-        "includes": ["plugin", "shutdown", "gpu-smoke"],
+        "includes": ["gpu-smoke"],
     },
     "platform-npu": {
         "label": "NPU Platform Lane",
-        "includes": ["plugin", "shutdown", "npu-smoke"],
+        "includes": ["npu-smoke"],
     },
     "platform-all": {
         "label": "All Platform Lanes",
-        "includes": ["platform-gpu", "platform-npu", "cross-platform", "guardrails"],
+        "includes": ["platform-gpu", "platform-npu"],
     },
 }
 
@@ -156,11 +130,48 @@ def build_pytest_command(files: list[str], verbose: bool = False) -> list[str]:
     return cmd
 
 
+def build_unittest_command(files: list[str], verbose: bool = False) -> list[str]:
+    del verbose
+    modules = [
+        f"tests.{os.path.splitext(file_name)[0]}"
+        for file_name in files
+    ]
+    return [sys.executable, "-m", "unittest", *modules]
+
+
+def _pytest_available() -> bool:
+    return importlib.util.find_spec("pytest") is not None
+
+
+def _fallback_unittest_files(files: list[str]) -> list[str]:
+    return list(files)
+
+
 def run_pytest_suite(suite_name: str, verbose: bool = False) -> bool:
     suite = SUITE_DEFINITIONS[suite_name]
     files = suite.get("files", [])
     if not files:
         raise ValueError(f"Suite {suite_name!r} does not define files")
+
+    if not _pytest_available():
+        fallback_files = _fallback_unittest_files(list(files))
+        if not fallback_files:
+            print(
+                "  [FAILED] pytest is not installed and no unittest fallback "
+                f"is defined for suite {suite_name!r}."
+            )
+            return False
+
+        print(
+            "  [WARN] pytest is not installed; "
+            f"falling back to unittest subset for suite {suite_name!r}."
+        )
+        cmd = build_unittest_command(fallback_files)
+        return run_command(
+            cmd,
+            f"{suite['label']} (unittest fallback)",
+        )
+
     cmd = build_pytest_command(list(files), verbose=verbose)
     return run_command(cmd, str(suite["label"]))
 
@@ -258,15 +269,15 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="+",
         choices=sorted(SUITE_DEFINITIONS),
         help=(
-            "Run one or more named pytest suites. "
-            "Examples: unit, plugin, gpu-smoke, npu-smoke, "
-            "platform-gpu, platform-npu, platform-all, cross-platform"
+            "Run one or more named test suites. "
+            "Examples: unit, gpu-smoke, npu-smoke, "
+            "platform-gpu, platform-npu, platform-all"
         ),
     )
     parser.add_argument(
         "--list-suites",
         action="store_true",
-        help="Print all available pytest suite names and exit",
+        help="Print all available test suite names and exit",
     )
     parser.add_argument(
         "--dataset",

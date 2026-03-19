@@ -6,6 +6,11 @@
 DLRM_v3 Model Common Utilities
 
 Contains HammerModule base class, kernel selection, and helper functions.
+
+This fork preserves the upstream kernel-selection API, but only a subset of
+helpers currently performs backend-aware dispatch. In practice, the jagged
+tensor wrappers below may route into torch.ops.fbgemm via ReliableOps, while
+most higher-level operators still execute through PyTorch implementations.
 """
 
 import abc
@@ -20,7 +25,12 @@ from vllm_gr.utils import ReliableOps
 
 @unique
 class HammerKernel(Enum):
-    """Kernel implementation options"""
+    """Requested kernel backends.
+
+    Values in this enum describe the caller's preferred backend, not a blanket
+    guarantee that every operator in this fork has a specialized implementation
+    for that backend.
+    """
     TRITON = "TRITON"
     TLX = "TLX"
     PYTORCH = "PYTORCH"
@@ -34,30 +44,41 @@ class HammerModule(torch.nn.Module, abc.ABC):
     HSTU Module Base Class
     
     Provides kernel selection and inference mode control.
-    Current version uses PyTorch kernel implementation.
+    Tracks the desired kernel selection and inference mode control.
+    The current fork still executes most operators through the PyTorch path,
+    but we preserve the kernel-selection semantics so runtime policy and tests
+    stay aligned with the upstream contract.
     """
     _is_inference: bool = False
-    _use_triton_cc: bool = False  # Currently disabled
+    _use_triton_cc: bool = False
     _training_dtype: torch.dtype = torch.float32
-    _hammer_kernel: Optional[HammerKernel] = HammerKernel.PYTORCH  # Currently uses PyTorch
+    _hammer_kernel: Optional[HammerKernel] = None
 
     def __init__(
         self,
         is_inference: bool,
         training_dtype: torch.dtype = torch.float32,
-        use_triton_cc: bool = False,  # Ignored in current version
+        use_triton_cc: bool = False,
         hammer_kernel: Optional[HammerKernel] = None,
     ) -> None:
         super().__init__()
         self._is_inference = is_inference
         self._training_dtype = training_dtype
-        # Current version uses PyTorch kernel
-        self._hammer_kernel = HammerKernel.PYTORCH
-        self._use_triton_cc = False
+        self._hammer_kernel = hammer_kernel
+        self._use_triton_cc = use_triton_cc
 
     def hammer_kernel(self) -> HammerKernel:
-        """Return current kernel type"""
-        return HammerKernel.PYTORCH
+        """Return the desired kernel type for this module.
+
+        Downstream operators may still fall back to PyTorch if this fork does
+        not currently implement the requested backend-specific path.
+        """
+        kernel = self._hammer_kernel
+        if kernel is not None:
+            return kernel
+        if self._is_inference and self._use_triton_cc:
+            return HammerKernel.TRITON_CC
+        return HammerKernel.TRITON
 
     def recursive_setattr(self, name: str, value: Any) -> None:
         for _, module in self.named_modules():
@@ -65,8 +86,8 @@ class HammerModule(torch.nn.Module, abc.ABC):
                 setattr(module, name, value)
 
     def set_use_triton_cc(self, use_triton_cc: bool) -> None:
-        # Not supported in current version, interface reserved for future extension
-        pass
+        self._use_triton_cc = use_triton_cc
+        self.recursive_setattr("_use_triton_cc", use_triton_cc)
 
     def set_is_inference(self, is_inference: bool) -> None:
         self._is_inference = is_inference
@@ -77,8 +98,8 @@ class HammerModule(torch.nn.Module, abc.ABC):
         self.recursive_setattr("_training_dtype", training_dtype)
 
     def set_hammer_kernel(self, hammer_kernel: HammerKernel) -> None:
-        # Not supported in current version, interface reserved for future extension
-        pass
+        self._hammer_kernel = hammer_kernel
+        self.recursive_setattr("_hammer_kernel", hammer_kernel)
 
     @property
     def is_inference(self) -> bool:
@@ -190,6 +211,7 @@ def init_mlp_weights_optional_bias(m: torch.nn.Module) -> None:
             m.bias.data.fill_(0.0)
 
 
+@torch.fx.wrap
 def jagged_to_padded_dense(
     values: torch.Tensor,
     offsets: List[torch.Tensor],
@@ -208,7 +230,7 @@ def jagged_to_padded_dense(
         padding_value=padding_value,
     )
 
-
+@torch.fx.wrap
 def dense_to_jagged(
     dense: torch.Tensor,
     x_offsets: List[torch.Tensor],
@@ -222,4 +244,3 @@ def dense_to_jagged(
         dense=dense,
         x_offsets=x_offsets,
     )
-

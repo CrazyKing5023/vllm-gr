@@ -38,18 +38,18 @@ class GRLLM(LLM):
     def __init__(
         self,
         model: str = "",
+        model_family: Optional[str] = None,
         max_seq_len: int = 512,
         max_candidates: int = 1000,
-        default_top_k: int = 10,
         tensor_parallel_size: int = 1,
         gpu_memory_utilization: float = 0.9,
         **kwargs,
     ):
         engine_args = GREngineArgs(
             model=model,
+            model_family=model_family,
             max_seq_len=max_seq_len,
             max_candidates=max_candidates,
-            default_top_k=default_top_k,
             tensor_parallel_size=tensor_parallel_size,
             gpu_memory_utilization=gpu_memory_utilization,
             **kwargs,
@@ -62,18 +62,18 @@ class GRLLM(LLM):
         self.engine_class = type(self.llm_engine)
 
         self.model = model
+        self.model_family = engine_args.model_family
         self.max_seq_len = max_seq_len
         self.max_candidates = max_candidates
-        self.default_top_k = default_top_k
         self.request_counter = Counter()
         self.default_sampling_params = None
         self.supported_tasks = ("recommendation",)
         self.io_processor = None
 
         logger.info(
-            "GRLLM initialized: model=%s, max_seq_len=%d, "
-            "max_candidates=%d, default_top_k=%d",
-            model, max_seq_len, max_candidates, default_top_k,
+            "GRLLM initialized: model=%s, model_family=%s, max_seq_len=%d, "
+            "max_candidates=%d",
+            model, model_family, max_seq_len, max_candidates,
         )
 
     def recommend(
@@ -81,7 +81,6 @@ class GRLLM(LLM):
         prompts: Union[GRPrompt, Sequence[GRPrompt]],
         *,
         use_tqdm: bool = True,
-        top_k: Optional[int] = None,
     ) -> List[GRRequestOutput]:
         """Generate recommendation results for one or more GRPrompts."""
         start_time = time.time()
@@ -100,10 +99,6 @@ class GRLLM(LLM):
         request_ids = [f"gr-{next(self.request_counter)}" for _ in prompts]
 
         for prompt, request_id in zip(prompts, request_ids):
-            num_recs = top_k if top_k is not None else prompt.get("num_recommendations")
-            if num_recs is not None:
-                prompt = dict(prompt, num_recommendations=int(num_recs))
-
             pooling_params = PoolingParams(task="embed")
             self.llm_engine.add_request(
                 request_id=request_id,
@@ -112,7 +107,7 @@ class GRLLM(LLM):
             )
 
         outputs = self._run_recommendation_engine(
-            num_prompts=len(prompts),
+            request_ids=request_ids,
             use_tqdm=use_tqdm,
         )
 
@@ -125,13 +120,16 @@ class GRLLM(LLM):
 
     def _run_recommendation_engine(
         self,
-        num_prompts: int,
+        request_ids: list[str],
         use_tqdm: bool,
     ) -> List[GRRequestOutput]:
-        outputs: List[GRRequestOutput] = []
+        outputs_by_request_id: dict[str, GRRequestOutput] = {}
 
         if use_tqdm:
-            pbar = tqdm(total=num_prompts, desc="Generating recommendations")
+            pbar = tqdm(
+                total=len(request_ids),
+                desc="Generating recommendations",
+            )
         else:
             pbar = None
 
@@ -140,26 +138,36 @@ class GRLLM(LLM):
 
             for output in step_outputs:
                 if isinstance(output, GRRequestOutput) and output.finished:
-                    outputs.append(output)
-                    if pbar is not None:
+                    if output.request_id not in outputs_by_request_id and pbar is not None:
                         pbar.update(1)
+                    outputs_by_request_id[output.request_id] = output
 
         if pbar is not None:
             pbar.close()
 
-        return outputs
+        missing_request_ids = [
+            request_id
+            for request_id in request_ids
+            if request_id not in outputs_by_request_id
+        ]
+        if missing_request_ids:
+            raise RuntimeError(
+                "Missing GRRequestOutput for request ids: "
+                f"{missing_request_ids!r}"
+            )
+
+        return [outputs_by_request_id[request_id] for request_id in request_ids]
 
     def recommend_batch(
         self,
         prompts: Sequence[GRPrompt],
         batch_size: int = 32,
-        top_k: Optional[int] = None,
     ) -> List[GRRequestOutput]:
         """Process prompts in fixed-size batches for large-scale inference."""
         all_outputs = []
         for i in range(0, len(prompts), batch_size):
             batch = prompts[i:i + batch_size]
-            outputs = self.recommend(batch, top_k=top_k, use_tqdm=False)
+            outputs = self.recommend(batch, use_tqdm=False)
             all_outputs.extend(outputs)
         return all_outputs
 

@@ -22,11 +22,8 @@ Dense weights
 =============
 Loaded from non_sparse.ckpt via torch.load(). The checkpoint contains a
 ``dense_dict`` with all non-embedding parameters.  Sparse keys are
-filtered out with ``is_sparse_key()``. Floating-point dense tensors are
-converted to ``bfloat16`` while integer tensors (for example ``int64``
-buffers) are preserved as-is. The ``hstu.`` prefix is added before
-saving. Source dense floating-point tensors whose dtype is not already
-``bfloat16`` are reported as warnings.
+filtered out with ``is_sparse_key()``, the ``hstu.`` prefix is added,
+and tensors are cast to the target dtype (bfloat16 by default).
 
 Sparse (embedding) weights
 ===========================
@@ -42,12 +39,6 @@ across N GPUs.  To load them in a single-process conversion script:
 4. ``load_sparse_checkpoint(model, path)`` calls DCP, which automatically
    reshards the N-rank checkpoint into the single-rank model.
 5. Embedding tensors are extracted from the model's state_dict.
-
-Note: DCP loads tensors into pre-allocated model tensors. If ckpt dtype and
-model tensor dtype differ, values are cast to model dtype during loading.
-This converter reports such dtype mismatches as warnings before loading.
-The converter also logs dtype distributions for the original checkpoint
-and for the final converted tensor set before save.
 
 Alternatively, run via ``torchrun`` to let PyTorch handle distributed init::
 
@@ -77,13 +68,11 @@ Usage:
 """
 
 import argparse
-import collections
-import json
+import importlib.util
 import logging
 import os
 import shutil
 import sys
-from math import prod
 from typing import Any, Dict, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -99,95 +88,70 @@ from vllm_gr.models.dlrm_v3.checkpoint import (
 logger = logging.getLogger(__name__)
 
 
-def _read_sparse_metadata(checkpoint_path: str) -> Optional[Any]:
-    """Read sparse DCP metadata once for mismatch checks."""
-    sparse_path = os.path.join(checkpoint_path, "sparse")
-    if not os.path.isdir(sparse_path):
-        return None
-    try:
-        reader = torch.distributed.checkpoint.FileSystemReader(sparse_path)
-        return reader.read_metadata()
-    except Exception as exc:
-        logger.warning(
-            "Sparse dtype check skipped: failed to read DCP metadata from %s (%s)",
-            sparse_path,
-            exc,
-        )
-        return None
-
-
-def _summarize_dtype_distribution_from_tensors(
-    weights: Dict[str, torch.Tensor],
-) -> Dict[str, Dict[str, int]]:
-    """Summarize dtype distribution from tensor dict."""
-    stats: Dict[str, Dict[str, int]] = collections.defaultdict(
-        lambda: {"tensor_count": 0, "numel_count": 0}
+def _load_supported_dataset_choices() -> tuple[str, ...]:
+    """Load supported dataset names without importing the heavy config package."""
+    module_name = "vllm_gr_dataset_configs_for_conversion"
+    module_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "vllm_gr",
+        "config",
+        "dataset_configs.py",
     )
-    for tensor in weights.values():
-        if not isinstance(tensor, torch.Tensor):
-            continue
-        dtype_key = str(tensor.dtype)
-        stats[dtype_key]["tensor_count"] += 1
-        stats[dtype_key]["numel_count"] += int(tensor.numel())
-    return dict(stats)
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load dataset configs from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return tuple(module.SUPPORTED_DATASETS)
 
 
-def _summarize_dtype_distribution_from_sparse_metadata(
-    metadata: Any,
-) -> Dict[str, Dict[str, int]]:
-    """Summarize dtype distribution from sparse DCP metadata."""
-    stats: Dict[str, Dict[str, int]] = collections.defaultdict(
-        lambda: {"tensor_count": 0, "numel_count": 0}
+DATASET_CHOICES = _load_supported_dataset_choices()
+
+
+def _resolve_dtype_name(dtype_name: str, *, default: torch.dtype) -> torch.dtype:
+    normalized = str(dtype_name).lower()
+    dtype_map = {
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "half": torch.float16,
+        "float32": torch.float32,
+        "fp32": torch.float32,
+    }
+    return dtype_map.get(normalized, default)
+
+
+def _build_embedding_table_dtype_map(config: Any) -> Dict[str, torch.dtype]:
+    default_dtype = _resolve_dtype_name(
+        getattr(config, "embedding_table_data_type", "fp16"),
+        default=torch.float16,
     )
-    metadata_items = getattr(metadata, "state_dict_metadata", None)
-    if not isinstance(metadata_items, dict):
-        return {}
+    table_dtypes: Dict[str, torch.dtype] = {}
 
-    for meta_entry in metadata_items.values():
-        props = getattr(meta_entry, "properties", None)
-        dtype = getattr(props, "dtype", None)
-        size = getattr(meta_entry, "size", None)
-        if dtype is None or size is None:
-            continue
-
-        dtype_key = str(dtype)
-        stats[dtype_key]["tensor_count"] += 1
-        stats[dtype_key]["numel_count"] += int(prod(tuple(size)))
-
-    return dict(stats)
-
-
-def _log_dtype_distribution(scope: str, stats: Dict[str, Dict[str, int]]) -> None:
-    """Log dtype distribution in a stable format."""
-    total_tensors = sum(v["tensor_count"] for v in stats.values())
-    total_numel = sum(v["numel_count"] for v in stats.values())
-    logger.info(
-        "%s dtype distribution: %d tensors, %d elements, %d dtypes",
-        scope,
-        total_tensors,
-        total_numel,
-        len(stats),
-    )
-    for dtype_key in sorted(stats.keys()):
-        item = stats[dtype_key]
-        logger.info(
-            "  %s: dtype=%s tensors=%d numel=%d",
-            scope,
-            dtype_key,
-            item["tensor_count"],
-            item["numel_count"],
+    for table_cfg in getattr(config, "embedding_tables", []) or []:
+        table_name = str(table_cfg["name"])
+        table_dtypes[table_name] = _resolve_dtype_name(
+            table_cfg.get("data_type", default_dtype),
+            default=default_dtype,
         )
 
+    return table_dtypes
 
-def save_config_preserve_order(config: "HSTUConfig", output_dir: str) -> None:
-    """Write config.json without key sorting to preserve dict insertion order."""
-    config_path = os.path.join(output_dir, "config.json")
-    # Match PretrainedConfig.save_pretrained default behavior (diff dict),
-    # but keep key order stable by disabling JSON sort_keys.
-    config_dict = config.to_diff_dict()
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config_dict, f, indent=2, ensure_ascii=False, sort_keys=False)
-        f.write("\n")
+
+def _resolve_sparse_tensor_target_dtype(
+    config: Any,
+    tensor_name: str,
+    tensor: torch.Tensor,
+) -> torch.dtype:
+    if not torch.is_floating_point(tensor):
+        return tensor.dtype
+
+    table_dtypes = _build_embedding_table_dtype_map(config)
+    for table_name, table_dtype in table_dtypes.items():
+        if f".{table_name}." in tensor_name:
+            return table_dtype
+    return tensor.dtype
 
 
 def _init_single_process_distributed() -> None:
@@ -211,182 +175,6 @@ def _destroy_distributed() -> None:
     if torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()
         logger.info("Destroyed torch.distributed process group")
-
-
-def _warn_dense_dtype_mismatch(
-    model_state: Dict[str, Any],
-    dense_weights: Dict[str, torch.Tensor],
-    max_examples: int = 20,
-) -> None:
-    """Warn when dense ckpt dtype differs from model tensor dtype."""
-    checked = 0
-    mismatches = []
-
-    for key, value in dense_weights.items():
-        ckpt_tensor = value.data if isinstance(value, torch.nn.Parameter) else value
-        model_tensor = model_state.get(key)
-        if not isinstance(ckpt_tensor, torch.Tensor):
-            continue
-        if not isinstance(model_tensor, torch.Tensor):
-            continue
-
-        checked += 1
-        if ckpt_tensor.dtype != model_tensor.dtype:
-            mismatches.append((key, ckpt_tensor.dtype, model_tensor.dtype))
-
-    if not mismatches:
-        return
-
-    logger.warning(
-        "Dense dtype mismatch detected before load_dense_state_dict: "
-        "checked=%d, mismatch=%d. Loading still follows model tensor dtype.",
-        checked,
-        len(mismatches),
-    )
-    for idx, (key, ckpt_dtype, model_dtype) in enumerate(mismatches[:max_examples], 1):
-        logger.warning(
-            "Dense dtype mismatch %d/%d: key=%s, ckpt_dtype=%s, model_dtype=%s",
-            idx,
-            len(mismatches),
-            key,
-            ckpt_dtype,
-            model_dtype,
-        )
-
-
-def _cast_dense_weights_to_bf16(
-    dense_weights: Dict[str, torch.Tensor],
-    max_examples: int = 20,
-) -> Dict[str, torch.Tensor]:
-    """Cast dense floating-point tensors to bf16 and preserve integer tensors."""
-    target_dtype = torch.bfloat16
-    non_bf16 = []
-    casted: Dict[str, torch.Tensor] = {}
-
-    for key, tensor in dense_weights.items():
-        if not isinstance(tensor, torch.Tensor):
-            continue
-
-        if not torch.is_floating_point(tensor):
-            casted[key] = tensor
-            continue
-
-        if tensor.dtype != target_dtype:
-            non_bf16.append((key, tensor.dtype))
-        casted[key] = tensor.to(target_dtype)
-
-    if non_bf16:
-        logger.warning(
-            "Dense floating-point source tensors will be converted to %s during "
-            "conversion: checked=%d, non_bf16=%d.",
-            target_dtype,
-            len(dense_weights),
-            len(non_bf16),
-        )
-        for idx, (key, src_dtype) in enumerate(non_bf16[:max_examples], 1):
-            logger.warning(
-                "Dense source dtype %d/%d: key=%s, src_dtype=%s, target_dtype=%s",
-                idx,
-                len(non_bf16),
-                key,
-                src_dtype,
-                target_dtype,
-            )
-
-    return casted
-
-
-def _warn_sparse_dtype_mismatch(
-    model_state: Dict[str, Any],
-    sparse_metadata: Any,
-    max_examples: int = 20,
-) -> None:
-    """Warn when sparse ckpt dtype differs from model dtype.
-
-    Mapping rule intentionally follows Kira's checkpoint layout:
-    - exact key match, or
-    - metadata key starts with "sparse_dict." and stripped key matches.
-    """
-    metadata_items = getattr(sparse_metadata, "state_dict_metadata", None)
-    if not isinstance(metadata_items, dict):
-        logger.warning(
-            "Sparse dtype check skipped: invalid DCP metadata format (%s)",
-            type(sparse_metadata).__name__,
-        )
-        return
-
-    model_sparse = {
-        key: tensor
-        for key, tensor in model_state.items()
-        if isinstance(tensor, torch.Tensor) and is_sparse_key(key, tensor)
-    }
-    if not model_sparse:
-        return
-
-    total_ckpt_sparse = 0
-    checked = 0
-    unresolved = 0
-    mismatches = []
-    for meta_key, meta_entry in metadata_items.items():
-        meta_key = str(meta_key)
-        props = getattr(meta_entry, "properties", None)
-        ckpt_dtype = getattr(props, "dtype", None)
-        if ckpt_dtype is None:
-            continue
-
-        total_ckpt_sparse += 1
-        model_key: Optional[str] = None
-        if meta_key in model_sparse:
-            model_key = meta_key
-        elif meta_key.startswith("sparse_dict."):
-            stripped_key = meta_key[len("sparse_dict."):]
-            if stripped_key in model_sparse:
-                model_key = stripped_key
-
-        if model_key is None:
-            unresolved += 1
-            continue
-
-        model_dtype = model_sparse[model_key].dtype
-        checked += 1
-        if ckpt_dtype != model_dtype:
-            mismatches.append((str(meta_key), model_key, ckpt_dtype, model_dtype))
-
-    if total_ckpt_sparse > 0 and checked == 0:
-        logger.warning(
-            "Sparse dtype check skipped: no sparse metadata keys matched model keys "
-            "under fixed mapping (exact or sparse_dict.*) "
-            "(ckpt_sparse_keys=%d, unresolved=%d).",
-            total_ckpt_sparse,
-            unresolved,
-        )
-        return
-
-    if not mismatches:
-        return
-
-    logger.warning(
-        "Sparse dtype mismatch detected before load_sparse_checkpoint: "
-        "ckpt_sparse_keys=%d, checked=%d, mismatch=%d, unresolved=%d. "
-        "Loading still follows model tensor dtype.",
-        total_ckpt_sparse,
-        checked,
-        len(mismatches),
-        unresolved,
-    )
-    for idx, (meta_key, model_key, ckpt_dtype, model_dtype) in enumerate(
-        mismatches[:max_examples], 1
-    ):
-        logger.warning(
-            "Sparse dtype mismatch %d/%d: metadata_key=%s -> model_key=%s, "
-            "ckpt_dtype=%s, model_dtype=%s",
-            idx,
-            len(mismatches),
-            meta_key,
-            model_key,
-            ckpt_dtype,
-            model_dtype,
-        )
 
 
 def load_dense_weights(
@@ -430,7 +218,6 @@ def load_sparse_weights(
     checkpoint_path: str,
     config_dir: str,
     dense_weights: Dict[str, torch.Tensor],
-    sparse_metadata: Optional[Any] = None,
 ) -> Dict[str, torch.Tensor]:
     """Load sparse (embedding) weights via DCP and the upstream load_sparse_checkpoint.
 
@@ -447,33 +234,21 @@ def load_sparse_weights(
         config_dir: Path to directory with config.json (for model creation).
         dense_weights: Dense weights dict (keys without hstu. prefix) to
             pre-load into the model before sparse loading.
-        sparse_metadata: Optional DCP metadata read once at higher level.
 
     Returns:
         Dictionary of sparse parameter tensors (keys without hstu. prefix).
     """
     sparse_path = os.path.join(checkpoint_path, "sparse")
     if not os.path.isdir(sparse_path):
-        logger.warning("No sparse/ directory found at %s, skipping", sparse_path)
+        logger.info("No sparse/ directory found at %s, skipping", sparse_path)
         return {}
 
-    from vllm_gr.config.hstu_hf_config import HSTUConfig
+    from vllm_gr.config.hstu_config import HSTUConfig
     from vllm_gr.model_executor.models.hstu_vllm import HSTUForRecommendation
 
     config = HSTUConfig.from_pretrained(config_dir)
     model = HSTUForRecommendation(config=config)
     hstu = model.hstu
-    hstu_state = hstu.state_dict()
-
-    _warn_dense_dtype_mismatch(hstu_state, dense_weights)
-
-    if sparse_metadata is not None:
-        _warn_sparse_dtype_mismatch(hstu_state, sparse_metadata)
-    else:
-        logger.warning(
-            "Sparse dtype check skipped: sparse metadata unavailable for %s",
-            sparse_path,
-        )
 
     # Load dense weights into the model first -- load_sparse_checkpoint's
     # upstream SparseState depends on the model having consistent state.
@@ -484,8 +259,11 @@ def load_sparse_weights(
         k for k, v in hstu.state_dict().items() if is_sparse_key(k, v)
     }
     if not sparse_keys_before:
-        logger.info("Model has no sparse keys (is_dense=True?), skipping")
-        return {}
+        raise RuntimeError(
+            "Sparse checkpoint/config mismatch: checkpoint contains sparse weights, "
+            "but the instantiated model exposes no sparse parameters. "
+            "Check that config.json matches the checkpoint layout."
+        )
 
     logger.info(
         "Loading sparse weights (%d embedding tensors) via DCP from %s",
@@ -507,7 +285,7 @@ def generate_config_from_dataset(
     output_dir: str,
 ) -> None:
     """Generate a config.json for the given dataset using vllm-GR dataset configs."""
-    from vllm_gr.config.hstu_hf_config import HSTUConfig
+    from vllm_gr.config.hstu_config import HSTUConfig
     from vllm_gr.config.dataset_configs import (
         get_hstu_config_overrides,
         get_embedding_table_overrides,
@@ -519,7 +297,7 @@ def generate_config_from_dataset(
         overrides["embedding_tables"] = tables
 
     config = HSTUConfig(**overrides)
-    save_config_preserve_order(config, output_dir)
+    config.save_pretrained(output_dir)
     logger.info("Generated config.json for dataset=%s at %s", dataset, output_dir)
 
 
@@ -530,6 +308,7 @@ def convert(
     dataset: Optional[str] = None,
     dense_only: bool = False,
     output_format: str = "safetensors",
+    target_dtype: str = "bfloat16",
 ) -> str:
     """Convert DLRM_v3 checkpoint to HuggingFace-compatible format.
 
@@ -540,11 +319,16 @@ def convert(
         dataset: Dataset name to generate config from.
         dense_only: If True, skip sparse (embedding) weights.
         output_format: "safetensors" or "pt".
+        target_dtype: Target dtype for dense tensors (default: "bfloat16").
+            Sparse embedding tensors follow config.json table dtype settings.
 
     Returns:
         Path to the output directory.
     """
     os.makedirs(output_dir, exist_ok=True)
+
+    torch_dtype = _resolve_dtype_name(target_dtype, default=torch.bfloat16)
+    hf_config = None
 
     # Handle config.json
     if config_json:
@@ -552,55 +336,44 @@ def convert(
         logger.info("Copied config.json from %s", config_json)
     elif dataset:
         generate_config_from_dataset(dataset, output_dir)
-    else:
-        config_path = os.path.join(output_dir, "config.json")
-        if not os.path.exists(config_path):
-            logger.warning(
-                "No config.json found/generated. Provide --config-json or --dataset."
-            )
 
-    sparse_metadata = _read_sparse_metadata(input_path)
+    config_path = os.path.join(output_dir, "config.json")
+    if os.path.exists(config_path):
+        from vllm_gr.config.hstu_config import HSTUConfig
+        hf_config = HSTUConfig.from_pretrained(output_dir)
 
-    # Load dense weights and convert only floating-point dense tensors to bf16.
+    # Load dense weights
     dense_dict = load_dense_weights(input_path)
-    _log_dtype_distribution(
-        "Original ckpt dense",
-        _summarize_dtype_distribution_from_tensors(dense_dict),
-    )
-    if sparse_metadata is not None:
-        _log_dtype_distribution(
-            "Original ckpt sparse",
-            _summarize_dtype_distribution_from_sparse_metadata(sparse_metadata),
-        )
-    dense_dict_bf16 = _cast_dense_weights_to_bf16(dense_dict)
 
-    # Build converted dict with "hstu." prefix using bf16 floating dense tensors.
+    # Build converted dict with "hstu." prefix and dtype casting
     converted: Dict[str, torch.Tensor] = {}
-    for k, v in dense_dict_bf16.items():
-        converted["hstu." + k] = v
+    for k, v in dense_dict.items():
+        converted["hstu." + k] = v.to(torch_dtype)
 
-    has_sparse_dir = os.path.isdir(os.path.join(input_path, "sparse"))
     # Load sparse weights if requested
+    has_sparse_dir = os.path.isdir(os.path.join(input_path, "sparse"))
     include_sparse = has_sparse_dir and not dense_only
 
     if include_sparse:
-        config_path = os.path.join(output_dir, "config.json")
         if not os.path.exists(config_path):
-            logger.error(
-                "Cannot load sparse weights without config.json. "
-                "Provide --config-json or --dataset."
+            raise RuntimeError(
+                "Sparse checkpoint conversion requires config.json when sparse/ "
+                "weights are present. Provide --config-json, --dataset, or "
+                "use --dense-only."
             )
         else:
             _init_single_process_distributed()
             try:
                 sparse_dict = load_sparse_weights(
-                    input_path,
-                    output_dir,
-                    dense_dict_bf16,
-                    sparse_metadata=sparse_metadata,
+                    input_path, output_dir, dense_dict,
                 )
                 for k, v in sparse_dict.items():
-                    converted["hstu." + k] = v
+                    sparse_target_dtype = (
+                        _resolve_sparse_tensor_target_dtype(hf_config, k, v)
+                        if hf_config is not None
+                        else v.dtype
+                    )
+                    converted["hstu." + k] = v.to(sparse_target_dtype)
             except Exception as e:
                 logger.error(
                     "Sparse loading failed: %s\n"
@@ -624,17 +397,13 @@ def convert(
             out_file = os.path.join(output_dir, "model.safetensors")
             save_file(converted, out_file)
         except ImportError:
-            logger.warning("safetensors not installed, falling back to .pt format")
-            out_file = os.path.join(output_dir, "model.pt")
-            torch.save(converted, out_file)
+            raise RuntimeError(
+                "Output format 'safetensors' requested, but safetensors is not "
+                "installed. Install `safetensors` or use `--format pt`."
+            )
     else:
         out_file = os.path.join(output_dir, "model.pt")
         torch.save(converted, out_file)
-
-    _log_dtype_distribution(
-        "Converted output",
-        _summarize_dtype_distribution_from_tensors(converted),
-    )
 
     total_params = sum(v.numel() for v in converted.values())
     sparse_count = sum(1 for k in converted if "embedding_collection" in k)
@@ -643,10 +412,15 @@ def convert(
         "Converted %d tensors (%d parameters) -> %s",
         len(converted), total_params, out_file,
     )
+    sparse_dtype_summary = (
+        "per-table config"
+        if sparse_count and hf_config is not None
+        else ("original tensor dtypes" if sparse_count else "n/a")
+    )
     logger.info(
-        "  Dense: %d tensors, Sparse: %d tensors. "
-        "dtype mismatches are reported; loading still follows model tensor dtype.",
-        dense_count, sparse_count,
+        "  Dense: %d tensors (target dtype=%s), Sparse: %d tensors "
+        "(target dtype=%s)",
+        dense_count, torch_dtype, sparse_count, sparse_dtype_summary,
     )
 
     return output_dir
@@ -672,11 +446,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--dataset", default=None,
-        choices=[
-            "movielens-1m", "movielens-20m", "movielens-13b", "movielens-18b",
-            "streaming-400m", "sampled-streaming-100b",
-            "kuairand-1k", "debug",
-        ],
+        choices=DATASET_CHOICES,
         help="Dataset name to auto-generate config.json",
     )
     parser.add_argument(
@@ -692,6 +462,11 @@ def main() -> None:
         help="Output weight format (default: safetensors)",
     )
     parser.add_argument(
+        "--dtype", choices=["bfloat16", "float16", "float32"],
+        default="bfloat16",
+        help="Target dtype for all tensors (default: bfloat16)",
+    )
+    parser.add_argument(
         "--verbose", action="store_true", default=False,
         help="Enable verbose logging",
     )
@@ -703,12 +478,6 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    if not args.config_json and not args.dataset:
-        logger.warning(
-            "Neither --config-json nor --dataset provided. "
-            "config.json will NOT be generated."
-        )
-
     convert(
         input_path=args.input_path,
         output_dir=args.output_dir,
@@ -716,6 +485,7 @@ def main() -> None:
         dataset=args.dataset,
         dense_only=args.dense_only,
         output_format=args.format,
+        target_dtype=args.dtype,
     )
 
 

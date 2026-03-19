@@ -5,14 +5,17 @@
 """
 HSTU Attention Operator Entry Point
 
-Current version uses PyTorch implementation, extensible to Triton/CUDA optimized versions.
+Current attention execution is still PyTorch-backed in this fork.
+``HammerKernel.NPU`` is accepted as a distinct request value, but it currently
+routes into the same conservative PyTorch attention implementation rather than a
+dedicated NPU custom kernel.
 """
 
 from typing import Optional
 
 import torch
 
-from vllm_gr.models.dlrm_v3.common import HammerKernel, switch_to_contiguous_if_needed
+from vllm_gr.models.dlrm_v3.common import HammerKernel
 from vllm_gr.ops.pytorch.pt_hstu_attention import (
     pytorch_cached_hstu_mha,
     pytorch_hstu_mha,
@@ -35,7 +38,7 @@ def hstu_mha_npu(
     contextual_seq_len: int = 0,
     min_full_attn_seq_len: int = 0,
 ) -> torch.Tensor:
-    """Conservative NPU attention entry point using the PyTorch path."""
+    """NPU-labelled entry point that still executes the PyTorch attention path."""
     return pytorch_hstu_mha(
         max_seq_len=max_seq_len,
         alpha=alpha,
@@ -75,9 +78,14 @@ def hstu_mha(
 ) -> torch.Tensor:
     """
     HSTU Multi-Head Attention
-    
-    Currently uses PyTorch implementation, kernel parameter reserved for future extensions.
+
+    Current dispatch is intentionally conservative:
+    - ``HammerKernel.NPU`` calls a separate wrapper for clarity, but that
+      wrapper still executes the PyTorch implementation.
+    - All other kernel values also fall back to the PyTorch implementation in
+      this fork.
     """
+    del sort_by_length, enable_tma
     if kernel == HammerKernel.NPU:
         return hstu_mha_npu(
             max_seq_len=max_seq_len,
@@ -129,9 +137,11 @@ def delta_hstu_mha(
 ) -> torch.Tensor:
     """
     Incremental HSTU Attention (for KV cache inference)
-    
-    Currently uses PyTorch implementation.
+
+    The current fork does not expose a backend-specific delta attention kernel;
+    this entry point always executes the PyTorch cached-attention path.
     """
+    del kernel, enable_tma
     return pytorch_cached_hstu_mha(
         max_seq_len=max_seq_len,
         alpha=alpha,

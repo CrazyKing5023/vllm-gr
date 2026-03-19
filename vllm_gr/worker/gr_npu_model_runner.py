@@ -5,8 +5,8 @@
 
 from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
 
-from vllm_gr.worker.gr_runner_mixin import GRRunnerMixin
+from vllm_gr.worker.gr_runner_mixin import GRFeatureRunnerMixin
 
 
-class GRNPUModelRunner(GRRunnerMixin, NPUModelRunner):
+class GRNPUModelRunner(GRFeatureRunnerMixin, NPUModelRunner):
     """NPU model runner that injects GR features into HSTU inputs."""

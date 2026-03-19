@@ -9,7 +9,7 @@ Provides:
 - GRConfig: Typed runtime / serving configuration dataclass
 """
 
-from vllm_gr.config.hstu_hf_config import HSTUConfig
+from vllm_gr.config.hstu_config import HSTUConfig
 from vllm_gr.config.gr_config import GRConfig
 
 __all__ = [

@@ -8,6 +8,7 @@
 
   "max_seq_len": 128,
   "max_num_candidates": 32,
+  "max_num_candidates_inference": 2048,
 
   "hstu_num_heads": 2,
   "hstu_attn_linear_dim": 64,
@@ -18,6 +19,7 @@
   "hstu_transducer_embedding_dim": 64,
 
   "contextual_feature_to_max_length": {"user_id": 1},
+  "contextual_feature_to_min_uih_length": {"user_id": 20},
 
   "candidates_weight_feature_name": "item_action_weights",
   "candidates_watchtime_feature_name": "item_candidate_rating",
@@ -49,6 +51,7 @@
   ],
 
   "action_weights": [1, 2, 4, 8, 16],
+  "action_embedding_init_std": 5.0,
   "hash_size": 10000,
   "task_names": ["rating"],
   "is_inference": true,
@@ -58,18 +61,23 @@
       "name": "item_id",
       "embedding_dim": 64,
       "num_embeddings": 10000,
+      "data_type": "fp16",
       "feature_names": ["item_id", "item_candidate_id"]
     },
     {
       "name": "item_category_id",
       "embedding_dim": 64,
       "num_embeddings": 128,
+      "data_type": "fp16",
+      "weight_init_max": 1.0,
+      "weight_init_min": -1.0,
       "feature_names": ["item_category_id", "item_candidate_category_id"]
     },
     {
       "name": "user_id",
       "embedding_dim": 64,
       "num_embeddings": 10000,
+      "data_type": "fp16",
       "feature_names": ["user_id"]
     }
   ]

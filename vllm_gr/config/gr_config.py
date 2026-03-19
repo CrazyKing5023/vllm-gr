@@ -33,6 +33,3 @@ class GRConfig:
 
     max_candidates: int = 1000
     """Runtime per-request candidate limit (can be <= model max_num_candidates)."""
-
-    default_top_k: int = 10
-    """Number of recommendations returned when the request does not specify."""

@@ -14,12 +14,12 @@ __all__ = [
 try:
     from vllm_gr.worker.gr_npu_model_runner import GRNPUModelRunner
     from vllm_gr.worker.gr_npu_worker import GRNPUWorker
-    from vllm_gr.worker.gr_runner_mixin import GRRunnerMixin
+    from vllm_gr.worker.gr_runner_mixin import GRFeatureRunnerMixin
 
     __all__.extend([
         "GRNPUModelRunner",
         "GRNPUWorker",
-        "GRRunnerMixin",
+        "GRFeatureRunnerMixin",
     ])
 except ImportError:
     pass
