@@ -94,8 +94,8 @@ def run_inference(model_path: str):
     llm = GRLLM(
         model=model_path,
         max_seq_len=128,
-        max_candidates=10,
-        default_top_k=5,
+        max_candidates=32,
+        default_top_k=32,
     )
     print("\n  Model loaded successfully!")
 
@@ -133,6 +133,21 @@ def run_inference(model_path: str):
             {"item_movie_id": 1580, "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
             {"item_movie_id": 1270, "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
             {"item_movie_id": 593,  "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
+            {"item_movie_id": 1,    "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
+            {"item_movie_id": 260,  "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
+            {"item_movie_id": 1196, "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
+            {"item_movie_id": 1210, "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
+            {"item_movie_id": 2028, "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
+            {"item_movie_id": 2762, "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
+            {"item_movie_id": 2997, "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
+            {"item_movie_id": 1097, "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
+            {"item_movie_id": 3578, "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
+            {"item_movie_id": 480,  "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
+            {"item_movie_id": 589,  "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
+            {"item_movie_id": 47,   "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
+            {"item_movie_id": 50,   "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
+            {"item_movie_id": 527,  "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
+            {"item_movie_id": 608,  "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
         ],
         "context": {
             "user_id": 42,
@@ -141,7 +156,7 @@ def run_inference(model_path: str):
             "occupation": 7,
             "zip_code": 10001,
         },
-        "num_recommendations": 5,
+        "num_recommendations": 20,
     }
 
     print(f"\n  Running inference...")
@@ -149,7 +164,7 @@ def run_inference(model_path: str):
     print(f"  Candidates:    {len(prompt['candidates'])} items")
     print(f"  Context:       {list(prompt['context'].keys())}")
 
-    outputs = llm.recommend(prompts=[prompt], use_tqdm=False, top_k=5)
+    outputs = llm.recommend(prompts=[prompt], use_tqdm=False, top_k=20)
     output = outputs[0]
 
     print(f"\n  Recommendations (top {len(output.recommendations)}):")

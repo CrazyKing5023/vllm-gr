@@ -22,13 +22,8 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 
 def complete_cumsum(lengths: torch.Tensor) -> torch.Tensor:
-    """Compute complete cumulative sum (starting with 0)."""
-    try:
-        return torch.ops.fbgemm.asynchronous_complete_cumsum(lengths)
-    except (RuntimeError, AttributeError):
-        cumsum = torch.zeros(lengths.size(0) + 1, dtype=lengths.dtype, device=lengths.device)
-        cumsum[1:] = torch.cumsum(lengths, dim=0)
-        return cumsum
+    """Compute complete cumulative sum (starting with 0) via fbgemm only."""
+    return torch.ops.fbgemm.asynchronous_complete_cumsum(lengths)
 
 
 @torch.fx.wrap
@@ -126,7 +121,6 @@ class HSTUTransducer(HammerModule):
                 num_targets=num_targets,
                 seq_payloads=seq_payloads,
             )
-
         with record_function("hstu_positional_encoder"):
             if self._positional_encoder is not None:
                 output_seq_embeddings = self._positional_encoder(
@@ -137,7 +131,6 @@ class HSTUTransducer(HammerModule):
                     seq_embeddings=output_seq_embeddings,
                     num_targets=(None if self._listwise_training else output_num_targets),
                 )
-
         output_seq_embeddings = torch.nn.functional.dropout(
             output_seq_embeddings,
             p=self._input_dropout_ratio,

@@ -28,18 +28,20 @@ def pytorch_swish_layer_norm(
     Returns:
         Tensor after LayerNorm and Swish activation
     """
+    input_dtype = input.dtype
+    input = input.to(torch.float32)
     return (
         input
         * torch.sigmoid(
             torch.nn.functional.layer_norm(
                 input,
                 normalized_shape,
-                weight,
-                bias,
+                weight.to(torch.float32),
+                bias.to(torch.float32),
                 eps,
             )
         )
-    )
+    ).to(input_dtype)
 
 
 def pytorch_layer_norm(
@@ -62,10 +64,11 @@ def pytorch_layer_norm(
     Returns:
         Normalized tensor
     """
+    input_dtype = input.dtype
     return torch.nn.functional.layer_norm(
-        input,
+        input.to(torch.float32),
         normalized_shape,
-        weight,
-        bias,
+        weight.to(torch.float32),
+        bias.to(torch.float32),
         eps,
-    )
+    ).to(input_dtype)
