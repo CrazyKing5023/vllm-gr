@@ -92,7 +92,6 @@ class DlrmHSTUConfig:
     action_embedding_init_std: float = 0.1
     enable_postprocessor: bool = True
     use_layer_norm_postprocessor: bool = False
-    layer_norm_calculate_dtype = torch.float32
 
 
 def _get_supervision_labels_and_weights(
@@ -159,8 +158,7 @@ class DlrmHSTU(HammerModule):
             embedding_dim=hstu_configs.hstu_transducer_embedding_dim,
             prediction_fn=lambda in_dim, num_tasks: torch.nn.Sequential(
                 torch.nn.Linear(in_features=in_dim, out_features=512),
-                SwishLayerNorm(512,
-                               calculate_dtype = self._hstu_configs.layer_norm_calculate_dtype),
+                SwishLayerNorm(512),
                 torch.nn.Linear(in_features=512, out_features=num_tasks),
             ).apply(init_mlp_weights_optional_bias),
             causal_multitask_weights=hstu_configs.causal_multitask_weights,
@@ -269,14 +267,12 @@ class DlrmHSTU(HammerModule):
                 * len(self._hstu_configs.item_embedding_feature_names),
                 out_features=512,
             ),
-            SwishLayerNorm(512,
-                           calculate_dtype = self._hstu_configs.layer_norm_calculate_dtype),
+            SwishLayerNorm(512),
             torch.nn.Linear(
                 in_features=512,
                 out_features=hstu_configs.hstu_transducer_embedding_dim,
             ),
-            LayerNorm(hstu_configs.hstu_transducer_embedding_dim,
-                      calculate_dtype = self._hstu_configs.layer_norm_calculate_dtype),
+            LayerNorm(hstu_configs.hstu_transducer_embedding_dim),
         ).apply(init_mlp_weights_optional_bias)
 
     # =========================================================================

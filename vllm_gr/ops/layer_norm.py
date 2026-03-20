@@ -76,7 +76,6 @@ class LayerNorm(HammerModule):
         dim: int,
         eps: float = 1e-5,
         is_inference: bool = False,
-        calculate_dtype: torch.dtype = torch.float32,
     ) -> None:
         """
         Initialize LayerNorm module.
@@ -85,14 +84,12 @@ class LayerNorm(HammerModule):
             dim: Feature dimension
             eps: Numerical stability parameter, default 1e-5
             is_inference: Whether in inference mode, default False
-            calculate_dtype: Data type for calculation, default torch.float32
         """
         super().__init__(is_inference=is_inference)
         self._normalized_shape: List[int] = [dim]
         self._eps = eps
-        self.calculate_dtype = calculate_dtype
-        self.weight = torch.nn.Parameter(torch.ones(self._normalized_shape, dtype=self.calculate_dtype))
-        self.bias = torch.nn.Parameter(torch.zeros(self._normalized_shape, dtype=self.calculate_dtype))
+        self.weight = torch.nn.Parameter(torch.ones(self._normalized_shape))
+        self.bias = torch.nn.Parameter(torch.zeros(self._normalized_shape))
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """
@@ -104,16 +101,13 @@ class LayerNorm(HammerModule):
         Returns:
             Normalized tensor
         """
-        input_dtype = input.dtype
-        input = input.to(self.calculate_dtype)
-        result = layer_norm(
+        return layer_norm(
             input=input,
             weight=self.weight,
             bias=self.bias,
             eps=self._eps,
             kernel=self.hammer_kernel(),
         )
-        return result.to(input_dtype)
 
 
 def swish_layer_norm(
@@ -164,7 +158,6 @@ class SwishLayerNorm(HammerModule):
         dim: int,
         eps: float = 1e-5,
         is_inference: bool = False,
-        calculate_dtype: torch.dtype = torch.float32,
     ) -> None:
         """
         Initialize SwishLayerNorm module.
@@ -173,13 +166,11 @@ class SwishLayerNorm(HammerModule):
             dim: Feature dimension
             eps: Numerical stability parameter, default 1e-5
             is_inference: Whether in inference mode, default False
-            calculate_dtype: Data type for calculation, default torch.float32
         """
         super().__init__(is_inference=is_inference)
         self._normalized_shape: List[int] = [dim]
-        self.calculate_dtype = calculate_dtype
-        self.weight = torch.nn.Parameter(torch.ones(self._normalized_shape, dtype=self.calculate_dtype))
-        self.bias = torch.nn.Parameter(torch.zeros(self._normalized_shape, dtype=self.calculate_dtype))
+        self.weight = torch.nn.Parameter(torch.ones(self._normalized_shape))
+        self.bias = torch.nn.Parameter(torch.zeros(self._normalized_shape))
         self._eps = eps
 
     def forward(
@@ -195,13 +186,10 @@ class SwishLayerNorm(HammerModule):
         Returns:
             Tensor after LayerNorm and Swish activation
         """
-        input_dtype = input.dtype
-        input = input.to(self.calculate_dtype)
-        result = swish_layer_norm(
+        return swish_layer_norm(
             input=input,
             weight=self.weight,
             bias=self.bias,
             eps=self._eps,
             kernel=self.hammer_kernel(),
         )
-        return result.to(input_dtype)

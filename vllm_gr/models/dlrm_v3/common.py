@@ -202,99 +202,23 @@ def jagged_to_padded_dense(
     max_lengths: List[int],
     padding_value: float,
 ) -> torch.Tensor:
-    """
-    Convert Jagged Tensor to padded dense tensor
-    
-    Prefers fbgemm, falls back to PyTorch implementation if unavailable.
-    """
-    try:
-        return torch.ops.fbgemm.jagged_to_padded_dense(
-            values=values,
-            offsets=offsets,
-            max_lengths=max_lengths,
-            padding_value=padding_value,
-        )
-    except (RuntimeError, AttributeError):
-        # Pure PyTorch fallback
-        return _pytorch_jagged_to_padded_dense(
-            values=values,
-            offsets=offsets[0] if offsets else torch.tensor(
-                [0, values.size(0)], dtype=torch.long, device=values.device
-            ),
-            max_length=max_lengths[0] if max_lengths else values.size(0),
-            padding_value=padding_value,
-        )
-
-
-def _pytorch_jagged_to_padded_dense(
-    values: torch.Tensor,
-    offsets: torch.Tensor,
-    max_length: int,
-    padding_value: float,
-) -> torch.Tensor:
-    """Pure PyTorch implementation of jagged_to_padded_dense"""
-    B = offsets.size(0) - 1
-    D = values.size(-1) if values.dim() > 1 else 1
-    
-    if values.dim() == 1:
-        values = values.unsqueeze(-1)
-    
-    output = torch.full((B, max_length, D), padding_value, 
-                        dtype=values.dtype, device=values.device)
-    
-    for i in range(B):
-        start = int(offsets[i].item())
-        end = int(offsets[i + 1].item())
-        length = min(end - start, max_length)
-        if length > 0:
-            output[i, :length] = values[start:start + length]
-    
-    if D == 1:
-        output = output.squeeze(-1)
-    
-    return output
+    """Convert Jagged Tensor to padded dense tensor via fbgemm only."""
+    return torch.ops.fbgemm.jagged_to_padded_dense(
+        values=values,
+        offsets=offsets,
+        max_lengths=max_lengths,
+        padding_value=padding_value,
+    )
 
 
 def dense_to_jagged(
     dense: torch.Tensor,
     x_offsets: List[torch.Tensor],
 ) -> torch.Tensor:
-    """
-    Convert padded dense tensor to Jagged Tensor
-    
-    Prefers fbgemm, falls back to PyTorch implementation if unavailable.
-    """
-    try:
-        return torch.ops.fbgemm.dense_to_jagged(
-            dense=dense,
-            x_offsets=x_offsets,
-        )[0]
-    except (RuntimeError, AttributeError):
-        # Pure PyTorch fallback
-        return _pytorch_dense_to_jagged(
-            dense=dense,
-            offsets=x_offsets[0] if x_offsets else torch.tensor(
-                [0, dense.size(1)], dtype=torch.long, device=dense.device
-            ),
-        )
+    """Convert padded dense tensor to Jagged Tensor via fbgemm only."""
+    return torch.ops.fbgemm.dense_to_jagged(
+        dense=dense,
+        x_offsets=x_offsets,
+    )[0]
 
 
-def _pytorch_dense_to_jagged(
-    dense: torch.Tensor,
-    offsets: torch.Tensor,
-) -> torch.Tensor:
-    """Pure PyTorch implementation of dense_to_jagged"""
-    B = dense.size(0)
-    results = []
-    
-    for i in range(B):
-        start = int(offsets[i].item())
-        end = int(offsets[i + 1].item())
-        length = end - start
-        if length > 0:
-            results.append(dense[i, :length])
-    
-    if results:
-        return torch.cat(results, dim=0)
-    else:
-        return torch.empty(0, *dense.shape[2:], dtype=dense.dtype, device=dense.device)

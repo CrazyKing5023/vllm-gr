@@ -167,10 +167,36 @@ class HSTUForRecommendation(nn.Module):
                 num_embeddings=table_cfg["num_embeddings"],
                 embedding_dim=table_cfg["embedding_dim"],
                 name=name,
-                data_type=DataType.FP32,
+                data_type=DataType.FP16,
                 feature_names=table_cfg.get("feature_names", [name]),
             )
         return configs
+
+    def _cast_dense_submodules_to_bf16(self) -> None:
+        """Cast dense HSTU submodules to bf16 without touching embeddings."""
+        dense_submodule_names = (
+            "_multitask_module",
+            "_hstu_transducer",
+            "_item_embedding_mlp",
+        )
+
+        casted = []
+        for name in dense_submodule_names:
+            module = getattr(self.hstu, name, None)
+            if module is None:
+                logger.warning(
+                    "Skipping dense bf16 cast: HSTU submodule %s not found",
+                    name,
+                )
+                continue
+            module.to(dtype=torch.bfloat16)
+            casted.append(name)
+
+        self.hstu.set_training_dtype(torch.bfloat16)
+        logger.info(
+            "Cast dense HSTU submodules to bf16: %s; embedding_collection left unchanged",
+            ", ".join(casted) if casted else "<none>",
+        )
 
     # ------------------------------------------------------------------
     # Model creation
@@ -238,7 +264,8 @@ class HSTUForRecommendation(nn.Module):
             is_inference=self.config.is_inference,
             is_dense=not embedding_configs,
         )
-
+        self._cast_dense_submodules_to_bf16()
+        
     # ------------------------------------------------------------------
     # vLLM interface
     # ------------------------------------------------------------------

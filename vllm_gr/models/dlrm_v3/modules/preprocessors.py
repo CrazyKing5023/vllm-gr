@@ -31,18 +31,8 @@ from vllm_gr.ops.layer_norm import LayerNorm, SwishLayerNorm
 
 
 def complete_cumsum(lengths: torch.Tensor) -> torch.Tensor:
-    """Compute complete cumulative sum (starting with 0).
-
-    Uses fbgemm when available, falls back to pure PyTorch.
-    """
-    try:
-        return torch.ops.fbgemm.asynchronous_complete_cumsum(lengths)
-    except (RuntimeError, AttributeError):
-        cumsum = torch.zeros(
-            lengths.size(0) + 1, dtype=lengths.dtype, device=lengths.device
-        )
-        cumsum[1:] = torch.cumsum(lengths, dim=0)
-        return cumsum
+    """Compute complete cumulative sum (starting with 0) via fbgemm only."""
+    return torch.ops.fbgemm.asynchronous_complete_cumsum(lengths)
 
 
 class InputPreprocessor(HammerModule):
