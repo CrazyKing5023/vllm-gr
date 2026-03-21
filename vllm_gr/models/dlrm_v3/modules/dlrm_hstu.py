@@ -10,7 +10,6 @@ Supports multi-task prediction and user-item interaction modeling.
 """
 
 import logging
-import os
 from dataclasses import dataclass, field
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
@@ -48,248 +47,6 @@ from vllm_gr.utils import (
 
 
 logger: logging.Logger = logging.getLogger(__name__)
-
-
-def _gr_debug_is_active_for_current_case() -> bool:
-    active = os.environ.get("GR_DEBUG_ACTIVE", "").strip()
-    return active == "1"
-
-
-def _gr_debug_stage_enabled(*stages: str) -> bool:
-    if not _gr_debug_is_active_for_current_case():
-        return False
-    configured = os.environ.get("GR_DEBUG_STAGE", "").strip().lower()
-    if not configured or configured == "all":
-        return True
-    enabled = {part.strip() for part in configured.split(",") if part.strip()}
-    return any(stage in enabled for stage in stages)
-
-
-def _gr_debug_preview_limit() -> int:
-    raw = os.environ.get("GR_DEBUG_PREVIEW_DIM", "8").strip()
-    try:
-        value = int(raw)
-    except ValueError:
-        return 8
-    return max(1, value)
-
-
-def _gr_debug_tensor_preview(tensor: torch.Tensor, limit: int) -> List[float]:
-    flat = tensor.detach().to(device="cpu").float().reshape(-1)
-    return [float(x) for x in flat[:limit].tolist()]
-
-
-def _gr_debug_dense_stage_enabled(stage: str) -> bool:
-    if not _gr_debug_stage_enabled("post_main"):
-        return False
-
-    configured = os.environ.get("GR_DEBUG_DENSE_STAGE", "").strip().lower()
-    if not configured:
-        return False
-    if configured == "all":
-        return True
-    enabled = {part.strip() for part in configured.split(",") if part.strip()}
-    return stage in enabled
-
-
-def _gr_debug_log_tensor(
-    *,
-    stage: str,
-    name: str,
-    tensor: torch.Tensor,
-) -> None:
-    preview_limit = _gr_debug_preview_limit()
-    print(
-        f"[gr-debug][{stage}] {name} shape={tuple(tensor.shape)} "
-        f"dtype={tensor.dtype} device={tensor.device} "
-        f"preview={_gr_debug_tensor_preview(tensor, preview_limit)}",
-        flush=True,
-    )
-
-
-def _gr_debug_log_sequence_embedding(
-    *,
-    stage: str,
-    name: str,
-    value: "SequenceEmbedding",
-) -> None:
-    preview_limit = _gr_debug_preview_limit()
-    print(
-        f"[gr-debug][{stage}] {name} lengths_shape={tuple(value.lengths.shape)} "
-        f"lengths_dtype={value.lengths.dtype} emb_shape={tuple(value.embedding.shape)} "
-        f"emb_dtype={value.embedding.dtype} emb_device={value.embedding.device} "
-        f"preview={_gr_debug_tensor_preview(value.embedding, preview_limit)}",
-        flush=True,
-    )
-
-
-def _gr_debug_log_dense_stage_header(stage: str) -> None:
-    case_id = os.environ.get("GR_DEBUG_ACTIVE_CASE_ID", "<unknown>")
-    print(f"[gr-debug][{stage}] case_id={case_id}", flush=True)
-
-
-def _gr_debug_log_dense_inputs(
-    *,
-    stage: str,
-    seq_embeddings: Dict[str, "SequenceEmbedding"],
-    payload_features: Dict[str, torch.Tensor],
-    max_uih_len: int,
-    uih_seq_lengths: torch.Tensor,
-    max_num_candidates: int,
-    num_candidates: torch.Tensor,
-) -> None:
-    if not _gr_debug_stage_enabled(stage):
-        return
-
-    preview_limit = _gr_debug_preview_limit()
-    case_id = os.environ.get("GR_DEBUG_ACTIVE_CASE_ID", "<unknown>")
-    print(
-        f"[gr-debug][{stage}] case_id={case_id} max_uih_len={max_uih_len} "
-        f"max_num_candidates={max_num_candidates}",
-        flush=True,
-    )
-    print(
-        f"[gr-debug][{stage}] uih_seq_lengths shape={tuple(uih_seq_lengths.shape)} "
-        f"dtype={uih_seq_lengths.dtype} device={uih_seq_lengths.device} "
-        f"preview={_gr_debug_tensor_preview(uih_seq_lengths, preview_limit)}",
-        flush=True,
-    )
-    print(
-        f"[gr-debug][{stage}] num_candidates shape={tuple(num_candidates.shape)} "
-        f"dtype={num_candidates.dtype} device={num_candidates.device} "
-        f"preview={_gr_debug_tensor_preview(num_candidates, preview_limit)}",
-        flush=True,
-    )
-    for key in sorted(seq_embeddings.keys()):
-        value = seq_embeddings[key]
-        print(
-            f"[gr-debug][{stage}] seq_embeddings[{key}] lengths_shape={tuple(value.lengths.shape)} "
-            f"lengths_dtype={value.lengths.dtype} emb_shape={tuple(value.embedding.shape)} "
-            f"emb_dtype={value.embedding.dtype} emb_device={value.embedding.device} "
-            f"preview={_gr_debug_tensor_preview(value.embedding, preview_limit)}",
-            flush=True,
-        )
-    for key in sorted(payload_features.keys()):
-        value = payload_features[key]
-        print(
-            f"[gr-debug][{stage}] payload_features[{key}] shape={tuple(value.shape)} "
-            f"dtype={value.dtype} device={value.device} "
-            f"preview={_gr_debug_tensor_preview(value, preview_limit)}",
-            flush=True,
-        )
-
-
-def _gr_debug_log_dense_outputs(
-    *,
-    mt_target_preds: Optional[torch.Tensor],
-) -> None:
-    if not _gr_debug_stage_enabled("post_main"):
-        return
-
-    preview_limit = _gr_debug_preview_limit()
-    case_id = os.environ.get("GR_DEBUG_ACTIVE_CASE_ID", "<unknown>")
-    print(f"[gr-debug][post_main] case_id={case_id}", flush=True)
-    if mt_target_preds is None:
-        print("[gr-debug][post_main] mt_target_preds=None", flush=True)
-        return
-    print(
-        f"[gr-debug][post_main] mt_target_preds shape={tuple(mt_target_preds.shape)} "
-        f"dtype={mt_target_preds.dtype} device={mt_target_preds.device} "
-        f"preview={_gr_debug_tensor_preview(mt_target_preds, preview_limit)}",
-        flush=True,
-    )
-
-
-def _gr_debug_log_post_merge(
-    *,
-    seq_embeddings: Dict[str, "SequenceEmbedding"],
-    keys: List[str],
-) -> None:
-    if not _gr_debug_dense_stage_enabled("post_merge"):
-        return
-
-    _gr_debug_log_dense_stage_header("post_merge")
-    for key in keys:
-        if key not in seq_embeddings:
-            continue
-        _gr_debug_log_sequence_embedding(
-            stage="post_merge",
-            name=f"seq_embeddings[{key}]",
-            value=seq_embeddings[key],
-        )
-
-
-def _gr_debug_log_post_item(
-    *,
-    all_embeddings: torch.Tensor,
-    candidates_item_embeddings: torch.Tensor,
-) -> None:
-    if not _gr_debug_dense_stage_enabled("post_item"):
-        return
-
-    _gr_debug_log_dense_stage_header("post_item")
-    _gr_debug_log_tensor(
-        stage="post_item",
-        name="all_embeddings",
-        tensor=all_embeddings,
-    )
-    _gr_debug_log_tensor(
-        stage="post_item",
-        name="candidates_item_embeddings",
-        tensor=candidates_item_embeddings,
-    )
-
-
-def _gr_debug_log_user_pre_transducer(
-    *,
-    source_lengths: torch.Tensor,
-    source_timestamps: torch.Tensor,
-    embedding: torch.Tensor,
-    seq_payloads: Dict[str, torch.Tensor],
-    payload_keys: List[str],
-) -> None:
-    if not _gr_debug_dense_stage_enabled("user_pre_transducer"):
-        return
-
-    _gr_debug_log_dense_stage_header("user_pre_transducer")
-    _gr_debug_log_tensor(
-        stage="user_pre_transducer",
-        name="source_lengths",
-        tensor=source_lengths,
-    )
-    _gr_debug_log_tensor(
-        stage="user_pre_transducer",
-        name="source_timestamps",
-        tensor=source_timestamps,
-    )
-    _gr_debug_log_tensor(
-        stage="user_pre_transducer",
-        name="embedding",
-        tensor=embedding,
-    )
-    for key in payload_keys:
-        if key not in seq_payloads:
-            continue
-        _gr_debug_log_tensor(
-            stage="user_pre_transducer",
-            name=f"seq_payloads[{key}]",
-            tensor=seq_payloads[key],
-        )
-
-
-def _gr_debug_log_post_user(
-    *,
-    candidates_user_embeddings: torch.Tensor,
-) -> None:
-    if not _gr_debug_dense_stage_enabled("post_user"):
-        return
-
-    _gr_debug_log_dense_stage_header("post_user")
-    _gr_debug_log_tensor(
-        stage="post_user",
-        name="candidates_user_embeddings",
-        tensor=candidates_user_embeddings,
-    )
 
 
 def _cumsum(lengths: torch.Tensor) -> torch.Tensor:
@@ -648,12 +405,7 @@ class DlrmHSTU(HammerModule):
             ],
             dim=-1,
         )
-        candidates_item_embeddings = self._item_embedding_mlp(all_embeddings)
-        _gr_debug_log_post_item(
-            all_embeddings=all_embeddings,
-            candidates_item_embeddings=candidates_item_embeddings,
-        )
-        return candidates_item_embeddings
+        return self._item_embedding_mlp(all_embeddings)
 
     def _user_forward(
         self,
@@ -695,28 +447,6 @@ class DlrmHSTU(HammerModule):
             payload_features=payload_features,
             seq_embeddings=seq_embeddings,
         )
-        debug_payload_keys: List[str] = []
-        for key in [
-            "uih_offsets",
-            "candidate_offsets",
-            self._hstu_configs.uih_action_time_feature_name,
-            self._hstu_configs.candidates_querytime_feature_name,
-            *list(self._hstu_configs.contextual_feature_to_max_length.keys()),
-            *[
-                key + "_offsets"
-                for key in self._hstu_configs.contextual_feature_to_max_length.keys()
-            ],
-            *self._additional_embedding_features,
-        ]:
-            if key and key not in debug_payload_keys:
-                debug_payload_keys.append(key)
-        _gr_debug_log_user_pre_transducer(
-            source_lengths=source_lengths,
-            source_timestamps=source_timestamps,
-            embedding=embedding,
-            seq_payloads=seq_payloads,
-            payload_keys=debug_payload_keys,
-        )
 
         with get_hstu_autocast_context(
             embedding,
@@ -734,11 +464,7 @@ class DlrmHSTU(HammerModule):
                 num_targets=num_candidates,
             )
 
-        output = candidates_user_embeddings.to(dtype)
-        _gr_debug_log_post_user(
-            candidates_user_embeddings=output,
-        )
-        return output
+        return candidates_user_embeddings.to(dtype)
 
     # =========================================================================
     # main_forward: merge UIH+candidate embeddings, then item/user/multitask
@@ -757,16 +483,6 @@ class DlrmHSTU(HammerModule):
         torch.Tensor,
         Optional[torch.Tensor],
     ]:
-        _gr_debug_log_dense_inputs(
-            stage="pre_main",
-            seq_embeddings=seq_embeddings,
-            payload_features=payload_features,
-            max_uih_len=max_uih_len,
-            uih_seq_lengths=uih_seq_lengths,
-            max_num_candidates=max_num_candidates,
-            num_candidates=num_candidates,
-        )
-
         merged_embedding_keys: List[str] = []
         for (
             uih_feature_name,
@@ -791,11 +507,6 @@ class DlrmHSTU(HammerModule):
                 if uih_feature_name not in merged_embedding_keys:
                     merged_embedding_keys.append(uih_feature_name)
 
-        _gr_debug_log_post_merge(
-            seq_embeddings=seq_embeddings,
-            keys=merged_embedding_keys,
-        )
-
         with record_function("## item_forward ##"):
             candidates_item_embeddings = self._item_forward(seq_embeddings)
 
@@ -817,10 +528,6 @@ class DlrmHSTU(HammerModule):
                     supervision_weights={},
                 )
             )
-
-        _gr_debug_log_dense_outputs(
-            mt_target_preds=mt_target_preds,
-        )
 
         return (
             candidates_user_embeddings,

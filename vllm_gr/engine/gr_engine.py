@@ -66,6 +66,25 @@ class GRLLMEngine(LLMEngine):
         logger.info("GRLLMEngine initialized")
 
     def shutdown(self) -> None:
+        if getattr(self, "_shutdown_complete", False):
+            return
+        self._shutdown_complete = True
+
+        for attr_name in ("executor", "model_executor"):
+            executor = getattr(self, attr_name, None)
+            if executor is None:
+                continue
+
+            shutdown = getattr(executor, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
+            else:
+                close = getattr(executor, "close", None)
+                if callable(close):
+                    close()
+
+            setattr(self, attr_name, None)
+
         engine_core = getattr(self, "engine_core", None)
         if engine_core is not None:
             engine_core.shutdown()

@@ -76,7 +76,7 @@ def pytorch_add_timestamp_positional_embeddings(
     )
     batch_size, _ = pos_inds.shape
 
-    num_time_buckets = ts_embeddings.size(0) - 1
+    num_time_buckets = ts_embeddings.size(1) - 1
     time_bucket_increments = 60.0
     time_bucket_divisor = 1.0
     time_delta = 0

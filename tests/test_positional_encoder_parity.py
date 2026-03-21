@@ -121,6 +121,46 @@ class TestPositionalEncoderParity(unittest.TestCase):
         )
         torch.testing.assert_close(output, expected)
 
+    def test_timestamp_bucket_clamp_matches_golden_reference(self):
+        encoder = self.HSTUPositionalEncoder(
+            num_position_buckets=8,
+            num_time_buckets=4,
+            embedding_dim=2,
+            contextual_seq_len=0,
+            is_inference=True,
+        )
+        with torch.no_grad():
+            encoder._position_embeddings_weight.zero_()
+            encoder._timestamp_embeddings_weight.copy_(
+                torch.tensor(
+                    [
+                        [100.0, 1000.0],
+                        [200.0, 2000.0],
+                        [300.0, 3000.0],
+                        [400.0, 4000.0],
+                        [500.0, 5000.0],
+                    ]
+                )
+            )
+
+        output = encoder(
+            max_seq_len=3,
+            seq_lengths=torch.tensor([3]),
+            seq_offsets=torch.tensor([0, 3]),
+            seq_timestamps=torch.tensor([0, 540, 600]),
+            seq_embeddings=torch.zeros(3, 2),
+            num_targets=None,
+        )
+
+        expected = torch.tensor(
+            [
+                [200.0, 2000.0],
+                [200.0, 2000.0],
+                [100.0, 1000.0],
+            ]
+        )
+        torch.testing.assert_close(output, expected)
+
     def test_contextual_prefix_keeps_front_positions_fixed(self):
         encoder = self.HSTUPositionalEncoder(
             num_position_buckets=8,

@@ -7,8 +7,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from dataclasses import dataclass
-import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 
@@ -34,79 +33,6 @@ class HSTUSparseTransferPlan:
     source_device: torch.device
     target_device: torch.device
     requires_transfer: bool
-
-
-def _gr_debug_is_active_for_current_case() -> bool:
-    active = os.environ.get("GR_DEBUG_ACTIVE", "").strip()
-    return active == "1"
-
-
-def _gr_debug_stage_enabled(*stages: str) -> bool:
-    if not _gr_debug_is_active_for_current_case():
-        return False
-    configured = os.environ.get("GR_DEBUG_STAGE", "").strip().lower()
-    if not configured or configured == "all":
-        return True
-    enabled = {part.strip() for part in configured.split(",") if part.strip()}
-    return any(stage in enabled for stage in stages)
-
-
-def _gr_debug_preview_limit() -> int:
-    raw = os.environ.get("GR_DEBUG_PREVIEW_DIM", "8").strip()
-    try:
-        value = int(raw)
-    except ValueError:
-        return 8
-    return max(1, value)
-
-
-def _gr_debug_tensor_preview(tensor: torch.Tensor, limit: int) -> List[float]:
-    flat = tensor.detach().to(device="cpu").float().reshape(-1)
-    return [float(x) for x in flat[:limit].tolist()]
-
-
-def _gr_debug_log_post_transfer(
-    *,
-    seq_embeddings: Dict[str, Any],
-    payload_features: Dict[str, torch.Tensor],
-    uih_seq_lengths: torch.Tensor,
-    num_candidates: torch.Tensor,
-) -> None:
-    if not _gr_debug_stage_enabled("transfer", "post_transfer"):
-        return
-
-    preview_limit = _gr_debug_preview_limit()
-    case_id = os.environ.get("GR_DEBUG_ACTIVE_CASE_ID", "<unknown>")
-    print(f"[gr-debug][transfer] case_id={case_id}", flush=True)
-    print(
-        f"[gr-debug][transfer] uih_seq_lengths shape={tuple(uih_seq_lengths.shape)} "
-        f"dtype={uih_seq_lengths.dtype} device={uih_seq_lengths.device} "
-        f"preview={_gr_debug_tensor_preview(uih_seq_lengths, preview_limit)}",
-        flush=True,
-    )
-    print(
-        f"[gr-debug][transfer] num_candidates shape={tuple(num_candidates.shape)} "
-        f"dtype={num_candidates.dtype} device={num_candidates.device} "
-        f"preview={_gr_debug_tensor_preview(num_candidates, preview_limit)}",
-        flush=True,
-    )
-    for key in sorted(seq_embeddings.keys()):
-        value = seq_embeddings[key]
-        print(
-            f"[gr-debug][transfer] seq_embeddings[{key}] lengths_shape={tuple(value.lengths.shape)} "
-            f"lengths_dtype={value.lengths.dtype} emb_shape={tuple(value.embedding.shape)} "
-            f"emb_dtype={value.embedding.dtype} emb_device={value.embedding.device} "
-            f"preview={_gr_debug_tensor_preview(value.embedding, preview_limit)}",
-            flush=True,
-        )
-    for key in sorted(payload_features.keys()):
-        value = payload_features[key]
-        print(
-            f"[gr-debug][transfer] payload_features[{key}] shape={tuple(value.shape)} "
-            f"dtype={value.dtype} device={value.device} "
-            f"preview={_gr_debug_tensor_preview(value, preview_limit)}",
-            flush=True,
-        )
 
 
 def resolve_hstu_runtime_devices(
@@ -247,12 +173,6 @@ def move_hstu_sparse_outputs_to_device(
     )
 
     if not transfer_plan.requires_transfer and target_dtype is None:
-        _gr_debug_log_post_transfer(
-            seq_embeddings=seq_embeddings,
-            payload_features=payload_features,
-            uih_seq_lengths=uih_seq_lengths,
-            num_candidates=num_candidates,
-        )
         return (
             seq_embeddings,
             payload_features,
@@ -275,20 +195,11 @@ def move_hstu_sparse_outputs_to_device(
         for key, value in payload_features.items()
     }
 
-    moved_uih_seq_lengths = uih_seq_lengths.to(transfer_plan.target_device)
-    moved_num_candidates = num_candidates.to(transfer_plan.target_device)
-    _gr_debug_log_post_transfer(
-        seq_embeddings=moved_seq_embeddings,
-        payload_features=moved_payload_features,
-        uih_seq_lengths=moved_uih_seq_lengths,
-        num_candidates=moved_num_candidates,
-    )
-
     return (
         moved_seq_embeddings,
         moved_payload_features,
-        moved_uih_seq_lengths,
-        moved_num_candidates,
+        uih_seq_lengths.to(transfer_plan.target_device),
+        num_candidates.to(transfer_plan.target_device),
     )
 
 

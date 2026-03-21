@@ -32,7 +32,7 @@ _KUAIRAND_DATASETS = {
     "kuairand-1k",
     "kuairand-27k",
 }
-_DEBUG_DATASETS = {
+_SYNTHETIC_DATASETS = {
     "debug",
 }
 
@@ -40,7 +40,7 @@ SUPPORTED_DATASETS = sorted(
     _MOVIELENS_DATASETS
     | _STREAMING_DATASETS
     | _KUAIRAND_DATASETS
-    | _DEBUG_DATASETS
+    | _SYNTHETIC_DATASETS
 )
 
 
@@ -52,8 +52,8 @@ def _resolve_dataset_family(dataset: str) -> str:
         return "streaming"
     if dataset in _KUAIRAND_DATASETS:
         return "kuairand"
-    if dataset in _DEBUG_DATASETS:
-        return "debug"
+    if dataset in _SYNTHETIC_DATASETS:
+        return "synthetic"
     raise ValueError(
         f"Unsupported dataset: {dataset!r}. Supported datasets: {SUPPORTED_DATASETS}"
     )

@@ -69,7 +69,7 @@ def _parse_args() -> argparse.Namespace:
         "--case-id",
         type=str,
         default=None,
-        help="Optional single case_id to run for staged debug alignment.",
+        help="Optional single case_id to run.",
     )
     return parser.parse_args()
 
@@ -89,25 +89,6 @@ def _select_cases(
     if not selected:
         raise ValueError(f"case_id not found in input JSON: {case_id}")
     return selected
-
-
-def _configure_case_debug_env(case_id: str | None) -> None:
-    if case_id is None:
-        return
-
-    configured_case_id = os.environ.get("GR_DEBUG_CASE_ID", "").strip()
-    configured_stage = os.environ.get("GR_DEBUG_STAGE", "").strip()
-    if configured_case_id and configured_case_id != case_id:
-        raise ValueError(
-            "--case-id does not match GR_DEBUG_CASE_ID: "
-            f"case_id={case_id}, GR_DEBUG_CASE_ID={configured_case_id}"
-        )
-    if not (configured_case_id or configured_stage):
-        return
-
-    os.environ["GR_DEBUG_ACTIVE"] = "1"
-    os.environ["GR_DEBUG_ACTIVE_CASE_ID"] = case_id
-    os.environ.setdefault("GR_DEBUG_CASE_ID", case_id)
 
 
 def _validate_input_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -278,8 +259,6 @@ def main() -> int:
         _validate_input_payload(input_payload),
         args.case_id,
     )
-    _configure_case_debug_env(args.case_id)
-
     from vllm_gr import GRLLM
 
     llm = GRLLM(

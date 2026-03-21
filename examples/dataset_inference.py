@@ -11,7 +11,7 @@ supported by Meta's generative-recommenders:
   - MovieLens-1M  : Movie rating prediction with rich user demographics
   - KuaiRand-1K   : Short-video recommendation with 8 engagement tasks
   - Streaming     : Large-scale content streaming with category features
-  - Debug         : Synthetic dataset for development / CI
+  - Synthetic     : Synthetic dataset for development / CI
 
 Each dataset uses its own feature names, embedding tables, and merge
 mappings.  The config files under examples/configs/<dataset>/ mirror
@@ -217,8 +217,8 @@ def build_streaming_prompts() -> Dict[str, Any]:
     }
 
 
-def build_debug_prompts() -> Dict[str, Any]:
-    """Debug/Synthetic: development and CI testing.
+def build_synthetic_prompts() -> Dict[str, Any]:
+    """Synthetic preset for development and CI testing.
 
     UIH features:  uih_post_id, uih_action_time, uih_weight,
                    uih_owner_id, uih_watchtime, uih_surface_type,
@@ -231,7 +231,7 @@ def build_debug_prompts() -> Dict[str, Any]:
     """
     prompts: List["GRPrompt"] = [
         {
-            "user_id": "debug_user_001",
+            "user_id": "synthetic_user_001",
             "user_history": [
                 {"uih_post_id": 10, "uih_action_time": 1000, "uih_weight": 1,
                  "uih_owner_id": 100, "uih_watchtime": 500,
@@ -275,7 +275,7 @@ DATASET_BUILDERS = {
     "movielens-1m": build_movielens_1m_prompts,
     "kuairand-1k": build_kuairand_1k_prompts,
     "streaming": build_streaming_prompts,
-    "debug": build_debug_prompts,
+    "debug": build_synthetic_prompts,
 }
 
 

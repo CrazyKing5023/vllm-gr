@@ -2,9 +2,9 @@
 # Copyright (c) vllm-GR Authors.
 # Licensed under the Apache License, Version 2.0
 
-"""Compare one bad case across golden/native and converted sparse paths.
+"""Compare one selected case across golden/native and converted sparse paths.
 
-This debug utility focuses on the highest-value early alignment checks:
+This inspection utility focuses on the highest-value early alignment checks:
 1. config/table mapping sanity
 2. touched sparse embedding rows for one case
 3. lookup outputs (`seq_embeddings`) right after sparse preprocess
@@ -64,7 +64,7 @@ def _parse_args() -> argparse.Namespace:
         "--case-id",
         type=str,
         required=True,
-        help="Bad case id to inspect.",
+        help="Case id to inspect.",
     )
     parser.add_argument(
         "--golden-repo",

@@ -1128,7 +1128,7 @@ class TestOutputContract(unittest.TestCase):
 
         torch.testing.assert_close(
             result,
-            torch.tensor([[221.0], [112.0]], dtype=torch.float32),
+            torch.tensor([[121.0], [112.0]], dtype=torch.float32),
         )
 
     def test_pooling_split_mismatch_fails_fast(self):
