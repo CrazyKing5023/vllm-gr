@@ -9,8 +9,6 @@ with GR-specific versions (GRInputProcessor, GROutputProcessor) so the
 existing add_request() / step() pipeline handles GRPrompt transparently.
 """
 
-from typing import Any
-import time
 import logging
 
 from vllm.config import VllmConfig
@@ -65,10 +63,33 @@ class GRLLMEngine(LLMEngine):
 
         self._replace_processors()
 
-        self._num_gr_requests_processed = 0
-        self._start_time = time.time()
-
         logger.info("GRLLMEngine initialized")
+
+    def shutdown(self) -> None:
+        if getattr(self, "_shutdown_complete", False):
+            return
+        self._shutdown_complete = True
+
+        for attr_name in ("executor", "model_executor"):
+            executor = getattr(self, attr_name, None)
+            if executor is None:
+                continue
+
+            shutdown = getattr(executor, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
+            else:
+                close = getattr(executor, "close", None)
+                if callable(close):
+                    close()
+
+            setattr(self, attr_name, None)
+
+        engine_core = getattr(self, "engine_core", None)
+        if engine_core is not None:
+            engine_core.shutdown()
+            self.engine_core = None
+        logger.info("GRLLMEngine shutdown complete")
 
     def _replace_processors(self) -> None:
         """Replace default processors with GR-specific versions.
@@ -87,7 +108,19 @@ class GRLLMEngine(LLMEngine):
             hf_config.hstu_candidate_feature_names
             or hf_config.item_embedding_feature_names
         )
+        configured_context_feature_names = list(dict.fromkeys(
+            list(getattr(hf_config, "contextual_feature_to_max_length", {}).keys())
+            + list(getattr(hf_config, "contextual_feature_to_min_uih_length", {}).keys())
+        ))
+        context_feature_names = [
+            key for key in uih_feature_names
+            if key in set(configured_context_feature_names)
+        ]
         primary_id_feature_name = hf_config.uih_post_id_feature_name
+        candidate_primary_id_key = self._resolve_candidate_primary_id_key(
+            hf_config=hf_config,
+            candidate_feature_names=candidate_feature_names,
+        )
         task_names = list(hf_config.task_names)
         primary_task = task_names[0] if task_names else ""
 
@@ -96,10 +129,11 @@ class GRLLMEngine(LLMEngine):
             tokenizer=self.tokenizer,
             max_seq_len=cfg.max_seq_len,
             max_candidates=cfg.max_candidates,
-            default_top_k=cfg.default_top_k,
             uih_feature_names=uih_feature_names,
             candidate_feature_names=candidate_feature_names,
             primary_id_feature_name=primary_id_feature_name,
+            full_uih_feature_names=uih_feature_names,
+            context_feature_names=context_feature_names,
         )
 
         stream_interval = self.vllm_config.scheduler_config.stream_interval
@@ -109,6 +143,34 @@ class GRLLMEngine(LLMEngine):
             stream_interval=stream_interval,
             task_names=task_names,
             primary_task=primary_task,
+            primary_id_key=candidate_primary_id_key,
+        )
+
+    @staticmethod
+    def _resolve_candidate_primary_id_key(
+        *,
+        hf_config,
+        candidate_feature_names: list[str],
+    ) -> str:
+        explicit_candidate_id_key = str(
+            getattr(hf_config, "candidate_primary_id_feature_name", "") or ""
+        )
+        if explicit_candidate_id_key:
+            return explicit_candidate_id_key
+
+        merge_mapping = list(
+            getattr(hf_config, "merge_uih_candidate_feature_mapping", []) or []
+        )
+        primary_uih_id_key = getattr(hf_config, "uih_post_id_feature_name", "")
+        for uih_key, candidate_key in merge_mapping:
+            if uih_key == primary_uih_id_key:
+                return candidate_key
+
+        raise ValueError(
+            "Unable to resolve candidate primary id feature. Configure "
+            "`candidate_primary_id_feature_name` explicitly or provide a "
+            "`merge_uih_candidate_feature_mapping` entry that maps "
+            f"{primary_uih_id_key!r} to one of {candidate_feature_names!r}."
         )
 
     @classmethod
@@ -127,7 +189,6 @@ class GRLLMEngine(LLMEngine):
         gr_config = GRConfig(
             max_seq_len=engine_args.max_seq_len,
             max_candidates=engine_args.max_candidates,
-            default_top_k=engine_args.default_top_k,
         )
 
         return cls(
@@ -139,26 +200,3 @@ class GRLLMEngine(LLMEngine):
             multiprocess_mode=enable_multiprocessing,
             gr_config=gr_config,
         )
-
-    def get_gr_stats(self) -> dict[str, Any]:
-        elapsed = time.time() - self._start_time
-        return {
-            "num_gr_requests_processed": self._num_gr_requests_processed,
-            "elapsed_time": elapsed,
-            "gr_throughput": (
-                self._num_gr_requests_processed / max(elapsed, 1e-6)
-            ),
-            "pending_requests": self.output_processor.num_pending_requests,
-        }
-
-    def shutdown(self) -> None:
-        logger.info(
-            "GRLLMEngine shutdown: processed=%d",
-            self._num_gr_requests_processed
-        )
-
-    def __del__(self):
-        try:
-            self.shutdown()
-        except Exception:
-            pass

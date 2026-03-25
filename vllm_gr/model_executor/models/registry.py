@@ -8,11 +8,14 @@ Registers GR-specific model architectures with vLLM's global ModelRegistry
 using the stable public API (ModelRegistry.register_model).
 
 Usage:
-    import vllm_gr  # Auto-registers on import
+    from vllm_gr.plugin import initialize_runtime
+    initialize_runtime()
 
     # Or manually:
-    from vllm_gr.model_executor.models.registry import register_gr_models_to_vllm
-    register_gr_models_to_vllm()
+    from vllm_gr.model_executor.models.registry import (
+        register_gr_model_architectures,
+    )
+    register_gr_model_architectures()
 """
 
 import logging
@@ -44,7 +47,7 @@ except ImportError:
 # declared in HSTUConfig.architectures and every config.json.  vLLM's
 # ModelRegistry resolves the model class by this name.  The "Embedding"
 # suffix follows the vLLM convention for pooling-runner models.
-_GR_MODELS: Dict[str, Tuple[str, str]] = {
+_GR_MODEL_ARCHITECTURES: Dict[str, Tuple[str, str]] = {
     "HSTUEmbeddingModel": ("hstu_vllm", "HSTUForRecommendation"),
 }
 
@@ -52,16 +55,16 @@ _GR_MODELS: Dict[str, Tuple[str, str]] = {
 # Registration State
 # ============================================================================
 
-_GR_MODELS_REGISTERED = False
+_GR_MODEL_ARCHITECTURES_REGISTERED = False
 
 
 # ============================================================================
 # Public API
 # ============================================================================
 
-def register_gr_models_to_vllm() -> bool:
+def register_gr_model_architectures() -> bool:
     """
-    Register GR models into vLLM's global ModelRegistry.
+    Register GR model architectures into vLLM's global ModelRegistry.
 
     Uses the stable ``ModelRegistry.register_model(arch, "module:class")``
     API which supports lazy loading and avoids premature CUDA init.
@@ -69,9 +72,9 @@ def register_gr_models_to_vllm() -> bool:
     Returns:
         True if registration succeeded or already registered
     """
-    global _GR_MODELS_REGISTERED
+    global _GR_MODEL_ARCHITECTURES_REGISTERED
 
-    if _GR_MODELS_REGISTERED:
+    if _GR_MODEL_ARCHITECTURES_REGISTERED:
         return True
 
     if not _HAS_VLLM_REGISTRY:
@@ -81,7 +84,7 @@ def register_gr_models_to_vllm() -> bool:
     try:
         supported_archs = VLLMModelRegistry.get_supported_archs()
 
-        for arch, (mod_name, cls_name) in _GR_MODELS.items():
+        for arch, (mod_name, cls_name) in _GR_MODEL_ARCHITECTURES.items():
             if arch not in supported_archs:
                 VLLMModelRegistry.register_model(
                     arch,
@@ -89,25 +92,30 @@ def register_gr_models_to_vllm() -> bool:
                 )
                 logger.debug(f"Registered {arch} with vLLM ModelRegistry")
 
-        _GR_MODELS_REGISTERED = True
-        logger.info("GR models registered with vLLM ModelRegistry")
+        _GR_MODEL_ARCHITECTURES_REGISTERED = True
+        logger.info("GR model architectures registered with vLLM ModelRegistry")
         return True
 
     except Exception as e:
-        logger.error(f"Failed to register GR models: {e}")
+        logger.error(f"Failed to register GR model architectures: {e}")
         return False
+
+
+def register_gr_models_to_vllm() -> bool:
+    """Backward-compatible alias for the old registry entrypoint."""
+    return register_gr_model_architectures()
 
 
 def is_registered() -> bool:
     """Check if GR models are registered with vLLM."""
-    return _GR_MODELS_REGISTERED
+    return _GR_MODEL_ARCHITECTURES_REGISTERED
 
 
 def get_gr_architectures() -> list:
     """Get list of supported GR architectures."""
-    return list(_GR_MODELS.keys())
+    return list(_GR_MODEL_ARCHITECTURES.keys())
 
 
 def is_gr_model(arch: str) -> bool:
     """Check if an architecture is a GR model."""
-    return arch in _GR_MODELS
+    return arch in _GR_MODEL_ARCHITECTURES

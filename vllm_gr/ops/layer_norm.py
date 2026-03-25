@@ -16,6 +16,9 @@
 
 """
 Contains standard LayerNorm and SwishLayerNorm (LayerNorm + SiLU activation) implementations.
+
+In this fork, both public entry points currently execute the PyTorch kernels
+only. The ``kernel`` argument is preserved for upstream API compatibility.
 """
 
 import torch
@@ -37,31 +40,27 @@ def layer_norm(
     kernel: HammerKernel = HammerKernel.PYTORCH,
 ) -> torch.Tensor:
     """
-    LayerNorm function interface supporting multiple kernel implementations.
+    LayerNorm function interface.
 
     Args:
         input: Input tensor
         weight: Scale weight parameter
         bias: Bias parameter
         eps: Numerical stability parameter, default 1e-5
-        kernel: Computation kernel type, currently only supports PYTORCH
+        kernel: Desired computation kernel type. Currently ignored.
 
     Returns:
         Normalized tensor
 
-    Raises:
-        ValueError: When using unsupported kernel type
     """
-    if kernel == HammerKernel.PYTORCH:
-        return pytorch_layer_norm(
-            input,
-            [input.shape[-1]],
-            weight,
-            bias,
-            eps,
-        )
-    else:
-        raise ValueError("Currently, kernel only supports HammerKernel.PYTORCH.")
+    del kernel
+    return pytorch_layer_norm(
+        input,
+        [input.shape[-1]],
+        weight,
+        bias,
+        eps,
+    )
 
 
 class LayerNorm(HammerModule):
@@ -118,31 +117,27 @@ def swish_layer_norm(
     kernel: HammerKernel = HammerKernel.PYTORCH,
 ) -> torch.Tensor:
     """
-    Swish + LayerNorm function interface supporting multiple kernel implementations.
+    Swish + LayerNorm function interface.
 
     Args:
         input: Input tensor
         weight: Scale weight parameter
         bias: Bias parameter
         eps: Numerical stability parameter, default 1e-5
-        kernel: Computation kernel type, currently only supports PYTORCH
+        kernel: Desired computation kernel type. Currently ignored.
 
     Returns:
         Tensor after LayerNorm and Swish activation
 
-    Raises:
-        ValueError: When using unsupported kernel type
     """
-    if kernel == HammerKernel.PYTORCH:
-        return pytorch_swish_layer_norm(
-            input,
-            [input.shape[-1]],
-            weight,
-            bias,
-            eps,
-        )
-    else:
-        raise ValueError("Currently, kernel only supports HammerKernel.PYTORCH.")
+    del kernel
+    return pytorch_swish_layer_norm(
+        input,
+        [input.shape[-1]],
+        weight,
+        bias,
+        eps,
+    )
 
 
 class SwishLayerNorm(HammerModule):

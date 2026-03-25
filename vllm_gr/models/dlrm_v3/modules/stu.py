@@ -2,7 +2,13 @@
 # Ported to vllm-GR with modifications.
 # Licensed under the Apache License, Version 2.0
 
-"""STU (Sequential Transducer Unit) module for HSTU model"""
+"""STU (Sequential Transducer Unit) module for HSTU model.
+
+This fork keeps the batch scoring forward path used by inference, but does not
+currently restore the full upstream incremental KV-cache update helpers. The
+`cached_forward()` interface is left in place so future work can add true
+incremental support without changing call sites.
+"""
 
 import abc
 from dataclasses import dataclass
@@ -18,7 +24,12 @@ from vllm_gr.ops.jagged_tensors import concat_2D_jagged, split_2D_jagged
 
 
 class STU(HammerModule, abc.ABC):
-    """Abstract base class for STU modules."""
+    """Abstract base class for STU modules.
+
+    In this inference-focused fork, subclasses are expected to support the
+    batch forward path first. Incremental cache semantics remain intentionally
+    limited compared with the training/full-runtime upstream implementation.
+    """
     
     def cached_forward(
         self,
@@ -27,6 +38,7 @@ class STU(HammerModule, abc.ABC):
         max_kv_caching_len: int = 0,
         kv_caching_lengths: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        """Incremental forward is intentionally not implemented in this fork."""
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -239,4 +251,3 @@ class STUStack(STU):
                 kv_caching_lengths=kv_caching_lengths,
             )
         return x
-

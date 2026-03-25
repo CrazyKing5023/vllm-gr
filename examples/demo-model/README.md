@@ -5,8 +5,12 @@ Minimal HSTU model configuration for testing and development.
 ## Purpose
 
 The `demo-model` directory contains a `config.json` that defines a small
-HSTU model architecture. **No weight files are included** — vllm-GR
-initialises random weights when no weight file is present.
+HSTU model architecture. **No weight files are included**.
+
+To run this directory intentionally, the caller must now opt in to
+dummy/random weight loading explicitly (for example,
+`allow_missing_weights=True`). This keeps real model directories in
+strict fail-fast mode while preserving a clear demo path.
 
 Use cases:
 - Validating the inference pipeline without trained weights
@@ -32,6 +36,7 @@ llm = GRLLM(
     model="examples/demo-model",
     max_seq_len=64,
     max_candidates=50,
+    allow_missing_weights=True,
 )
 
 prompt: GRPrompt = {
@@ -44,7 +49,6 @@ prompt: GRPrompt = {
         {"item_candidate_id": 100, "query_time": 1609470000},
         {"item_candidate_id": 200, "query_time": 1609470000},
     ],
-    "num_recommendations": 2,
 }
 
 outputs = llm.recommend(prompts=[prompt])
@@ -63,6 +67,14 @@ subclass). Key sections:
 | Features | `hstu_uih_feature_names`, `hstu_candidate_feature_names`, `merge_uih_candidate_feature_mapping` |
 | Embeddings | `embedding_tables` (list of name / dim / num_embeddings / feature_names) |
 | Tasks | `task_names` (e.g. `["is_click"]`) |
+
+For this minimal demo config, the candidate side only keeps the core fields
+needed by `simple_inference.py`:
+
+- `item_candidate_id`
+- `query_time`
+
+It intentionally does not declare candidate weight/watchtime features.
 
 ## Using Trained Weights
 

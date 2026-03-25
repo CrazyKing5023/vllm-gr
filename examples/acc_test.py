@@ -66,10 +66,10 @@ def _parse_args() -> argparse.Namespace:
         help="GRLLM max_candidates (default: 256).",
     )
     parser.add_argument(
-        "--default-top-k",
-        type=int,
-        default=10,
-        help="GRLLM default_top_k (default: 10).",
+        "--case-id",
+        type=str,
+        default=None,
+        help="Optional single case_id to run.",
     )
     return parser.parse_args()
 
@@ -77,6 +77,18 @@ def _parse_args() -> argparse.Namespace:
 def _load_json(path: str) -> dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _select_cases(
+    cases: list[dict[str, Any]],
+    case_id: str | None,
+) -> list[dict[str, Any]]:
+    if case_id is None:
+        return cases
+    selected = [case for case in cases if case["case_id"] == case_id]
+    if not selected:
+        raise ValueError(f"case_id not found in input JSON: {case_id}")
+    return selected
 
 
 def _validate_input_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -243,15 +255,16 @@ def _mean_relative_error(
 def main() -> int:
     args = _parse_args()
     input_payload = _load_json(args.input_json)
-    input_cases = _validate_input_payload(input_payload)
-
+    input_cases = _select_cases(
+        _validate_input_payload(input_payload),
+        args.case_id,
+    )
     from vllm_gr import GRLLM
 
     llm = GRLLM(
         model=args.model,
         max_seq_len=args.max_seq_len,
         max_candidates=args.max_candidates,
-        default_top_k=args.default_top_k,
     )
 
     result_cases: list[dict[str, Any]] = []

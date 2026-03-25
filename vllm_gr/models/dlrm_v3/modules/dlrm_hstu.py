@@ -29,7 +29,6 @@ from vllm_gr.models.dlrm_v3.common import (
 from vllm_gr.models.dlrm_v3.modules.hstu_transducer import HSTUTransducer
 from vllm_gr.models.dlrm_v3.modules.multitask_module import (
     DefaultMultitaskModule,
-    MultitaskTaskType,
     TaskConfig,
 )
 from vllm_gr.models.dlrm_v3.modules.positional_encoder import HSTUPositionalEncoder
@@ -41,6 +40,10 @@ from vllm_gr.models.dlrm_v3.modules.preprocessors import ContextualPreprocessor
 from vllm_gr.models.dlrm_v3.modules.stu import STU, STULayer, STULayerConfig, STUStack
 from vllm_gr.ops.jagged_tensors import concat_2D_jagged
 from vllm_gr.ops.layer_norm import LayerNorm, SwishLayerNorm
+from vllm_gr.utils import (
+    ReliableOps,
+    get_hstu_autocast_context,
+)
 
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -48,7 +51,7 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 def _cumsum(lengths: torch.Tensor) -> torch.Tensor:
     """Compute inclusive prefix-sum with leading zero (complete cumsum)."""
-    return torch.ops.fbgemm.asynchronous_complete_cumsum(lengths)
+    return ReliableOps.asynchronous_complete_cumsum(lengths)
 
 
 class SequenceEmbedding(NamedTuple):
@@ -93,29 +96,6 @@ class DlrmHSTUConfig:
     enable_postprocessor: bool = True
     use_layer_norm_postprocessor: bool = False
 
-
-def _get_supervision_labels_and_weights(
-    supervision_bitmasks: torch.Tensor,
-    watchtime_sequence: torch.Tensor,
-    task_configs: List[TaskConfig],
-) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
-    """Extract supervision labels and weights for each task."""
-    supervision_labels: Dict[str, torch.Tensor] = {}
-    supervision_weights: Dict[str, torch.Tensor] = {}
-
-    for task in task_configs:
-        if task.task_type == MultitaskTaskType.REGRESSION:
-            supervision_labels[task.task_name] = watchtime_sequence.to(torch.float32)
-        elif task.task_type == MultitaskTaskType.BINARY_CLASSIFICATION:
-            supervision_labels[task.task_name] = (
-                torch.bitwise_and(supervision_bitmasks, task.task_weight) > 0
-            ).to(torch.float32)
-        else:
-            raise RuntimeError("Unsupported MultitaskTaskType")
-
-    return supervision_labels, supervision_weights
-
-
 class DlrmHSTU(HammerModule):
     """
     DLRM_v3 HSTU Model.
@@ -133,22 +113,22 @@ class DlrmHSTU(HammerModule):
         is_inference: bool = True,
         is_dense: bool = False,
         bf16_training: bool = True,
+        embedding_device: Optional[torch.device] = None,
     ) -> None:
         super().__init__(is_inference=is_inference)
         logger.info(f"Initialize HSTU module with configs {hstu_configs}")
 
         self._hstu_configs = hstu_configs
         self._bf16_training: bool = bf16_training
+        self._embedding_device = self._consume_embedding_device(embedding_device)
         set_static_max_seq_lens([self._hstu_configs.max_seq_len])
 
         if not is_dense:
-            # Embeddings live on CPU to avoid GPU OOM for large tables.
-            # HSTUForRecommendation.forward() calls preprocess() on CPU for
-            # embedding lookups, then transfers results to GPU for main_forward().
+            # Phase 1 keeps embedding execution on the conservative runtime device.
             self._embedding_collection: EmbeddingCollection = EmbeddingCollection(
                 tables=list(embedding_tables.values()),
                 need_indices=False,
-                device=torch.device("cpu"),
+                device=self._embedding_device,
             )
 
         # multitask configs must be sorted by task types
@@ -274,6 +254,18 @@ class DlrmHSTU(HammerModule):
             ),
             LayerNorm(hstu_configs.hstu_transducer_embedding_dim),
         ).apply(init_mlp_weights_optional_bias)
+
+    @staticmethod
+    def _consume_embedding_device(
+        embedding_device: Optional[torch.device],
+    ) -> torch.device:
+        """Consume an already-resolved embedding device from runtime policy."""
+        if embedding_device is None:
+            raise ValueError(
+                "DlrmHSTU requires an explicit embedding_device. "
+                "Callers must pass the resolved phase-1 runtime device."
+            )
+        return torch.device(embedding_device)
 
     # =========================================================================
     # preprocess: KJT merge → EmbeddingCollection → payload + seq_embeddings
@@ -451,9 +443,13 @@ class DlrmHSTU(HammerModule):
         if (not self.is_inference) and self._bf16_training:
             embedding = embedding.to(torch.bfloat16)
 
-        with torch.autocast(
-            "cuda",
-            dtype=torch.bfloat16,
+        seq_payloads = self._construct_payload(
+            payload_features=payload_features,
+            seq_embeddings=seq_embeddings,
+        )
+
+        with get_hstu_autocast_context(
+            embedding,
             enabled=(not self.is_inference) and self._bf16_training,
         ):
             candidates_user_embeddings, _ = self._hstu_transducer(
@@ -464,10 +460,7 @@ class DlrmHSTU(HammerModule):
                 seq_embeddings=embedding,
                 seq_lengths=source_lengths,
                 seq_timestamps=source_timestamps,
-                seq_payloads=self._construct_payload(
-                    payload_features=payload_features,
-                    seq_embeddings=seq_embeddings,
-                ),
+                seq_payloads=seq_payloads,
                 num_targets=num_candidates,
             )
 
@@ -488,11 +481,9 @@ class DlrmHSTU(HammerModule):
     ) -> Tuple[
         torch.Tensor,
         torch.Tensor,
-        Dict[str, torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
         Optional[torch.Tensor],
     ]:
+        merged_embedding_keys: List[str] = []
         for (
             uih_feature_name,
             candidate_feature_name,
@@ -513,6 +504,8 @@ class DlrmHSTU(HammerModule):
                         kernel=self.hammer_kernel(),
                     ),
                 )
+                if uih_feature_name not in merged_embedding_keys:
+                    merged_embedding_keys.append(uih_feature_name)
 
         with record_function("## item_forward ##"):
             candidates_item_embeddings = self._item_forward(seq_embeddings)
@@ -527,42 +520,19 @@ class DlrmHSTU(HammerModule):
             )
 
         with record_function("## multitask_module ##"):
-            if self._is_inference:
-                supervision_labels: Dict[str, torch.Tensor] = {}
-                supervision_weights: Dict[str, torch.Tensor] = {}
-            else:
-                supervision_labels, supervision_weights = (
-                    _get_supervision_labels_and_weights(
-                        supervision_bitmasks=payload_features[
-                            self._hstu_configs.candidates_weight_feature_name
-                        ],
-                        watchtime_sequence=payload_features[
-                            self._hstu_configs.candidates_watchtime_feature_name
-                        ],
-                        task_configs=self._multitask_configs,
-                    )
-                )
-            mt_target_preds, mt_target_labels, mt_target_weights, mt_losses = (
+            mt_target_preds, _mt_target_labels, _mt_target_weights, _mt_losses = (
                 self._multitask_module(
                     encoded_user_embeddings=candidates_user_embeddings,
                     item_embeddings=candidates_item_embeddings,
-                    supervision_labels=supervision_labels,
-                    supervision_weights=supervision_weights,
+                    supervision_labels={},
+                    supervision_weights={},
                 )
             )
-
-        aux_losses: Dict[str, torch.Tensor] = {}
-        if not self._is_inference and self.training:
-            for i, task in enumerate(self._multitask_configs):
-                aux_losses[task.task_name] = mt_losses[i]
 
         return (
             candidates_user_embeddings,
             candidates_item_embeddings,
-            aux_losses,
             mt_target_preds,
-            mt_target_labels,
-            mt_target_weights,
         )
 
     # =========================================================================
@@ -576,9 +546,6 @@ class DlrmHSTU(HammerModule):
     ) -> Tuple[
         torch.Tensor,
         torch.Tensor,
-        Dict[str, torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
         Optional[torch.Tensor],
     ]:
         with record_function("## preprocess ##"):

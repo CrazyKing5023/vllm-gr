@@ -1,13 +1,11 @@
 {
   "model_type": "hstu",
   "architectures": ["HSTUEmbeddingModel"],
-  "torch_dtype": "bfloat16",
-
   "is_text_encoder": true,
   "is_encoder_decoder": false,
   "is_attention_free": true,
 
-  "max_seq_len": 16384,
+  "max_seq_len": 128,
   "max_num_candidates": 10,
   "max_num_candidates_inference": 5,
 
@@ -73,37 +71,43 @@
     {
       "name": "movie_id",
       "embedding_dim": 512,
-      "num_embeddings": 10000000,
+      "data_type": "fp16",
+      "num_embeddings": 10000,
       "feature_names": ["movie_id", "item_movie_id"]
     },
     {
       "name": "user_id",
       "embedding_dim": 512,
-      "num_embeddings": 10000000,
+      "data_type": "fp16",
+      "num_embeddings": 10000,
       "feature_names": ["user_id"]
     },
     {
       "name": "sex",
       "embedding_dim": 512,
-      "num_embeddings": 10000000,
+      "data_type": "fp16",
+      "num_embeddings": 8,
       "feature_names": ["sex"]
     },
     {
       "name": "age_group",
       "embedding_dim": 512,
-      "num_embeddings": 10000000,
+      "data_type": "fp16",
+      "num_embeddings": 16,
       "feature_names": ["age_group"]
     },
     {
       "name": "occupation",
       "embedding_dim": 512,
-      "num_embeddings": 10000000,
+      "data_type": "fp16",
+      "num_embeddings": 32,
       "feature_names": ["occupation"]
     },
     {
       "name": "zip_code",
       "embedding_dim": 512,
-      "num_embeddings": 10000000,
+      "data_type": "fp16",
+      "num_embeddings": 10000,
       "feature_names": ["zip_code"]
     }
   ]

@@ -28,11 +28,12 @@ from vllm_gr.models.dlrm_v3.common import (
 from vllm_gr.models.dlrm_v3.modules.action_encoder import ActionEncoder
 from vllm_gr.ops.jagged_tensors import concat_2D_jagged
 from vllm_gr.ops.layer_norm import LayerNorm, SwishLayerNorm
+from vllm_gr.utils import ReliableOps
 
 
 def complete_cumsum(lengths: torch.Tensor) -> torch.Tensor:
-    """Compute complete cumulative sum (starting with 0) via fbgemm only."""
-    return torch.ops.fbgemm.asynchronous_complete_cumsum(lengths)
+    """Compute complete cumulative sum (starting with 0)."""
+    return ReliableOps.asynchronous_complete_cumsum(lengths)
 
 
 class InputPreprocessor(HammerModule):

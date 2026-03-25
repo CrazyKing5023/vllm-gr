@@ -14,51 +14,45 @@ HSTU is a recommendation model (not LLM):
 - Processes user history + candidates in a single forward pass
 - Returns ranking scores instead of token probabilities
 
-Device placement:
-- Sparse (embedding) weights live on CPU to handle large tables without GPU OOM
-- Dense (MLP/Attention) weights live on GPU for fast computation
-- Forward pass: preprocess(CPU) → move_sparse_output_to_device → main_forward(GPU)
+Runtime topology:
+- Sparse (embedding) weights stay on the embedding device
+- Dense (MLP/Attention) weights run on the active accelerator
+- Forward pass: preprocess(embedding device) -> transfer -> main_forward(dense device)
 """
 
+from functools import partial
+import inspect
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 import logging
 
 import torch
 import torch.nn as nn
 
+from vllm_gr.utils import (
+    move_hstu_sparse_inputs_to_device,
+    move_hstu_sparse_outputs_to_device,
+    resolve_hstu_runtime_devices,
+)
+
 logger = logging.getLogger(__name__)
 
 
-def move_sparse_output_to_device(
-    seq_embeddings: Dict[str, Any],
-    payload_features: Dict[str, torch.Tensor],
-    uih_seq_lengths: torch.Tensor,
-    num_candidates: torch.Tensor,
-    device: torch.device,
-) -> Tuple[
-    Dict[str, Any],
-    Dict[str, torch.Tensor],
-    torch.Tensor,
-    torch.Tensor,
-]:
-    """Move sparse module (CPU) outputs to GPU for dense forward pass.
+def _get_callable_keyword_names(callable_obj: Any) -> tuple[set[str], bool]:
+    """Return accepted keyword names and whether ``**kwargs`` is supported."""
+    signature = inspect.signature(callable_obj)
+    keyword_names: set[str] = set()
+    accepts_var_kwargs = False
 
-    Converts embedding outputs to bfloat16 for efficient GPU computation.
-    """
-    from vllm_gr.models.dlrm_v3.modules.dlrm_hstu import SequenceEmbedding
+    for parameter in signature.parameters.values():
+        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+            accepts_var_kwargs = True
+        elif parameter.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            keyword_names.add(parameter.name)
 
-    num_candidates = num_candidates.to(device)
-    uih_seq_lengths = uih_seq_lengths.to(device)
-    seq_embeddings = {
-        k: SequenceEmbedding(
-            lengths=seq_embeddings[k].lengths.to(device),
-            embedding=seq_embeddings[k].embedding.to(device).to(torch.bfloat16),
-        )
-        for k in seq_embeddings.keys()
-    }
-    for k, v in payload_features.items():
-        payload_features[k] = v.to(device)
-    return seq_embeddings, payload_features, uih_seq_lengths, num_candidates
+    return keyword_names, accepts_var_kwargs
 
 
 class HSTUPooler(nn.Module):
@@ -128,16 +122,12 @@ class HSTUForRecommendation(nn.Module):
             config = vllm_config.model_config.hf_config
 
         self.config = config
-
-        # Determine GPU device for dense forward pass.
-        # During vLLM model loading, the default device context is set to the
-        # target GPU. We capture it here for move_sparse_output_to_device.
-        if device is not None:
-            self._gpu_device = device
-        elif torch.cuda.is_available():
-            self._gpu_device = torch.device(torch.cuda.current_device())
-        else:
-            self._gpu_device = torch.device("cpu")
+        dense_device_override = (
+            torch.device(device) if device is not None else None
+        )
+        self._set_runtime_devices(
+            dense_device_override=dense_device_override,
+        )
 
         self._create_hstu_model()
 
@@ -145,58 +135,111 @@ class HSTUForRecommendation(nn.Module):
 
         logger.info(
             "HSTUForRecommendation initialized: layers=%d, heads=%d, dim=%d, "
-            "gpu_device=%s, embedding_device=cpu",
+            "dense_device=%s, embedding_device=%s",
             self.config.hstu_attn_num_layers,
             self.config.hstu_num_heads,
             self.config.hstu_transducer_embedding_dim,
-            self._gpu_device,
+            self._dense_device,
+            self._embedding_device,
         )
 
     @property
     def pooler(self):
         return self._pooler
 
+    @staticmethod
+    def _split_pooling_predictions(
+        predictions: torch.Tensor,
+        num_candidates: torch.Tensor,
+    ) -> list[torch.Tensor] | torch.Tensor:
+        """Return one pooling output per request for vLLM's scheduler contract.
+
+        HSTU predicts over the concatenated candidate axis for the whole batch.
+        vLLM pooling expects an iterable whose length matches the scheduled
+        request count, so we split the last dimension back into per-request
+        tensors using the candidate counts produced during preprocess().
+        """
+        if num_candidates.numel() == 0:
+            return []
+
+        split_sizes = [int(size) for size in num_candidates.reshape(-1).tolist()]
+        total_candidates = sum(split_sizes)
+
+        if predictions.shape[-1] != total_candidates:
+            raise ValueError(
+                "HSTU pooling split mismatch: "
+                f"predictions.shape={tuple(predictions.shape)}, "
+                f"sum(num_candidates)={total_candidates}"
+            )
+
+        return list(torch.split(predictions, split_sizes, dim=-1))
+
     def _build_embedding_configs(self) -> Dict[str, "EmbeddingConfig"]:
         """Convert HSTUConfig.embedding_tables (list of dicts) to TorchRec EmbeddingConfig dict."""
         from torchrec.modules.embedding_configs import EmbeddingConfig, DataType
 
+        def _resolve_data_type(raw_value: Any) -> DataType:
+            if isinstance(raw_value, DataType):
+                return raw_value
+            normalized = str(raw_value).upper()
+            bf16_dtype = getattr(DataType, "BF16", None)
+            aliases = {
+                "FP16": DataType.FP16,
+                "FLOAT16": DataType.FP16,
+                "HALF": DataType.FP16,
+                "FP32": DataType.FP32,
+                "FLOAT32": DataType.FP32,
+            }
+            if bf16_dtype is not None:
+                aliases["BF16"] = bf16_dtype
+                aliases["BFLOAT16"] = bf16_dtype
+            elif normalized in {"BF16", "BFLOAT16"}:
+                raise ValueError(
+                    "embedding table data_type 'bf16' is not supported by the "
+                    "current torchrec DataType runtime"
+                )
+            try:
+                return aliases[normalized]
+            except KeyError as exc:
+                raise ValueError(f"Unsupported embedding table data_type: {raw_value!r}") from exc
+
         configs: Dict[str, EmbeddingConfig] = {}
+        default_data_type = getattr(
+            self.config,
+            "embedding_table_data_type",
+            "FP16",
+        )
+        accepted_kwargs, accepts_var_kwargs = _get_callable_keyword_names(
+            EmbeddingConfig,
+        )
         for table_cfg in self.config.embedding_tables:
             name = table_cfg["name"]
+            embedding_kwargs: Dict[str, Any] = {
+                "num_embeddings": table_cfg["num_embeddings"],
+                "embedding_dim": table_cfg["embedding_dim"],
+                "name": name,
+                "data_type": _resolve_data_type(
+                    table_cfg.get("data_type", default_data_type)
+                ),
+                "feature_names": table_cfg.get("feature_names", [name]),
+            }
+
+            for key, value in table_cfg.items():
+                if key in {
+                    "name",
+                    "num_embeddings",
+                    "embedding_dim",
+                    "data_type",
+                    "feature_names",
+                }:
+                    continue
+                if accepts_var_kwargs or key in accepted_kwargs:
+                    embedding_kwargs[key] = value
+
             configs[name] = EmbeddingConfig(
-                num_embeddings=table_cfg["num_embeddings"],
-                embedding_dim=table_cfg["embedding_dim"],
-                name=name,
-                data_type=DataType.FP16,
-                feature_names=table_cfg.get("feature_names", [name]),
+                **embedding_kwargs,
             )
         return configs
-
-    def _cast_dense_submodules_to_bf16(self) -> None:
-        """Cast dense HSTU submodules to bf16 without touching embeddings."""
-        dense_submodule_names = (
-            "_multitask_module",
-            "_hstu_transducer",
-            "_item_embedding_mlp",
-        )
-
-        casted = []
-        for name in dense_submodule_names:
-            module = getattr(self.hstu, name, None)
-            if module is None:
-                logger.warning(
-                    "Skipping dense bf16 cast: HSTU submodule %s not found",
-                    name,
-                )
-                continue
-            module.to(dtype=torch.bfloat16)
-            casted.append(name)
-
-        self.hstu.set_training_dtype(torch.bfloat16)
-        logger.info(
-            "Cast dense HSTU submodules to bf16: %s; embedding_collection left unchanged",
-            ", ".join(casted) if casted else "<none>",
-        )
 
     # ------------------------------------------------------------------
     # Model creation
@@ -263,9 +306,43 @@ class HSTUForRecommendation(nn.Module):
             embedding_tables=embedding_configs,
             is_inference=self.config.is_inference,
             is_dense=not embedding_configs,
+            embedding_device=self._embedding_device,
         )
-        self._cast_dense_submodules_to_bf16()
-        
+        self._patch_embedding_collection_for_inference()
+
+    def _patch_embedding_collection_for_inference(self) -> None:
+        """Align inference embedding lookup behavior with the golden sparse path."""
+        if not getattr(self.config, "is_inference", True):
+            return
+
+        embedding_collection = getattr(self.hstu, "_embedding_collection", None)
+        if embedding_collection is None:
+            return
+
+        from vllm_gr.model_executor.models.embedding_collection_patch import (
+            ec_patched_forward_wo_embedding_copy,
+        )
+
+        embedding_collection.forward = partial(
+            ec_patched_forward_wo_embedding_copy,
+            embedding_collection,
+        )
+
+    def _get_dense_forward_dtype(self) -> torch.dtype:
+        """Return the dense-phase dtype expected by downstream HSTU modules."""
+        item_mlp = getattr(self.hstu, "_item_embedding_mlp", None)
+        if item_mlp is not None and len(item_mlp) > 0:
+            first_layer = item_mlp[0]
+            weight = getattr(first_layer, "weight", None)
+            if weight is not None:
+                return weight.dtype
+
+        for name, param in self.hstu.named_parameters():
+            if "embedding_collection" not in name:
+                return param.dtype
+
+        return torch.float32
+
     # ------------------------------------------------------------------
     # vLLM interface
     # ------------------------------------------------------------------
@@ -282,23 +359,34 @@ class HSTUForRecommendation(nn.Module):
     ) -> torch.Tensor:
         """Two-phase forward pass with sparse/dense device separation.
 
-        Phase 1 (CPU): preprocess() — embedding lookups via EmbeddingCollection
-                       on CPU. Produces seq_embeddings + payload_features.
-        Transfer:      move_sparse_output_to_device() — CPU → GPU.
-        Phase 2 (GPU): main_forward() — attention, MLPs, multitask prediction
-                       on GPU.
+        Phase 1 (embedding device): preprocess() — embedding lookups via
+                       EmbeddingCollection on the sparse runtime device
+                       (CPU by default). Produces seq_embeddings +
+                       payload_features.
+        Transfer:      move_sparse_output_to_device() — embedding device ->
+                       dense device.
+        Phase 2 (dense device): main_forward() — attention, MLPs,
+                       multitask prediction on the active accelerator.
 
         When uih_features/candidates_features are None (vLLM warmup),
-        returns a zero tensor on GPU.
+        returns a zero tensor on the dense execution device.
         """
+        dense_device = self._get_device()
         if uih_features is None or candidates_features is None:
             total_tokens = input_ids.numel() if input_ids is not None else 1
             return torch.zeros(
                 total_tokens, self.config.hstu_transducer_embedding_dim,
-                device=self._gpu_device,
+                device=dense_device,
             )
 
-        # Phase 1: sparse preprocess on CPU (embedding lookups)
+        # Phase 1: explicitly re-home sparse inputs onto the embedding device.
+        uih_features, candidates_features = move_hstu_sparse_inputs_to_device(
+            uih_features=uih_features,
+            candidates_features=candidates_features,
+            device=self._embedding_device,
+        )
+
+        # Sparse preprocess on the embedding device.
         (
             seq_embeddings,
             payload_features,
@@ -311,22 +399,21 @@ class HSTUForRecommendation(nn.Module):
             candidates_features=candidates_features,
         )
 
-        # Transfer: CPU → GPU
+        # Transfer: embedding device -> dense execution device.
         seq_embeddings, payload_features, uih_seq_lengths, num_candidates = (
-            move_sparse_output_to_device(
+            move_hstu_sparse_outputs_to_device(
                 seq_embeddings=seq_embeddings,
                 payload_features=payload_features,
                 uih_seq_lengths=uih_seq_lengths,
                 num_candidates=num_candidates,
-                device=self._gpu_device,
+                device=dense_device,
+                source_device=self._embedding_device,
+                target_dtype=self._get_dense_forward_dtype(),
             )
         )
 
-        # Phase 2: dense forward on GPU
-        (
-            _user_emb, _item_emb, _aux,
-            predictions, _labels, _weights,
-        ) = self.hstu.main_forward(
+        # Phase 2: dense forward on the active accelerator.
+        _user_emb, _item_emb, predictions = self.hstu.main_forward(
             seq_embeddings=seq_embeddings,
             payload_features=payload_features,
             max_uih_len=max_uih_len,
@@ -337,26 +424,26 @@ class HSTUForRecommendation(nn.Module):
 
         if predictions is None:
             predictions = torch.zeros(
-                1, 1, device=self._gpu_device,
+                1, 1, device=dense_device,
             )
         elif predictions.dim() == 1:
             predictions = predictions.unsqueeze(0)
 
-        return predictions
+        return self._split_pooling_predictions(predictions, num_candidates)
 
     def load_weights(
         self, weights: Iterable[Tuple[str, torch.Tensor]],
     ) -> Set[str]:
         """Load model weights with sparse/dense device separation.
 
-        - Sparse weights (embedding_collection) stay on CPU
-        - Dense weights go to GPU
+        - Sparse weights (embedding_collection) stay on the embedding device
+        - Dense weights go to the active accelerator
         - Registered buffers are loaded manually (AutoWeightsLoader
           only handles nn.Module and nn.Parameter)
 
         Device placement is automatic: parameters were created on their
-        target device (CPU for embeddings via explicit device="cpu",
-        GPU for everything else via vLLM's default device context).
+        target device (embedding device for sparse weights, dense device
+        for everything else via vLLM's default device context).
         param.data.copy_() copies to wherever the parameter already lives.
         """
         from vllm.model_executor.models.utils import AutoWeightsLoader
@@ -395,12 +482,37 @@ class HSTUForRecommendation(nn.Module):
         loaded |= loader.load_weights(iter(param_weights))
 
         logger.info(
-            "Loaded %d weights: %d sparse (CPU), %d dense (GPU), "
+            "Loaded %d weights: %d sparse (%s), %d dense (%s), "
             "%d buffers",
-            len(loaded), sparse_count, dense_count, len(buffer_weights),
+            len(loaded),
+            sparse_count,
+            getattr(self.hstu, "_embedding_device", torch.device("cpu")).type,
+            dense_count,
+            self._get_device().type,
+            len(buffer_weights),
         )
         return loaded
 
+    @classmethod
+    def from_model_config(
+        cls,
+        config: Any,
+        device: torch.device,
+        **kwargs,
+    ) -> "HSTUForRecommendation":
+        return cls(config=config, device=device, **kwargs)
+
     def _get_device(self) -> torch.device:
-        """Return the GPU device for dense computation."""
-        return self._gpu_device
+        """Return the dense execution device for HSTU."""
+        return self._dense_device
+
+    def _set_runtime_devices(
+        self,
+        *,
+        dense_device_override: Optional[torch.device] = None,
+    ) -> None:
+        runtime_devices = resolve_hstu_runtime_devices(
+            explicit_dense_device=dense_device_override,
+        )
+        self._dense_device = runtime_devices.dense_device
+        self._embedding_device = runtime_devices.embedding_device

@@ -15,8 +15,8 @@ Activation:
   ``load_general_plugins()`` calls it in every process (main, EngineCore
   subprocess, Worker subprocess) *before* any MsgpackDecoder is created.
 
-  Secondary — ``import vllm_gr`` triggers ``apply_patches_if_needed()`` for
-  the main process where the user script runs.
+  Explicit main-process init — ``vllm_gr.plugin.initialize_runtime()`` is
+  called by ``GREngineArgs.create_engine_config()`` before engine creation.
 
   Defense-in-depth — ``GRWorker.init_device()`` calls ``re_apply_patches()``
   to cover modules loaded after the initial plugin execution.

@@ -35,7 +35,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from runtime_utils import add_repo_root_to_path, add_runtime_args, describe_runtime
+
+add_repo_root_to_path(__file__)
 
 
 def check_model_dir(model_path: str) -> dict:
@@ -65,7 +67,7 @@ def check_model_dir(model_path: str) -> dict:
     return info
 
 
-def run_inference(model_path: str):
+def run_inference(model_path: str, expected_device: str | None = None):
     """Load converted model and run a movielens-1m recommendation request."""
     from vllm_gr import GRLLM, GRPrompt
 
@@ -94,9 +96,9 @@ def run_inference(model_path: str):
     llm = GRLLM(
         model=model_path,
         max_seq_len=128,
-        max_candidates=32,
-        default_top_k=32,
+        max_candidates=10,
     )
+    active_device = describe_runtime(expected_device=expected_device)
     print("\n  Model loaded successfully!")
 
     # GRPrompt with movielens-1m feature names.
@@ -133,21 +135,6 @@ def run_inference(model_path: str):
             {"item_movie_id": 1580, "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
             {"item_movie_id": 1270, "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
             {"item_movie_id": 593,  "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
-            {"item_movie_id": 1,    "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
-            {"item_movie_id": 260,  "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
-            {"item_movie_id": 1196, "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
-            {"item_movie_id": 1210, "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
-            {"item_movie_id": 2028, "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
-            {"item_movie_id": 2762, "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
-            {"item_movie_id": 2997, "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
-            {"item_movie_id": 1097, "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
-            {"item_movie_id": 3578, "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
-            {"item_movie_id": 480,  "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
-            {"item_movie_id": 589,  "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
-            {"item_movie_id": 47,   "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
-            {"item_movie_id": 50,   "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
-            {"item_movie_id": 527,  "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
-            {"item_movie_id": 608,  "item_query_time": 978310000, "item_dummy_watchtime": 0, "item_movie_rating": 0, "item_action_weights": 0},
         ],
         "context": {
             "user_id": 42,
@@ -156,20 +143,20 @@ def run_inference(model_path: str):
             "occupation": 7,
             "zip_code": 10001,
         },
-        "num_recommendations": 20,
     }
 
     print(f"\n  Running inference...")
     print(f"  User history:  {len(prompt['user_history'])} interactions")
     print(f"  Candidates:    {len(prompt['candidates'])} items")
     print(f"  Context:       {list(prompt['context'].keys())}")
+    print(f"  Device path:   {active_device}")
 
-    outputs = llm.recommend(prompts=[prompt], use_tqdm=False, top_k=20)
+    outputs = llm.recommend(prompts=[prompt], use_tqdm=False)
     output = outputs[0]
 
-    print(f"\n  Recommendations (top {len(output.recommendations)}):")
+    print(f"\n  Candidate scores ({len(output.recommendations)}):")
     for item in output.recommendations:
-        print(f"    #{item.rank}: movie_{item.item_id}  score={item.score:.6f}")
+        print(f"    movie_{item.item_id}  score={item.score:.6f}")
 
     llm.shutdown()
     print("\n" + "=" * 70)
@@ -200,9 +187,10 @@ def main():
         help="Path to converted model directory "
              "(with config.json + model.safetensors)",
     )
+    add_runtime_args(parser, include_model=False)
     args = parser.parse_args()
 
-    run_inference(args.model)
+    run_inference(args.model, expected_device=args.expect_device)
 
 
 if __name__ == "__main__":

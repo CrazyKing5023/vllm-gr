@@ -4,7 +4,7 @@
 """
 Output data types for generative recommendation.
 
-- RecommendedItem: a single ranked candidate with score
+- RecommendedItem: a single candidate with score metadata
 - GRRequestOutput: full recommendation response, extends PoolingRequestOutput
 """
 
@@ -18,11 +18,10 @@ from vllm.outputs import PoolingOutput, PoolingRequestOutput
 
 @dataclass
 class RecommendedItem:
-    """Single recommended item with score and rank."""
+    """Single candidate item with score metadata."""
 
     item_id: str | int
     score: float
-    rank: int
     features: dict[str, Any] | None = None
     task_scores: dict[str, float] | None = None
 
@@ -30,7 +29,6 @@ class RecommendedItem:
         result = {
             "item_id": self.item_id,
             "score": self.score,
-            "rank": self.rank,
             "features": self.features,
         }
         if self.task_scores is not None:
@@ -41,8 +39,8 @@ class RecommendedItem:
 class GRRequestOutput(PoolingRequestOutput):
     """Recommendation output extending PoolingRequestOutput.
 
-    Adds recommendation-specific fields (user_id, ranked recommendations,
-    raw scores) while remaining compatible with vLLM's output pipeline.
+    Adds recommendation-specific fields (user_id, candidate scores, raw
+    scores) while remaining compatible with vLLM's output pipeline.
     """
 
     def __init__(
@@ -73,7 +71,7 @@ class GRRequestOutput(PoolingRequestOutput):
         return (
             f"GRRequestOutput(request_id={self.request_id!r}, "
             f"user_id={self.user_id!r}, "
-            f"num_recommendations={len(self.recommendations)}, "
+            f"num_candidates={len(self.recommendations)}, "
             f"finished={self.finished})"
         )
 
@@ -87,7 +85,9 @@ class GRRequestOutput(PoolingRequestOutput):
 
     @property
     def top_recommendation(self) -> RecommendedItem | None:
-        return self.recommendations[0] if self.recommendations else None
+        if not self.recommendations:
+            return None
+        return max(self.recommendations, key=lambda item: item.score)
 
     @property
     def item_ids(self) -> list[str | int]:

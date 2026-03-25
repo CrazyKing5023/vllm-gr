@@ -16,14 +16,15 @@ from vllm_gr.models.dlrm_v3.modules.postprocessors import L2NormPostprocessor, O
 from vllm_gr.models.dlrm_v3.modules.preprocessors import InputPreprocessor
 from vllm_gr.models.dlrm_v3.modules.stu import STU
 from vllm_gr.ops.jagged_tensors import split_2D_jagged
+from vllm_gr.utils import ReliableOps
 
 
 logger: logging.Logger = logging.getLogger(__name__)
 
 
 def complete_cumsum(lengths: torch.Tensor) -> torch.Tensor:
-    """Compute complete cumulative sum (starting with 0) via fbgemm only."""
-    return torch.ops.fbgemm.asynchronous_complete_cumsum(lengths)
+    """Compute complete cumulative sum (starting with 0)."""
+    return ReliableOps.asynchronous_complete_cumsum(lengths)
 
 
 @torch.fx.wrap
@@ -62,6 +63,11 @@ class HSTUTransducer(HammerModule):
             output_postprocessor
             if output_postprocessor is not None
             else L2NormPostprocessor(is_inference=is_inference)
+        )
+        assert self._is_inference == self._input_preprocessor._is_inference, (
+            "input_preprocessor must have the same mode; "
+            f"self: {self._is_inference} vs input_preprocessor "
+            f"{self._input_preprocessor._is_inference}"
         )
         self._positional_encoder: Optional[HSTUPositionalEncoder] = positional_encoder
         self._input_dropout_ratio: float = input_dropout_ratio
@@ -301,4 +307,3 @@ class HSTUTransducer(HammerModule):
                 encoded_embeddings = fx_unwrap_optional_tensor(encoded_embeddings).to(orig_dtype)
 
         return (encoded_candidate_embeddings, encoded_embeddings)
-

@@ -23,8 +23,8 @@
   "uih_post_id_feature_name": "item_id",
   "uih_action_time_feature_name": "timestamp",
   "candidates_querytime_feature_name": "query_time",
-  "candidates_weight_feature_name": "item_action_weight",
-  "candidates_watchtime_feature_name": "item_watchtime",
+  "candidates_weight_feature_name": "",
+  "candidates_watchtime_feature_name": "",
 
   "hstu_uih_feature_names": [
     "item_id", "timestamp"
