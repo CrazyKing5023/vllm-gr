@@ -362,7 +362,7 @@ class HSTUConfig(PretrainedConfig):
     architectures = ["HSTUEmbeddingModel"]
     is_encoder_decoder = False
     is_text_encoder = True
-    is_attention_free = True
+    is_attention_free = False
 
     def __init__(
         self,
@@ -415,7 +415,7 @@ class HSTUConfig(PretrainedConfig):
 
         self.is_text_encoder = is_text_encoder
         self.is_encoder_decoder = is_encoder_decoder
-        self.is_attention_free = True
+        self.is_attention_free = False
 
         self.max_seq_len = max_seq_len
         self.max_num_candidates = max_num_candidates
