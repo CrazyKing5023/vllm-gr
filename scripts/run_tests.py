@@ -12,6 +12,7 @@ Usage:
     python scripts/run_tests.py --suite npu-smoke
     python scripts/run_tests.py --list-suites
     python scripts/run_tests.py --all
+    python scripts/run_tests.py --all --auto-platform
     python scripts/run_tests.py --examples-only
 """
 
@@ -43,6 +44,7 @@ SUITE_DEFINITIONS: dict[str, dict[str, object]] = {
             "test_checkpoint_conversion_contract.py",
             "test_output_contract.py",
             "test_positional_encoder_parity.py",
+            "test_run_tests_script.py",
         ],
     },
     "gpu-smoke": {
@@ -72,6 +74,56 @@ SUITE_DEFINITIONS: dict[str, dict[str, object]] = {
         "includes": ["platform-gpu", "platform-npu"],
     },
 }
+
+
+def detect_runtime_backend() -> str:
+    """Prefer NPU, then GPU, then CPU for auto-platform selection."""
+    try:
+        from vllm_gr.utils.npu_adapter import (
+            is_cuda_available,
+            is_npu_available,
+        )
+    except Exception as exc:
+        print(
+            "  [WARN] Failed to import runtime backend detection helpers; "
+            f"defaulting to CPU ({exc})."
+        )
+        return "cpu"
+
+    try:
+        if is_npu_available():
+            return "npu"
+        if is_cuda_available():
+            return "gpu"
+    except Exception as exc:
+        print(
+            "  [WARN] Failed while probing runtime backend; "
+            f"defaulting to CPU ({exc})."
+        )
+    return "cpu"
+
+
+def runtime_backend_to_platform_suite(runtime_backend: str) -> str | None:
+    if runtime_backend == "npu":
+        return "platform-npu"
+    if runtime_backend == "gpu":
+        return "platform-gpu"
+    return None
+
+
+def apply_auto_platform_selection(
+    selected: list[str],
+    runtime_backend: str,
+) -> list[str]:
+    auto_suite = runtime_backend_to_platform_suite(runtime_backend)
+    normalized: list[str] = []
+    for suite_name in selected:
+        if suite_name != "platform-all":
+            normalized.append(suite_name)
+            continue
+        if auto_suite is not None:
+            normalized.append(auto_suite)
+    return normalized
 
 
 def run_command(cmd: list[str], label: str) -> bool:
@@ -201,16 +253,33 @@ def run_example(script: str, extra_args: list[str] | None = None) -> bool:
     return run_command(cmd, f"Example: {script}")
 
 
-def run_examples(datasets: list[str] | None = None) -> bool:
+def run_examples(
+    datasets: list[str] | None = None,
+    expected_device: str | None = None,
+) -> bool:
     results = []
 
-    results.append(run_example("simple_inference.py"))
+    example_runtime_args: list[str] = []
+    if expected_device:
+        example_runtime_args.extend(["--expect-device", expected_device])
+
+    results.append(run_example("simple_inference.py", example_runtime_args))
 
     if datasets:
         for ds in datasets:
-            results.append(run_example("dataset_inference.py", [ds]))
+            results.append(
+                run_example(
+                    "dataset_inference.py",
+                    [*example_runtime_args, ds],
+                )
+            )
     else:
-        results.append(run_example("dataset_inference.py", ["debug"]))
+        results.append(
+            run_example(
+                "dataset_inference.py",
+                [*example_runtime_args, "debug"],
+            )
+        )
 
     return all(results)
 
@@ -234,19 +303,27 @@ def print_suite_catalog() -> None:
     print("=" * 60)
 
 
-def determine_requested_suites(args: argparse.Namespace) -> list[str]:
+def determine_requested_suites(
+    args: argparse.Namespace,
+) -> tuple[list[str], str | None]:
+    runtime_backend = detect_runtime_backend() if args.auto_platform else None
+
     if args.examples_only:
         if args.suite:
             raise ValueError("--examples-only cannot be combined with --suite")
-        return []
+        return [], runtime_backend
 
     if args.suite:
-        return resolve_suites(args.suite)
+        selected = list(args.suite)
+    elif args.all:
+        selected = ["unit", "platform-all"]
+    else:
+        selected = ["unit"]
 
-    if args.all:
-        return resolve_suites(["unit", "platform-all"])
+    if runtime_backend is not None:
+        selected = apply_auto_platform_selection(selected, runtime_backend)
 
-    return resolve_suites(["unit"])
+    return resolve_suites(selected), runtime_backend
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -258,6 +335,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--all",
         action="store_true",
         help="Run core unit tests, all platform lanes, and examples",
+    )
+    parser.add_argument(
+        "--auto-platform",
+        action="store_true",
+        help=(
+            "Resolve platform-all to the currently available backend "
+            "(NPU preferred over GPU) and assert the same backend in examples"
+        ),
     )
     parser.add_argument(
         "--examples-only",
@@ -304,16 +389,31 @@ def main() -> None:
         print_suite_catalog()
         return
 
-    requested_suites = determine_requested_suites(args)
+    requested_suites, runtime_backend = determine_requested_suites(args)
 
     print("=" * 60)
     print("  vllm-GR Test Runner")
     print("=" * 60)
 
+    if args.auto_platform:
+        auto_suite = runtime_backend_to_platform_suite(runtime_backend or "cpu")
+        if auto_suite is None:
+            print(
+                "  Auto platform backend: cpu "
+                "(platform-all will be skipped)"
+            )
+        else:
+            print(
+                "  Auto platform backend: "
+                f"{runtime_backend} ({auto_suite})"
+            )
+
     if requested_suites:
         print(f"  Selected suites: {', '.join(requested_suites)}")
     elif args.examples_only:
         print("  Selected suites: examples-only")
+    else:
+        print("  Selected suites: none")
 
     results: list[tuple[str, bool]] = []
     start = time.time()
@@ -328,7 +428,13 @@ def main() -> None:
         results.append((suite_label, passed))
 
     if args.all or args.examples_only:
-        results.append(("Examples", run_examples(args.dataset)))
+        results.append((
+            "Examples",
+            run_examples(
+                args.dataset,
+                expected_device=runtime_backend if args.auto_platform else None,
+            ),
+        ))
 
     elapsed = time.time() - start
 
