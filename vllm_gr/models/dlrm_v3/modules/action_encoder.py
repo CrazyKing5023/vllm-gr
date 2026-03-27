@@ -32,9 +32,8 @@ class ActionEncoder(HammerModule):
             List[Tuple[int, int]]
         ] = None,
         embedding_init_std: float = 0.1,
-        is_inference: bool = False,
     ) -> None:
-        super().__init__(is_inference=is_inference)
+        super().__init__()
         self._watchtime_feature_name: str = watchtime_feature_name
         self._action_feature_name: str = action_feature_name
         self._watchtime_to_action_thresholds_and_weights: List[Tuple[int, int]] = (

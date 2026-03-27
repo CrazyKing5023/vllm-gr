@@ -86,9 +86,8 @@ class STULayer(STU):
     def __init__(
         self,
         config: STULayerConfig,
-        is_inference: bool = False,
     ) -> None:
-        super().__init__(is_inference=is_inference)
+        super().__init__()
         self.reset_kv_cache()
         
         self._num_heads: int = config.num_heads
@@ -224,9 +223,8 @@ class STUStack(STU):
     def __init__(
         self,
         stu_list: List[STU],
-        is_inference: bool = False,
     ) -> None:
-        super().__init__(is_inference=is_inference)
+        super().__init__()
         self._stu_layers: torch.nn.ModuleList = torch.nn.ModuleList(modules=stu_list)
 
     def forward(

@@ -51,24 +51,19 @@ class HSTUTransducer(HammerModule):
         output_postprocessor: Optional[OutputPostprocessor] = None,
         input_dropout_ratio: float = 0.0,
         positional_encoder: Optional[HSTUPositionalEncoder] = None,
-        is_inference: bool = True,
         return_full_embeddings: bool = False,
         listwise: bool = False,
     ) -> None:
-        super().__init__(is_inference=is_inference)
+        super().__init__()
         
         self._stu_module = stu_module
         self._input_preprocessor: InputPreprocessor = input_preprocessor
         self._output_postprocessor: OutputPostprocessor = (
             output_postprocessor
             if output_postprocessor is not None
-            else L2NormPostprocessor(is_inference=is_inference)
+            else L2NormPostprocessor()
         )
-        assert self._is_inference == self._input_preprocessor._is_inference, (
-            "input_preprocessor must have the same mode; "
-            f"self: {self._is_inference} vs input_preprocessor "
-            f"{self._input_preprocessor._is_inference}"
-        )
+
         self._positional_encoder: Optional[HSTUPositionalEncoder] = positional_encoder
         self._input_dropout_ratio: float = input_dropout_ratio
         self._return_full_embeddings: bool = return_full_embeddings
@@ -256,8 +251,6 @@ class HSTUTransducer(HammerModule):
             (candidate_embeddings, full_embeddings or None)
         """
         orig_dtype = seq_embeddings.dtype
-        if not self._is_inference:
-            seq_embeddings = seq_embeddings.to(self._training_dtype)
 
         (
             max_seq_len,
@@ -300,10 +293,5 @@ class HSTUTransducer(HammerModule):
             num_targets=num_targets,
             seq_payloads=seq_payloads,
         )
-
-        if not self._is_inference:
-            encoded_candidate_embeddings = encoded_candidate_embeddings.to(orig_dtype)
-            if self._return_full_embeddings:
-                encoded_embeddings = fx_unwrap_optional_tensor(encoded_embeddings).to(orig_dtype)
 
         return (encoded_candidate_embeddings, encoded_embeddings)

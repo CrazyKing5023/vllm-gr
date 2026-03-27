@@ -25,9 +25,8 @@ class HSTUPositionalEncoder(HammerModule):
         num_time_buckets: int,
         embedding_dim: int,
         contextual_seq_len: int,
-        is_inference: bool = True,
     ) -> None:
-        super().__init__(is_inference=is_inference)
+        super().__init__()
         self._embedding_dim: int = embedding_dim
         self._contextual_seq_len: int = contextual_seq_len
         
