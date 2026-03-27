@@ -49,20 +49,17 @@ class HammerModule(torch.nn.Module, abc.ABC):
     but we preserve the kernel-selection semantics so runtime policy and tests
     stay aligned with the upstream contract.
     """
-    _is_inference: bool = False
     _use_triton_cc: bool = False
     _training_dtype: torch.dtype = torch.float32
     _hammer_kernel: Optional[HammerKernel] = None
 
     def __init__(
         self,
-        is_inference: bool,
         training_dtype: torch.dtype = torch.float32,
         use_triton_cc: bool = False,
         hammer_kernel: Optional[HammerKernel] = None,
     ) -> None:
         super().__init__()
-        self._is_inference = is_inference
         self._training_dtype = training_dtype
         self._hammer_kernel = hammer_kernel
         self._use_triton_cc = use_triton_cc
@@ -76,7 +73,7 @@ class HammerModule(torch.nn.Module, abc.ABC):
         kernel = self._hammer_kernel
         if kernel is not None:
             return kernel
-        if self._is_inference and self._use_triton_cc:
+        if self._use_triton_cc:
             return HammerKernel.TRITON_CC
         return HammerKernel.TRITON
 
@@ -89,10 +86,6 @@ class HammerModule(torch.nn.Module, abc.ABC):
         self._use_triton_cc = use_triton_cc
         self.recursive_setattr("_use_triton_cc", use_triton_cc)
 
-    def set_is_inference(self, is_inference: bool) -> None:
-        self._is_inference = is_inference
-        self.recursive_setattr("_is_inference", is_inference)
-
     def set_training_dtype(self, training_dtype: torch.dtype) -> None:
         self._training_dtype = training_dtype
         self.recursive_setattr("_training_dtype", training_dtype)
@@ -102,16 +95,12 @@ class HammerModule(torch.nn.Module, abc.ABC):
         self.recursive_setattr("_hammer_kernel", hammer_kernel)
 
     @property
-    def is_inference(self) -> bool:
-        return self._is_inference
-
-    @property
     def is_eval(self) -> bool:
-        return (not self._is_inference) and (not self.training)
+        return (not self.training)
 
     @property
     def is_train(self) -> bool:
-        return (not self._is_inference) and self.training
+        return self.training
 
 
 # Global settings

@@ -304,7 +304,6 @@ class HSTUForRecommendation(nn.Module):
         self.hstu = DlrmHSTU(
             hstu_configs=hstu_config,
             embedding_tables=embedding_configs,
-            is_inference=self.config.is_inference,
             is_dense=not embedding_configs,
             embedding_device=self._embedding_device,
         )
@@ -312,8 +311,6 @@ class HSTUForRecommendation(nn.Module):
 
     def _patch_embedding_collection_for_inference(self) -> None:
         """Align inference embedding lookup behavior with the golden sparse path."""
-        if not getattr(self.config, "is_inference", True):
-            return
 
         embedding_collection = getattr(self.hstu, "_embedding_collection", None)
         if embedding_collection is None:

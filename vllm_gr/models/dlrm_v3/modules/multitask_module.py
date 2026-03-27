@@ -95,9 +95,8 @@ class DefaultMultitaskModule(MultitaskModule):
         embedding_dim: int,
         prediction_fn: Callable[[int, int], torch.nn.Module],
         causal_multitask_weights: float,
-        is_inference: bool,
     ) -> None:
-        super().__init__(is_inference=is_inference)
+        super().__init__()
         
         assert sorted(task_configs, key=lambda x: x.task_type) == task_configs, \
             "task_configs must be sorted by task_type."
@@ -127,10 +126,6 @@ class DefaultMultitaskModule(MultitaskModule):
         Optional[torch.Tensor],
     ]:
         orig_dtype = encoded_user_embeddings.dtype
-        
-        if not self._is_inference:
-            encoded_user_embeddings = encoded_user_embeddings.to(self._training_dtype)
-            item_embeddings = item_embeddings.to(self._training_dtype)
 
         mt_preds, mt_logits = _compute_pred_and_logits(
             prediction_module=self._prediction_module,
@@ -144,8 +139,5 @@ class DefaultMultitaskModule(MultitaskModule):
         mt_labels: Optional[torch.Tensor] = None
         mt_weights: Optional[torch.Tensor] = None
         mt_losses: Optional[torch.Tensor] = None
-
-        if not self._is_inference:
-            mt_preds = mt_preds.to(orig_dtype)
 
         return (mt_preds, mt_labels, mt_weights, mt_losses)

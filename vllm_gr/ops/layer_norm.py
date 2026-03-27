@@ -74,7 +74,6 @@ class LayerNorm(HammerModule):
         self,
         dim: int,
         eps: float = 1e-5,
-        is_inference: bool = False,
     ) -> None:
         """
         Initialize LayerNorm module.
@@ -82,9 +81,8 @@ class LayerNorm(HammerModule):
         Args:
             dim: Feature dimension
             eps: Numerical stability parameter, default 1e-5
-            is_inference: Whether in inference mode, default False
         """
-        super().__init__(is_inference=is_inference)
+        super().__init__()
         self._normalized_shape: List[int] = [dim]
         self._eps = eps
         self.weight = torch.nn.Parameter(torch.ones(self._normalized_shape))
@@ -152,7 +150,6 @@ class SwishLayerNorm(HammerModule):
         self,
         dim: int,
         eps: float = 1e-5,
-        is_inference: bool = False,
     ) -> None:
         """
         Initialize SwishLayerNorm module.
@@ -160,9 +157,8 @@ class SwishLayerNorm(HammerModule):
         Args:
             dim: Feature dimension
             eps: Numerical stability parameter, default 1e-5
-            is_inference: Whether in inference mode, default False
         """
-        super().__init__(is_inference=is_inference)
+        super().__init__()
         self._normalized_shape: List[int] = [dim]
         self.weight = torch.nn.Parameter(torch.ones(self._normalized_shape))
         self.bias = torch.nn.Parameter(torch.zeros(self._normalized_shape))

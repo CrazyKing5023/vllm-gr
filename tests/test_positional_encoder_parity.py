@@ -67,7 +67,6 @@ class TestPositionalEncoderParity(unittest.TestCase):
             num_time_buckets=4,
             embedding_dim=2,
             contextual_seq_len=0,
-            is_inference=True,
         )
         with torch.no_grad():
             encoder._position_embeddings_weight.copy_(
@@ -127,7 +126,6 @@ class TestPositionalEncoderParity(unittest.TestCase):
             num_time_buckets=4,
             embedding_dim=2,
             contextual_seq_len=0,
-            is_inference=True,
         )
         with torch.no_grad():
             encoder._position_embeddings_weight.zero_()
@@ -167,7 +165,6 @@ class TestPositionalEncoderParity(unittest.TestCase):
             num_time_buckets=4,
             embedding_dim=1,
             contextual_seq_len=1,
-            is_inference=True,
         )
         with torch.no_grad():
             encoder._position_embeddings_weight.copy_(

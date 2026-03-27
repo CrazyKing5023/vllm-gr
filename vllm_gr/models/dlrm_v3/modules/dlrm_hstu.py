@@ -110,12 +110,11 @@ class DlrmHSTU(HammerModule):
         self,
         hstu_configs: DlrmHSTUConfig,
         embedding_tables: Dict[str, EmbeddingConfig],
-        is_inference: bool = True,
         is_dense: bool = False,
         bf16_training: bool = True,
         embedding_device: Optional[torch.device] = None,
     ) -> None:
-        super().__init__(is_inference=is_inference)
+        super().__init__()
         logger.info(f"Initialize HSTU module with configs {hstu_configs}")
 
         self._hstu_configs = hstu_configs
@@ -142,7 +141,6 @@ class DlrmHSTU(HammerModule):
                 torch.nn.Linear(in_features=512, out_features=num_tasks),
             ).apply(init_mlp_weights_optional_bias),
             causal_multitask_weights=hstu_configs.causal_multitask_weights,
-            is_inference=self._is_inference,
         )
 
         self._additional_embedding_features: List[str] = [
@@ -170,7 +168,6 @@ class DlrmHSTU(HammerModule):
             action_weights=self._hstu_configs.action_weights,
             additional_embedding_features=self._additional_embedding_features,
             action_embedding_init_std=self._hstu_configs.action_embedding_init_std,
-            is_inference=is_inference,
         )
 
         positional_encoder = HSTUPositionalEncoder(
@@ -180,7 +177,6 @@ class DlrmHSTU(HammerModule):
             contextual_seq_len=sum(
                 dict(hstu_configs.contextual_feature_to_max_length).values()
             ),
-            is_inference=self._is_inference,
         )
 
         if hstu_configs.enable_postprocessor:
@@ -188,7 +184,6 @@ class DlrmHSTU(HammerModule):
                 postprocessor = LayerNormPostprocessor(
                     embedding_dim=hstu_configs.hstu_transducer_embedding_dim,
                     eps=1e-5,
-                    is_inference=self._is_inference,
                 )
             else:
                 postprocessor = TimestampLayerNormPostprocessor(
@@ -198,7 +193,6 @@ class DlrmHSTU(HammerModule):
                         (24 * 60 * 60, 7),
                     ],
                     eps=1e-5,
-                    is_inference=self._is_inference,
                 )
         else:
             postprocessor = None
@@ -223,11 +217,9 @@ class DlrmHSTU(HammerModule):
                         sort_by_length=True,
                         contextual_seq_len=0,
                     ),
-                    is_inference=is_inference,
                 )
                 for _ in range(hstu_configs.hstu_attn_num_layers)
             ],
-            is_inference=is_inference,
         )
 
         self._hstu_transducer: HSTUTransducer = HSTUTransducer(
@@ -236,7 +228,6 @@ class DlrmHSTU(HammerModule):
             output_postprocessor=postprocessor,
             input_dropout_ratio=hstu_configs.hstu_input_dropout_ratio,
             positional_encoder=positional_encoder,
-            is_inference=self._is_inference,
             return_full_embeddings=False,
             listwise=False,
         )
@@ -317,7 +308,7 @@ class DlrmHSTU(HammerModule):
                 not in self._hstu_configs.user_embedding_feature_names
             ):
                 values_left = uih_features[uih_feature_name].values()
-                if self._is_inference and (
+                if (
                     candidate_feature_name
                     == self._hstu_configs.candidates_weight_feature_name
                     or candidate_feature_name
@@ -440,29 +431,23 @@ class DlrmHSTU(HammerModule):
         ].embedding
         dtype = embedding.dtype
 
-        if (not self.is_inference) and self._bf16_training:
-            embedding = embedding.to(torch.bfloat16)
 
         seq_payloads = self._construct_payload(
             payload_features=payload_features,
             seq_embeddings=seq_embeddings,
         )
 
-        with get_hstu_autocast_context(
-            embedding,
-            enabled=(not self.is_inference) and self._bf16_training,
-        ):
-            candidates_user_embeddings, _ = self._hstu_transducer(
-                max_uih_len=max_uih_len,
-                max_targets=max_candidates,
-                total_uih_len=source_timestamps.numel() - total_targets,
-                total_targets=total_targets,
-                seq_embeddings=embedding,
-                seq_lengths=source_lengths,
-                seq_timestamps=source_timestamps,
-                seq_payloads=seq_payloads,
-                num_targets=num_candidates,
-            )
+        candidates_user_embeddings, _ = self._hstu_transducer(
+            max_uih_len=max_uih_len,
+            max_targets=max_candidates,
+            total_uih_len=source_timestamps.numel() - total_targets,
+            total_targets=total_targets,
+            seq_embeddings=embedding,
+            seq_lengths=source_lengths,
+            seq_timestamps=source_timestamps,
+            seq_payloads=seq_payloads,
+            num_targets=num_candidates,
+        )
 
         return candidates_user_embeddings.to(dtype)
 

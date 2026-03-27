@@ -494,7 +494,10 @@ class HSTUConfig(PretrainedConfig):
                     }
                 ]
             )
-        self.is_inference = is_inference
+        if not is_inference:
+            raise ValueError(
+                "HSTUConfig only supports is_inference=True in this vllm-GR."
+            )
 
         _validate_hstu_config_consistency(self)
         self.candidate_primary_id_feature_name = (

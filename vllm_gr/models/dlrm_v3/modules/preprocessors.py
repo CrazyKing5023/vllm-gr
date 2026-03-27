@@ -122,9 +122,8 @@ class ContextualPreprocessor(InputPreprocessor):
         action_weights: Optional[List[int]] = None,
         additional_embedding_features: List[str] = [],
         action_embedding_init_std: float = 0.1,
-        is_inference: bool = True,
     ) -> None:
-        super().__init__(is_inference=is_inference)
+        super().__init__()
         self._output_embedding_dim: int = output_embedding_dim
         self._input_embedding_dim: int = input_embedding_dim
         self._hidden_dim: int = hidden_dim
@@ -193,7 +192,6 @@ class ContextualPreprocessor(InputPreprocessor):
                 action_weights=self._action_weights,
                 action_embedding_dim=action_embedding_dim,
                 embedding_init_std=action_embedding_init_std,
-                is_inference=is_inference,
             )
             self._action_embedding_mlp: torch.nn.Module = torch.nn.Sequential(
                 torch.nn.Linear(

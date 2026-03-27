@@ -35,8 +35,8 @@ class OutputPostprocessor(HammerModule):
 class L2NormPostprocessor(OutputPostprocessor):
     """Postprocesses user embeddings with L2 normalization."""
 
-    def __init__(self, is_inference: bool = False) -> None:
-        super().__init__(is_inference=is_inference)
+    def __init__(self) -> None:
+        super().__init__()
 
     def forward(
         self,
@@ -56,9 +56,8 @@ class LayerNormPostprocessor(OutputPostprocessor):
         self,
         embedding_dim: int,
         eps: float = 1e-5,
-        is_inference: bool = False,
     ) -> None:
-        super().__init__(is_inference=is_inference)
+        super().__init__()
         self._layer_norm: torch.nn.Module = torch.nn.LayerNorm(
             normalized_shape=[embedding_dim], eps=eps
         )
@@ -87,9 +86,8 @@ class TimestampLayerNormPostprocessor(OutputPostprocessor):
         embedding_dim: int,
         time_duration_features: List[Tuple[int, int]],
         eps: float = 1e-5,
-        is_inference: bool = False,
     ) -> None:
-        super().__init__(is_inference=is_inference)
+        super().__init__()
 
         self._layer_norm: torch.nn.Module = torch.nn.LayerNorm(
             normalized_shape=[embedding_dim], eps=eps

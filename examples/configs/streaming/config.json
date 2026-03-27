@@ -54,7 +54,6 @@
   "action_embedding_init_std": 5.0,
   "hash_size": 10000,
   "task_names": ["rating"],
-  "is_inference": true,
 
   "embedding_tables": [
     {
