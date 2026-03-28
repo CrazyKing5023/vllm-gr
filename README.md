@@ -46,10 +46,10 @@
   - NPU 对应 runtime
   - 如需真实 NPU backend 链路，需提前准备对应平台插件，例如 `vllm_ascend`
 - 本仓的 NPU 安装步骤只安装仓内依赖，不会安装：
-  - `torch`
-  - `torch-npu`
-  - `numpy`
-  - `vllm_ascend`
+  - `torch == 2.9.0`
+  - `torch-npu == 2.9.0`
+  - `numpy == 2.2.6`
+  - `vllm_ascend == 0.14.0rc1`
 - 本仓的 NPU 安装步骤会安装：
   - `vllm==0.14.1`
   - `fbgemm-gpu-cpu==1.4.0`
