@@ -5,7 +5,7 @@
   "torch_dtype": "bfloat16",
   "is_text_encoder": true,
   "is_encoder_decoder": false,
-  "is_attention_free": true,
+  "is_attention_free": false,
 
   "max_seq_len": 128,
   "max_num_candidates": 50,

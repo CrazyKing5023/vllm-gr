@@ -101,7 +101,7 @@ class HSTUForRecommendation(nn.Module):
     supports_pp = False
     is_pooling_model = True
     is_text_generation_model = False
-    is_attention_free = True
+    is_attention_free = False
 
     def __init__(
         self,
