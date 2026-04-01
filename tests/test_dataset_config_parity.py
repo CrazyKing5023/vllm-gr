@@ -84,6 +84,24 @@ class TestDatasetConfigParity(unittest.TestCase):
 
 class TestHSTUConfigConsistency(unittest.TestCase):
 
+    @staticmethod
+    def _minimal_hstu_kwargs():
+        return {
+            "user_embedding_feature_names": ["item_id"],
+            "item_embedding_feature_names": ["item_candidate_id"],
+            "uih_post_id_feature_name": "item_id",
+            "hstu_uih_feature_names": ["item_id"],
+            "hstu_candidate_feature_names": ["item_candidate_id"],
+            "embedding_tables": [
+                {
+                    "name": "item_embedding",
+                    "embedding_dim": 8,
+                    "num_embeddings": 16,
+                    "feature_names": ["item_id", "item_candidate_id"],
+                },
+            ],
+        }
+
     def test_supported_datasets_can_all_be_materialized_as_hstu_config(self):
         from vllm_gr.config.hstu_config import HSTUConfig
 
@@ -138,6 +156,57 @@ class TestHSTUConfigConsistency(unittest.TestCase):
                 ],
                 contextual_feature_to_max_length={"user_id": 1},
                 contextual_feature_to_min_uih_length={"session_id": 5},
+            )
+
+    def test_task_types_default_to_binary_classification(self):
+        from vllm_gr.config.hstu_config import HSTUConfig
+        from vllm_gr.config.multitask_types import MultitaskTaskType
+
+        config = HSTUConfig(
+            task_names=["is_click", "is_like"],
+            **self._minimal_hstu_kwargs(),
+        )
+
+        self.assertEqual(
+            config.task_types,
+            [
+                MultitaskTaskType.BINARY_CLASSIFICATION,
+                MultitaskTaskType.BINARY_CLASSIFICATION,
+            ],
+        )
+
+    def test_task_types_serialize_back_to_strings(self):
+        from vllm_gr.config.hstu_config import HSTUConfig
+
+        config = HSTUConfig(
+            task_names=["watch_time"],
+            task_types=["regression"],
+            **self._minimal_hstu_kwargs(),
+        )
+
+        self.assertEqual(
+            config.to_dict()["task_types"],
+            ["regression"],
+        )
+
+    def test_task_types_must_align_with_task_names(self):
+        from vllm_gr.config.hstu_config import HSTUConfig
+
+        with self.assertRaisesRegex(ValueError, "same length as task_names"):
+            HSTUConfig(
+                task_names=["is_click", "is_like"],
+                task_types=["binary_classification"],
+                **self._minimal_hstu_kwargs(),
+            )
+
+    def test_task_types_must_be_known(self):
+        from vllm_gr.config.hstu_config import HSTUConfig
+
+        with self.assertRaisesRegex(ValueError, "must be one of"):
+            HSTUConfig(
+                task_names=["watch_time"],
+                task_types=["ranking"],
+                **self._minimal_hstu_kwargs(),
             )
 
 

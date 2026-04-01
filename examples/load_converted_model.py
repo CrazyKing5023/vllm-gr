@@ -156,7 +156,14 @@ def run_inference(model_path: str, expected_device: str | None = None):
 
     print(f"\n  Candidate scores ({len(output.recommendations)}):")
     for item in output.recommendations:
-        print(f"    movie_{item.item_id}  score={item.score:.6f}")
+        display_line = f"movie_{item.item_id} score={item.score:.6f}"
+        if item.task_scores:
+            task_suffix = "  ".join(
+                f"{task_name}={task_score:.6f}"
+                for task_name, task_score in item.task_scores.items()
+            )
+            display_line = f"{display_line}  {task_suffix}"
+        print(f"    {display_line}")
 
     llm.shutdown()
     print("\n" + "=" * 70)

@@ -10,6 +10,7 @@ import torch
 from torchrec.sparse.jagged_tensor import KeyedJaggedTensor
 from vllm.logger import init_logger
 from vllm.sequence import IntermediateTensors
+from vllm.v1.outputs import ModelRunnerOutput
 
 from vllm_gr.gr_schema import (
     attach_schema_fingerprint,
@@ -335,14 +336,22 @@ class GRFeatureRunnerMixin:
         num_scheduled_tokens: int,
         num_scheduled_tokens_np: np.ndarray,
         kv_connector_output: Any,
-    ) -> Any:
-        """Handle GR pooling outputs that are already split per request.
+    ) -> ModelRunnerOutput:
+        """Route pooling based on hidden_states type.
 
-        vLLM's generic pooling path assumes `hidden_states` is a single tensor
-        indexed by scheduled token positions. HSTU returns recommendation
-        scores, and in the GR path those scores may already be partitioned as
-        one tensor per request. In that case we construct `pooler_output`
-        directly instead of delegating to the token-centric base implementation.
+        The type of `hidden_states` determines the execution path:
+
+        - torch.Tensor: Standard vLLM pooling path. Delegates to the parent
+          GPUModelRunner._pool(), which assumes hidden_states is indexed by
+          scheduled token positions (used by embedding models like BERT).
+
+        - list[torch.Tensor]: GR recommendation path. Each tensor in the list
+          is a per-request score tensor from HSTU. We bypass the token-centric
+          base implementation and construct pooler_output directly.
+
+        This dispatch mechanism allows GRModelRunner to handle both standard
+        pooling requests and GR recommendation outputs without modifying the
+        vLLM core.
         """
         if isinstance(hidden_states, torch.Tensor):
             return super()._pool(
@@ -351,8 +360,6 @@ class GRFeatureRunnerMixin:
                 num_scheduled_tokens_np,
                 kv_connector_output,
             )
-
-        from vllm.v1.outputs import ModelRunnerOutput
 
         num_reqs = self.input_batch.num_reqs
         assert num_reqs == len(self.input_batch.pooling_params), (

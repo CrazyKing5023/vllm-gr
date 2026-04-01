@@ -133,31 +133,13 @@ class GRRequestState(RequestState):
         routed_experts: np.ndarray | None = None,
     ) -> RequestOutput | PoolingRequestOutput | GRRequestOutput | None:
         """For GR requests, convert pooling scores to GRRequestOutput."""
-        if self.is_gr_request and not self.gr_original_candidates:
-            return self._make_empty_gr_output(
-                pooling_output=pooling_output,
-                finish_reason=finish_reason,
-            )
 
-        if self.is_gr_request and pooling_output is not None:
+        if self.is_gr_request:
             return self._make_gr_output(pooling_output, finish_reason)
 
         return super().make_request_output(
             new_token_ids, pooling_output, finish_reason,
             stop_reason, kv_transfer_params, routed_experts)
-
-    def _make_empty_gr_output(
-        self,
-        pooling_output: torch.Tensor | None,
-        finish_reason: FinishReason | None,
-    ) -> GRRequestOutput:
-        return GRRequestOutput(
-            request_id=self.external_req_id,
-            user_id=self.gr_user_id,
-            recommendations=[],
-            all_scores=pooling_output,
-            finished=finish_reason is not None,
-        )
 
     def _make_gr_output(
         self,
@@ -166,16 +148,34 @@ class GRRequestState(RequestState):
     ) -> GRRequestOutput:
         """Build a GRRequestOutput in the original candidate order.
 
-        Supports both 1D scores (single task) and 2D scores
-        (num_tasks, num_candidates). For multi-task, uses gr_primary_task to
-        select the primary score view and attaches all per-task scores.
+        The HSTU pooling path provides task-major score tensors with shape
+        ``(num_tasks, num_candidates)``. The primary task score view becomes
+        the item score and all per-task rows are attached when task metadata is
+        available.
         """
+
+        if not self.gr_original_candidates or pooling_output is None:
+            return GRRequestOutput(
+                request_id=self.external_req_id,
+                user_id=self.gr_user_id,
+                recommendations=[],
+                all_scores=pooling_output,
+                finished=finish_reason is not None,
+            )
+
         candidates = self.gr_original_candidates
         scores = pooling_output.float()
 
+        if scores.dim() != 2:
+            raise ValueError(
+                "GR pooling output must be 2D "
+                "(num_tasks, num_candidates): "
+                f"shape={tuple(scores.shape)}"
+            )
+
         all_task_scores: dict[str, list[float]] | None = None
 
-        if scores.dim() == 2 and self.gr_task_names:
+        if self.gr_task_names:
             if self.gr_primary_task and self.gr_primary_task in self.gr_task_names:
                 primary_idx = self.gr_task_names.index(self.gr_primary_task)
             else:
@@ -185,10 +185,8 @@ class GRRequestState(RequestState):
                 name: scores[i].tolist()
                 for i, name in enumerate(self.gr_task_names)
             }
-        elif scores.dim() == 2:
-            primary_scores = scores[0]
         else:
-            primary_scores = scores
+            primary_scores = scores[0]
 
         pid_key = self.gr_primary_id_key
         recommendations = []

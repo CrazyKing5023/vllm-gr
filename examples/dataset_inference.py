@@ -324,7 +324,14 @@ def run_dataset(spec: Dict[str, Any], args: argparse.Namespace) -> None:
             )
             pid = spec["primary_id"]
             for item in output.recommendations:
-                print(f"    {pid}={item.item_id}  score={item.score:.4f}")
+                display_line = f"{pid}={item.item_id} score={item.score:.4f}"
+                if item.task_scores:
+                    task_suffix = "  ".join(
+                        f"{task_name}={task_score:.4f}"
+                        for task_name, task_score in item.task_scores.items()
+                    )
+                    display_line = f"{display_line}  {task_suffix}"
+                print(f"    {display_line}")
 
         print("\n  Output contract: no top-k truncation is applied in the example.")
         print("  Caller-side ranking / filtering should be done downstream.")

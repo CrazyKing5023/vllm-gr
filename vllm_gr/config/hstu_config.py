@@ -7,6 +7,13 @@ from typing import Any, Dict, List, Optional
 
 from transformers import PretrainedConfig
 
+from vllm_gr.config.multitask_types import MultitaskTaskType
+
+_VALID_TASK_TYPES = {
+    "binary_classification",
+    "regression",
+}
+
 
 def _validate_feature_name_list(
     group_name: str,
@@ -152,6 +159,35 @@ def _validate_embedding_feature_coverage(
             "embedding_tables must cover every declared embedding feature; "
             f"missing {missing!r}"
         )
+
+
+def _validate_and_resolve_task_types(
+    task_names: List[str],
+    task_types: Optional[List[str]],
+) -> List[MultitaskTaskType]:
+    """Validate task types aligned with task_names and resolve enums."""
+    if task_types is None:
+        return [MultitaskTaskType.BINARY_CLASSIFICATION] * len(task_names)
+
+    if not isinstance(task_types, list):
+        raise ValueError("task_types must be a list of strings")
+
+    if len(task_types) != len(task_names):
+        raise ValueError(
+            "task_types must have the same length as task_names: "
+            f"len(task_types)={len(task_types)}, len(task_names)={len(task_names)}"
+        )
+
+    validated: List[MultitaskTaskType] = []
+    for index, task_type in enumerate(task_types):
+        if not isinstance(task_type, str) or task_type not in _VALID_TASK_TYPES:
+            raise ValueError(
+                f"task_types[{index}] must be one of "
+                f"{sorted(_VALID_TASK_TYPES)!r}, got {task_type!r}"
+            )
+        validated.append(MultitaskTaskType[task_type.upper()])
+
+    return validated
 
 
 def _resolve_candidate_primary_id_feature_name(
@@ -400,6 +436,7 @@ class HSTUConfig(PretrainedConfig):
         use_layer_norm_postprocessor: bool = False,
         hash_size: int = 10_000_000,
         task_names: Optional[List[str]] = None,
+        task_types: Optional[List[str]] = None,
         embedding_tables: Optional[List[Dict[str, Any]]] = None,
         embedding_table_data_type: str = "fp16",
         is_inference: bool = True,
@@ -479,6 +516,10 @@ class HSTUConfig(PretrainedConfig):
             )
         self.hash_size = hash_size
         self.task_names = task_names or ["is_click"]
+        self.task_types: List[MultitaskTaskType] = _validate_and_resolve_task_types(
+            self.task_names,
+            task_types,
+        )
         self.embedding_table_data_type = embedding_table_data_type
         validated_embedding_tables = _validate_embedding_tables(embedding_tables)
         if validated_embedding_tables:
@@ -506,6 +547,14 @@ class HSTUConfig(PretrainedConfig):
                 require_resolution=False,
             )
         )
+
+    def to_dict(self) -> Dict[str, Any]:
+        config_dict = super().to_dict()
+        config_dict["task_types"] = [
+            task_type.name.lower()
+            for task_type in self.task_types
+        ]
+        return config_dict
 
 
 __all__ = ["HSTUConfig"]
