@@ -151,7 +151,7 @@ class HSTUForRecommendation(nn.Module):
     def _split_pooling_predictions(
         predictions: torch.Tensor,
         num_candidates: torch.Tensor,
-    ) -> list[torch.Tensor] | torch.Tensor:
+    ) -> list[torch.Tensor]:
         """Return one pooling output per request for vLLM's scheduler contract.
 
         HSTU predicts over the concatenated candidate axis for the whole batch.
@@ -251,16 +251,20 @@ class HSTUForRecommendation(nn.Module):
             DlrmHSTU, DlrmHSTUConfig,
         )
         from vllm_gr.models.dlrm_v3.modules.multitask_module import (
-            TaskConfig, MultitaskTaskType,
+            TaskConfig,
         )
 
+        task_names = self.config.task_names
+        task_types = self.config.task_types
         multitask_configs = []
-        for i, task_name in enumerate(self.config.task_names):
-            multitask_configs.append(TaskConfig(
+
+        for i, (task_name, task_type) in enumerate(zip(task_names, task_types)):
+            task_config = TaskConfig(
                 task_name=task_name,
                 task_weight=1 << i,
-                task_type=MultitaskTaskType.BINARY_CLASSIFICATION,
-            ))
+                task_type=task_type,
+            )
+            multitask_configs.append(task_config)
 
         merge_mapping = [tuple(pair) for pair in self.config.merge_uih_candidate_feature_mapping]
 
@@ -410,7 +414,7 @@ class HSTUForRecommendation(nn.Module):
         )
 
         # Phase 2: dense forward on the active accelerator.
-        _user_emb, _item_emb, predictions = self.hstu.main_forward(
+        predictions = self.hstu.main_forward(
             seq_embeddings=seq_embeddings,
             payload_features=payload_features,
             max_uih_len=max_uih_len,
@@ -418,13 +422,6 @@ class HSTUForRecommendation(nn.Module):
             max_num_candidates=max_num_candidates,
             num_candidates=num_candidates,
         )
-
-        if predictions is None:
-            predictions = torch.zeros(
-                1, 1, device=dense_device,
-            )
-        elif predictions.dim() == 1:
-            predictions = predictions.unsqueeze(0)
 
         return self._split_pooling_predictions(predictions, num_candidates)
 

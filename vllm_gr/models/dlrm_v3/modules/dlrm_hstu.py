@@ -463,11 +463,7 @@ class DlrmHSTU(HammerModule):
         uih_seq_lengths: torch.Tensor,
         max_num_candidates: int,
         num_candidates: torch.Tensor,
-    ) -> Tuple[
-        torch.Tensor,
-        torch.Tensor,
-        Optional[torch.Tensor],
-    ]:
+    ) -> torch.Tensor:
         merged_embedding_keys: List[str] = []
         for (
             uih_feature_name,
@@ -505,20 +501,12 @@ class DlrmHSTU(HammerModule):
             )
 
         with record_function("## multitask_module ##"):
-            mt_target_preds, _mt_target_labels, _mt_target_weights, _mt_losses = (
-                self._multitask_module(
+            mt_target_preds = self._multitask_module(
                     encoded_user_embeddings=candidates_user_embeddings,
                     item_embeddings=candidates_item_embeddings,
-                    supervision_labels={},
-                    supervision_weights={},
                 )
-            )
 
-        return (
-            candidates_user_embeddings,
-            candidates_item_embeddings,
-            mt_target_preds,
-        )
+        return mt_target_preds
 
     # =========================================================================
     # forward: KJT → preprocess → main_forward
@@ -528,11 +516,7 @@ class DlrmHSTU(HammerModule):
         self,
         uih_features: KeyedJaggedTensor,
         candidates_features: KeyedJaggedTensor,
-    ) -> Tuple[
-        torch.Tensor,
-        torch.Tensor,
-        Optional[torch.Tensor],
-    ]:
+    ) -> torch.Tensor:
         with record_function("## preprocess ##"):
             (
                 seq_embeddings,

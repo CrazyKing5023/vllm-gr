@@ -143,16 +143,22 @@ def main():
     print(f"   Time: {method2_time:.2f}ms")
     print(f"   Outputs: {len(outputs_batch)}")
     
-    # 6. Display sample results
-    print(f"\n[Sample Results (first 3 users)]")
+    # 6. Display results for all users
+    print(f"\n[Results By User]")
     print(f"   (Note: Scores are from explicitly enabled random-init demo mode)")
-    for i, output in enumerate(outputs[:3]):
-        sample_items = [item.item_id for item in output.recommendations[:3]]
-        sample_scores = [f"{item.score:.3f}" for item in output.recommendations[:3]]
+    for i, output in enumerate(outputs):
         print(f"\n   User {i}: {output.user_id}")
         print(f"     Request ID: {output.request_id}")
-        print(f"     Candidate IDs: {sample_items}")
-        print(f"     Candidate scores: {sample_scores}")
+        print(f"     Candidate scores:")
+        for item in output.recommendations:
+            display_line = f"item_{item.item_id} score={item.score:.3f}"
+            if item.task_scores:
+                task_suffix = "  ".join(
+                    f"{task_name}={task_score:.3f}"
+                    for task_name, task_score in item.task_scores.items()
+                )
+                display_line = f"{display_line}  {task_suffix}"
+            print(f"       {display_line}")
     
     # 7. Summary statistics
     print(f"\n[Performance Summary]")
@@ -166,8 +172,8 @@ def main():
     print(f"   Type: {type(sample).__name__}")
     print(f"   Attributes: request_id, user_id, recommendations, finished, metrics")
     print(f"   Recommendation type: {type(sample.recommendations[0]).__name__}")
-    print(f"   Item attributes: item_id, score, features")
-    
+    print(f"   Item attributes: item_id, score, features, task_scores")
+
     # 9. Serialization example
     print(f"\n[Serialization Example]")
     output_dict = outputs[0].to_dict()

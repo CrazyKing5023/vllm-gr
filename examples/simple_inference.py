@@ -128,7 +128,14 @@ def main():
 
         print(f"\n   Candidate score list:")
         for item in output.recommendations:
-            print(f"   item_{item.item_id:<10} score={item.score:.4f}")
+            display_line = f"item_{item.item_id:<10} score={item.score:.4f}"
+            if item.task_scores:
+                task_suffix = "  ".join(
+                    f"{task_name}={task_score:.4f}"
+                    for task_name, task_score in item.task_scores.items()
+                )
+                display_line = f"{display_line}  {task_suffix}"
+            print(f"   {display_line}")
 
         # 5. Access additional properties
         print(f"\n[Output Summary]")

@@ -232,7 +232,7 @@ class TestGRRequestState(unittest.TestCase):
 
     def test_make_gr_output_basic(self):
         state = self._make_state()
-        scores = torch.tensor([0.1, 0.5, 0.3, 0.8, 0.2])
+        scores = torch.tensor([[0.1, 0.5, 0.3, 0.8, 0.2]])
 
         from vllm_gr.outputs import GRRequestOutput
 
@@ -247,7 +247,7 @@ class TestGRRequestState(unittest.TestCase):
     def test_make_gr_output_preserves_all_candidate_scores(self):
         candidates = [{"item_candidate_id": i} for i in range(10)]
         state = self._make_state(candidates=candidates)
-        scores = torch.tensor([0.1, 0.9, 0.3, 0.8, 0.5, 0.2, 0.7, 0.4, 0.6, 0.15])
+        scores = torch.tensor([[0.1, 0.9, 0.3, 0.8, 0.5, 0.2, 0.7, 0.4, 0.6, 0.15]])
 
         output = state._make_gr_output(scores, finish_reason="stop")
 
@@ -258,10 +258,16 @@ class TestGRRequestState(unittest.TestCase):
 
     def test_make_gr_output_rejects_candidate_score_mismatch(self):
         state = self._make_state(candidates=[{"item_candidate_id": 10}, {"item_candidate_id": 20}])
-        scores = torch.tensor([0.1])
+        scores = torch.tensor([[0.1]])
 
         with self.assertRaisesRegex(ValueError, "candidate/score count mismatch"):
             state._make_gr_output(scores, finish_reason="stop")
+
+    def test_make_gr_output_rejects_non_2d_scores(self):
+        state = self._make_state()
+
+        with self.assertRaisesRegex(ValueError, "must be 2D"):
+            state._make_gr_output(torch.tensor([0.1, 0.5]), finish_reason="stop")
 
     def test_make_request_output_keeps_empty_candidate_requests_in_gr_path(self):
         state = self._make_state(candidates=[])
@@ -289,7 +295,7 @@ class TestGRRequestState(unittest.TestCase):
         )
 
         output = state._make_gr_output(
-            torch.tensor([0.1, 0.2]),
+            torch.tensor([[0.1, 0.2]]),
             finish_reason="stop",
         )
 

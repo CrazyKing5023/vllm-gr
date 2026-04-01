@@ -61,6 +61,12 @@
     "is_click", "is_like", "is_follow", "is_comment",
     "is_forward", "is_hate", "long_view", "is_profile_enter"
   ],
+  "task_types": [
+    "binary_classification", "binary_classification",
+    "binary_classification", "binary_classification",
+    "binary_classification", "binary_classification",
+    "binary_classification", "binary_classification"
+  ],
 
   "embedding_tables": [
     {

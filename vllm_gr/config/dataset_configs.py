@@ -132,6 +132,7 @@ def get_hstu_config_overrides(dataset: str) -> Dict[str, Any]:
         ]
         overrides["action_weights"] = [1, 2, 4, 8, 16]
         overrides["task_names"] = ["rating"]
+        overrides["task_types"] = ["binary_classification"]
 
     elif dataset_family == "streaming":
         overrides["hash_size"] = HASH_SIZE_1B
@@ -171,6 +172,7 @@ def get_hstu_config_overrides(dataset: str) -> Dict[str, Any]:
         overrides["action_weights"] = [1, 2, 4, 8, 16]
         overrides["action_embedding_init_std"] = 5.0
         overrides["task_names"] = ["rating"]
+        overrides["task_types"] = ["binary_classification"]
 
     elif dataset_family == "kuairand":
         overrides["contextual_feature_to_max_length"] = {
@@ -211,6 +213,9 @@ def get_hstu_config_overrides(dataset: str) -> Dict[str, Any]:
             "is_click", "is_like", "is_follow", "is_comment",
             "is_forward", "is_hate", "long_view", "is_profile_enter",
         ]
+        overrides["task_types"] = [
+            "binary_classification",
+        ] * len(overrides["task_names"])
 
     else:
         overrides["contextual_feature_to_max_length"] = {
@@ -250,6 +255,7 @@ def get_hstu_config_overrides(dataset: str) -> Dict[str, Any]:
             ["uih_surface_type", "item_surface_type"],
         ]
         overrides["task_names"] = ["vvp100"]
+        overrides["task_types"] = ["binary_classification"]
 
     return overrides
 

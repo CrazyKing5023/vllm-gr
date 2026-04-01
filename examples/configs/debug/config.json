@@ -59,6 +59,7 @@
 
   "hash_size": 10000,
   "task_names": ["vvp100"],
+  "task_types": ["binary_classification"],
 
   "embedding_tables": [
     {

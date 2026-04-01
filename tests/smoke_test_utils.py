@@ -46,6 +46,7 @@ def _build_fake_hf_config():
             ["item_id", "item_candidate_id"],
         ],
         task_names=["is_click"],
+        task_types=["binary_classification"],
     )
 
 

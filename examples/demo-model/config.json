@@ -40,6 +40,7 @@
 
   "hash_size": 10000,
   "task_names": ["is_click"],
+  "task_types": ["binary_classification"],
 
   "embedding_tables": [
     {

@@ -65,6 +65,7 @@
 
   "hash_size": 10000000,
   "task_names": ["rating"],
+  "task_types": ["binary_classification"],
 
   "embedding_tables": [
     {

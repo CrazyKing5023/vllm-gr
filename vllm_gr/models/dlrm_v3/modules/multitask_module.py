@@ -12,22 +12,16 @@ parity is out of scope for the inference-only recommendation runtime.
 import abc
 import logging
 from dataclasses import dataclass
-from enum import IntEnum
 from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
+from vllm_gr.config.multitask_types import MultitaskTaskType
 from vllm_gr.models.dlrm_v3.common import HammerModule
 
 logger: logging.Logger = logging.getLogger(__name__)
-
-
-class MultitaskTaskType(IntEnum):
-    BINARY_CLASSIFICATION = 0
-    REGRESSION = 1
-
 
 @dataclass
 class TaskConfig:
@@ -46,12 +40,7 @@ class MultitaskModule(HammerModule):
         item_embeddings: torch.Tensor,
         supervision_labels: Dict[str, torch.Tensor],
         supervision_weights: Dict[str, torch.Tensor],
-    ) -> Tuple[
-        torch.Tensor,
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-    ]:
+    ) -> torch.Tensor:
         pass
 
 
@@ -117,15 +106,7 @@ class DefaultMultitaskModule(MultitaskModule):
         self,
         encoded_user_embeddings: torch.Tensor,
         item_embeddings: torch.Tensor,
-        supervision_labels: Dict[str, torch.Tensor],
-        supervision_weights: Dict[str, torch.Tensor],
-    ) -> Tuple[
-        torch.Tensor,
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-    ]:
-        orig_dtype = encoded_user_embeddings.dtype
+    ) -> torch.Tensor:
 
         mt_preds, mt_logits = _compute_pred_and_logits(
             prediction_module=self._prediction_module,
@@ -135,9 +116,4 @@ class DefaultMultitaskModule(MultitaskModule):
             has_multiple_task_types=self._has_multiple_task_types,
         )
 
-        # For inference, we don't compute losses
-        mt_labels: Optional[torch.Tensor] = None
-        mt_weights: Optional[torch.Tensor] = None
-        mt_losses: Optional[torch.Tensor] = None
-
-        return (mt_preds, mt_labels, mt_weights, mt_losses)
+        return mt_preds
