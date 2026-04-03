@@ -29,6 +29,7 @@ classifiers = [
 # Shared dependencies only. Platform runtimes are selected via extras.
 dependencies = [
     "msgspec",
+    "pandas>=2.0.0",
     "tqdm>=4.66.0",
 ]
 
