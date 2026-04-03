@@ -18,6 +18,11 @@ import logging
 from vllm.engine.arg_utils import EngineArgs
 from vllm.platforms import current_platform
 
+from vllm_gr.config.hstu_config import (
+    get_hstu_contextual_seq_len,
+    get_hstu_full_sequence_len,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,7 +39,7 @@ class GREngineArgs(EngineArgs):
         tensor_parallel_size: Tensor parallelism degree
         gpu_memory_utilization: GPU memory utilization fraction
         disable_log_stats: Whether to disable logging statistics
-        max_model_len: Maximum model length (maps to max_seq_len for GR)
+        max_model_len: Maximum scheduler-visible model length
         
     GR-specific parameters:
         max_seq_len: Maximum user history sequence length
@@ -135,6 +140,15 @@ class GREngineArgs(EngineArgs):
         return None
 
     def _read_model_type_from_local_config(self) -> Optional[str]:
+        config = self._read_local_config_dict()
+        if config is None:
+            return None
+        model_type = config.get("model_type")
+        if isinstance(model_type, str):
+            return self._normalize_model_family(model_type)
+        return None
+
+    def _read_local_config_dict(self) -> Optional[Dict[str, Any]]:
         if not self.model or not os.path.isdir(self.model):
             return None
 
@@ -144,16 +158,11 @@ class GREngineArgs(EngineArgs):
 
         try:
             with open(config_path, "r") as f:
-                config = json.load(f)
+                return json.load(f)
         except Exception as exc:
             raise RuntimeError(
                 f"Failed to read local model config at {config_path}: {exc}"
             ) from exc
-
-        model_type = config.get("model_type")
-        if isinstance(model_type, str):
-            return self._normalize_model_family(model_type)
-        return None
 
     def _resolve_model_family(self) -> Optional[str]:
         """Resolve the GR model family without assuming unknown == HSTU."""
@@ -181,11 +190,22 @@ class GREngineArgs(EngineArgs):
             return
 
         self.trust_remote_code = True
+        required_max_model_len = self._get_hstu_runtime_max_model_len()
         if self.max_model_len is None:
-            self.max_model_len = self.max_seq_len
+            self.max_model_len = required_max_model_len
+        elif self.max_model_len < required_max_model_len:
+            raise ValueError(
+                "For HSTU, max_model_len must cover the scheduler-visible full "
+                "sequence: contextual prefix + UIH/history + candidates. "
+                f"Got max_model_len={self.max_model_len}, but the current "
+                f"runtime settings require at least {required_max_model_len} "
+                f"(max_seq_len={self.max_seq_len}, "
+                f"max_candidates={self.max_candidates})."
+            )
         self.skip_tokenizer_init = True
         self.runner = "pooling"
         self.enforce_eager = True
+        self._ensure_hstu_model_max_length_override(required_max_model_len)
 
         # HSTU models don't use KV cache, so prefix caching must be disabled.
         self.enable_prefix_caching = False
@@ -222,6 +242,48 @@ class GREngineArgs(EngineArgs):
                 "If this is an intentional demo/random-init run, pass "
                 "allow_missing_weights=True explicitly."
             )
+
+    def _resolve_hstu_contextual_seq_len(self) -> int:
+        if isinstance(self.hf_overrides, dict):
+            contextual_seq_len = get_hstu_contextual_seq_len(self.hf_overrides)
+            if contextual_seq_len > 0:
+                return contextual_seq_len
+
+        local_config = self._read_local_config_dict()
+        if local_config is not None:
+            return get_hstu_contextual_seq_len(local_config)
+        return 0
+
+    def _get_hstu_runtime_max_model_len(self) -> int:
+        return get_hstu_full_sequence_len(
+            max_seq_len=self.max_seq_len,
+            max_candidates=self.max_candidates,
+            contextual_seq_len=self._resolve_hstu_contextual_seq_len(),
+        )
+
+    def _ensure_hstu_model_max_length_override(self, max_model_len: int) -> None:
+        if isinstance(self.hf_overrides, dict):
+            current_value = self.hf_overrides.get("model_max_length")
+            if current_value is None or int(current_value) < max_model_len:
+                self.hf_overrides["model_max_length"] = max_model_len
+            return
+
+        if self.hf_overrides is None:
+            self.hf_overrides = {"model_max_length": max_model_len}
+            return
+
+        if callable(self.hf_overrides):
+            original_overrides = self.hf_overrides
+
+            def _wrapped_hf_overrides(config):
+                updated = original_overrides(config)
+                target = updated if updated is not None else config
+                current_value = getattr(target, "model_max_length", None)
+                if current_value is None or int(current_value) < max_model_len:
+                    setattr(target, "model_max_length", max_model_len)
+                return updated
+
+            self.hf_overrides = _wrapped_hf_overrides
     
     def _apply_dataset_overrides(self) -> None:
         """Merge dataset-specific overrides into ``hf_overrides`` (in-memory).

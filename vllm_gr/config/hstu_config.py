@@ -391,6 +391,63 @@ def _validate_hstu_config_consistency(config: "HSTUConfig") -> None:
         )
 
 
+def _read_hstu_config_value(
+    config: Any,
+    key: str,
+    default: Any,
+) -> Any:
+    if isinstance(config, dict):
+        return config.get(key, default)
+    return getattr(config, key, default)
+
+
+def get_hstu_contextual_seq_len(config: Any) -> int:
+    """Return the fixed contextual-prefix token count for one request."""
+    contextual_mapping = _read_hstu_config_value(
+        config,
+        "contextual_feature_to_max_length",
+        {},
+    ) or {}
+    return int(sum(int(length) for length in contextual_mapping.values()))
+
+
+def get_hstu_full_sequence_len(
+    *,
+    max_seq_len: int,
+    max_candidates: int,
+    contextual_seq_len: int = 0,
+) -> int:
+    """Return the scheduler-visible HSTU full sequence length."""
+    return int(contextual_seq_len) + int(max_seq_len) + int(max_candidates)
+
+
+def get_hstu_max_model_len(
+    config: Any,
+    *,
+    max_seq_len: Optional[int] = None,
+    max_candidates: Optional[int] = None,
+) -> int:
+    """Derive HSTU max_model_len using full visible-sequence semantics."""
+    resolved_max_seq_len = int(
+        max_seq_len
+        if max_seq_len is not None
+        else _read_hstu_config_value(config, "max_seq_len", 0)
+    )
+    resolved_max_candidates = int(
+        max_candidates
+        if max_candidates is not None
+        else max(
+            int(_read_hstu_config_value(config, "max_num_candidates", 0)),
+            int(_read_hstu_config_value(config, "max_num_candidates_inference", 0)),
+        )
+    )
+    return get_hstu_full_sequence_len(
+        max_seq_len=resolved_max_seq_len,
+        max_candidates=resolved_max_candidates,
+        contextual_seq_len=get_hstu_contextual_seq_len(config),
+    )
+
+
 class HSTUConfig(PretrainedConfig):
     """PretrainedConfig subclass for HSTU models (model_type="hstu")."""
 
@@ -434,6 +491,7 @@ class HSTUConfig(PretrainedConfig):
         causal_multitask_weights: float = 0.2,
         enable_postprocessor: bool = True,
         use_layer_norm_postprocessor: bool = False,
+        enable_kv_cache: bool = True,
         hash_size: int = 10_000_000,
         task_names: Optional[List[str]] = None,
         task_types: Optional[List[str]] = None,
@@ -509,6 +567,7 @@ class HSTUConfig(PretrainedConfig):
         self.causal_multitask_weights = causal_multitask_weights
         self.enable_postprocessor = enable_postprocessor
         self.use_layer_norm_postprocessor = use_layer_norm_postprocessor
+        self.enable_kv_cache = bool(enable_kv_cache)
 
         if not isinstance(hash_size, int) or hash_size <= 0:
             raise ValueError(
@@ -557,4 +616,9 @@ class HSTUConfig(PretrainedConfig):
         return config_dict
 
 
-__all__ = ["HSTUConfig"]
+__all__ = [
+    "HSTUConfig",
+    "get_hstu_contextual_seq_len",
+    "get_hstu_full_sequence_len",
+    "get_hstu_max_model_len",
+]

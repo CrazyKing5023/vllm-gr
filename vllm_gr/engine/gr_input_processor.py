@@ -113,6 +113,17 @@ class GRInputProcessor(InputProcessor):
             data_parallel_rank=data_parallel_rank,
         )
 
+    def _get_contextual_seq_len(self) -> int:
+        vllm_config = getattr(self, "vllm_config", None)
+        hf_config = getattr(vllm_config, "model_config", None)
+        if hf_config is not None:
+            hf_config = getattr(hf_config, "hf_config", None)
+        if hf_config is None:
+            hf_config = getattr(vllm_config, "hf_config", None)
+        return int(
+            sum(getattr(hf_config, "contextual_feature_to_max_length", {}).values())
+        )
+
     def _process_gr_prompt(
         self,
         request_id: str,
@@ -205,17 +216,13 @@ class GRInputProcessor(InputProcessor):
             original_candidates=[dict(c) for c in candidates],
         )
 
-        pid = self.primary_id_feature_name
-        if pid in uih_keys:
-            idx = uih_keys.index(pid)
-            prompt_token_ids = uih_values_per_key[idx]
-        elif recent_history:
-            raise ValueError(
-                f"UIH features are missing primary id feature {pid!r}; "
-                "request schema does not match model configuration"
-            )
-        else:
-            prompt_token_ids = [0]
+        prompt_token_ids = self._build_prompt_token_ids(
+            uih_keys=uih_keys,
+            uih_values_per_key=uih_values_per_key,
+            history_len=len(recent_history),
+            num_candidates=len(candidates),
+            contextual_seq_len=self._get_contextual_seq_len(),
+        )
 
         request = GREngineCoreRequest(
             request_id=request_id,
@@ -242,6 +249,40 @@ class GRInputProcessor(InputProcessor):
         )
 
         return request
+
+    def _build_prompt_token_ids(
+        self,
+        uih_keys: list[str],
+        uih_values_per_key: list[list[int]],
+        history_len: int,
+        num_candidates: int,
+        contextual_seq_len: int = 0,
+    ) -> list[int]:
+        """Build scheduler-visible token ids for the logical HSTU full sequence."""
+        total_len = contextual_seq_len + history_len + num_candidates
+        if total_len <= 0:
+            return [0]
+
+        prefix_placeholders = [0] * contextual_seq_len
+        pid = self.primary_id_feature_name
+        if pid not in uih_keys:
+            return prefix_placeholders + ([0] * (history_len + num_candidates))
+
+        history_key_idx = uih_keys.index(pid)
+        history_token_ids = list(uih_values_per_key[history_key_idx])
+        if len(history_token_ids) != history_len:
+            logger.warning(
+                "Primary history feature %s length mismatch: expected %d, got %d; "
+                "padding or truncating scheduler tokens to match.",
+                pid,
+                history_len,
+                len(history_token_ids),
+            )
+            history_token_ids = history_token_ids[:history_len]
+            if len(history_token_ids) < history_len:
+                history_token_ids.extend([0] * (history_len - len(history_token_ids)))
+
+        return prefix_placeholders + history_token_ids + ([0] * num_candidates)
 
     @staticmethod
     def attach_schema_fingerprint(

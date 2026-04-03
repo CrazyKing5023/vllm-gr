@@ -13,7 +13,7 @@ from vllm.transformers_utils.model_arch_config_convertor import (
     ModelArchConfigConvertorBase,
 )
 
-from vllm_gr.config.hstu_config import HSTUConfig
+from vllm_gr.config.hstu_config import HSTUConfig, get_hstu_max_model_len
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +37,14 @@ class HSTUModelArchConfigConvertor(ModelArchConfigConvertorBase):
         return self.hf_text_config.hash_size
 
     def get_total_num_kv_heads(self) -> int:
+        if getattr(self.hf_text_config, "enable_kv_cache", False):
+            return self.hf_text_config.hstu_num_heads
         return 0
 
     def derive_max_model_len_and_key(self) -> tuple:
-        return float(self.hf_text_config.max_seq_len), "max_seq_len"
+        return float(get_hstu_max_model_len(self.hf_text_config)), (
+            "hstu_full_visible_seq_len"
+        )
 
 
 _HSTU_CONFIG_REGISTERED = False

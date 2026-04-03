@@ -117,11 +117,18 @@ class HSTUForRecommendation(nn.Module):
     ):
         super().__init__()
         self.prefix = prefix
+        self.vllm_config = vllm_config
 
         if vllm_config is not None:
             config = vllm_config.model_config.hf_config
 
         self.config = config
+        self.enable_kv_cache = bool(getattr(self.config, "enable_kv_cache", False))
+        self.kv_cache_dtype = (
+            getattr(self.config, "kv_cache_dtype", None)
+            or getattr(self.config, "torch_dtype", torch.bfloat16)
+        )
+        self._hstu_kv_cache_layers = nn.ModuleList()
         dense_device_override = (
             torch.device(device) if device is not None else None
         )
@@ -130,17 +137,19 @@ class HSTUForRecommendation(nn.Module):
         )
 
         self._create_hstu_model()
+        self._init_hstu_kv_cache_layers()
 
         self._pooler = HSTUPooler(self.config.hstu_transducer_embedding_dim)
 
         logger.info(
             "HSTUForRecommendation initialized: layers=%d, heads=%d, dim=%d, "
-            "dense_device=%s, embedding_device=%s",
+            "dense_device=%s, embedding_device=%s, enable_kv_cache=%s",
             self.config.hstu_attn_num_layers,
             self.config.hstu_num_heads,
             self.config.hstu_transducer_embedding_dim,
             self._dense_device,
             self._embedding_device,
+            self.enable_kv_cache,
         )
 
     @property
@@ -241,6 +250,89 @@ class HSTUForRecommendation(nn.Module):
             )
         return configs
 
+    def _get_hstu_attention_metadata(self) -> Optional[Any]:
+        if not self.enable_kv_cache or len(self._hstu_kv_cache_layers) == 0:
+            return None
+
+        try:
+            from vllm.forward_context import (
+                get_forward_context,
+                is_forward_context_available,
+            )
+        except ImportError:
+            return None
+
+        if not is_forward_context_available():
+            return None
+
+        attn_metadata = get_forward_context().attn_metadata
+        if isinstance(attn_metadata, list):
+            if not attn_metadata:
+                return None
+            attn_metadata = attn_metadata[0]
+        if not isinstance(attn_metadata, dict):
+            return None
+
+        for cache_layer in self._hstu_kv_cache_layers:
+            layer_name = getattr(cache_layer, "layer_name", None)
+            if layer_name is None:
+                continue
+            metadata = attn_metadata.get(layer_name)
+            if metadata is not None:
+                expected_total_tokens = int(
+                    (
+                        metadata.history_lengths.to(dtype=torch.int64)
+                        + int(getattr(metadata, "contextual_seq_len", 0))
+                        + metadata.num_targets.to(dtype=torch.int64)
+                    ).sum().item()
+                )
+                slot_mapping = getattr(
+                    getattr(metadata, "common_attn_metadata", None),
+                    "slot_mapping",
+                    None,
+                )
+                actual_token_slots = int(slot_mapping.numel()) if slot_mapping is not None else 0
+                if actual_token_slots < expected_total_tokens:
+                    logger.warning(
+                        "Disable native HSTU KV cache for this step because "
+                        "scheduler-visible token slots do not cover the full "
+                        "HSTU sequence: slots=%d expected=%d",
+                        actual_token_slots,
+                        expected_total_tokens,
+                    )
+                    return None
+                metadata.cache_layers = list(self._hstu_kv_cache_layers)
+                return metadata
+        return None
+
+    def _init_hstu_kv_cache_layers(self) -> None:
+        if not self.enable_kv_cache or self.vllm_config is None:
+            return
+
+        from vllm_gr.model_executor.layers.hstu_attention_layer import (
+            HSTUKVCacheAttentionLayer,
+        )
+
+        layer_prefix = (
+            f"{self.prefix}.hstu_kv_cache_layers"
+            if self.prefix
+            else "hstu_kv_cache_layers"
+        )
+        self._hstu_kv_cache_layers = nn.ModuleList(
+            [
+                HSTUKVCacheAttentionLayer(
+                    layer_name=f"{layer_prefix}.{idx}",
+                    num_heads=self.config.hstu_num_heads,
+                    head_size=self.config.hstu_attn_qk_dim,
+                    head_size_v=self.config.hstu_attn_linear_dim,
+                    dtype=self.kv_cache_dtype,
+                    vllm_config=self.vllm_config,
+                    enable_kv_cache=self.enable_kv_cache,
+                )
+                for idx in range(self.config.hstu_attn_num_layers)
+            ]
+        )
+
     # ------------------------------------------------------------------
     # Model creation
     # ------------------------------------------------------------------
@@ -301,6 +393,7 @@ class HSTUForRecommendation(nn.Module):
             causal_multitask_weights=getattr(self.config, "causal_multitask_weights", 0.2),
             enable_postprocessor=getattr(self.config, "enable_postprocessor", True),
             use_layer_norm_postprocessor=getattr(self.config, "use_layer_norm_postprocessor", False),
+            enable_kv_cache=getattr(self.config, "enable_kv_cache", False),
         )
 
         embedding_configs = self._build_embedding_configs()
@@ -414,6 +507,7 @@ class HSTUForRecommendation(nn.Module):
         )
 
         # Phase 2: dense forward on the active accelerator.
+        hstu_attn_metadata = self._get_hstu_attention_metadata()
         predictions = self.hstu.main_forward(
             seq_embeddings=seq_embeddings,
             payload_features=payload_features,
@@ -421,6 +515,7 @@ class HSTUForRecommendation(nn.Module):
             uih_seq_lengths=uih_seq_lengths,
             max_num_candidates=max_num_candidates,
             num_candidates=num_candidates,
+            hstu_attn_metadata=hstu_attn_metadata,
         )
 
         return self._split_pooling_predictions(predictions, num_candidates)

@@ -120,7 +120,6 @@ def pytorch_hstu_mha(
     dropout_pr: float = 0.0,
     training: bool = True,
     num_targets: Optional[torch.Tensor] = None,
-    attn_scale: Optional[torch.Tensor] = None,
     max_attn_len: int = 0,
     contextual_seq_len: int = 0,
     min_full_attn_seq_len: int = 0,
@@ -137,7 +136,6 @@ def pytorch_hstu_mha(
         dropout_pr: Dropout probability
         training: Training mode flag
         num_targets: Number of target items per sequence
-        attn_scale: Optional attention scale
         max_attn_len: Maximum attention length
         contextual_seq_len: Contextual sequence length
         min_full_attn_seq_len: Minimum full attention sequence length
@@ -153,20 +151,7 @@ def pytorch_hstu_mha(
     
     # Compute attention scores
     qk_attn = torch.einsum("bhxa,bhya->bhxy", q, k) * alpha
-    
-    if attn_scale is not None:
-        if attn_scale.ndim > 0:
-            attn_scale = jagged_to_padded_dense(
-                values=attn_scale.unsqueeze(-1),
-                offsets=[seq_offsets],
-                max_lengths=[max_seq_len],
-                padding_value=0.0,
-            ).unsqueeze(1).to(qk_attn.dtype)
-        else:
-            attn_scale = attn_scale.item()
-        qk_attn = F.silu(qk_attn) * attn_scale
-    else:
-        qk_attn = F.silu(qk_attn) / max_seq_len
+    qk_attn = F.silu(qk_attn) / max_seq_len
     
     # Apply attention mask
     valid_attn_mask = _get_valid_attn_mask(
@@ -213,9 +198,38 @@ def pytorch_cached_hstu_mha(
     L, H, D = delta_q.shape
     _, _, V_dim = v.shape
     B = seq_offsets.size(0) - 1
-    delta_size = L // B
-    
-    delta_q = delta_q.view(B, -1, H, D).transpose(1, 2)
+    if num_targets is None:
+        if B == 0:
+            return delta_q.new_empty((0, H, V_dim))
+        if L % B != 0:
+            raise ValueError(
+                "pytorch_cached_hstu_mha requires num_targets for variable-size "
+                f"delta batches; got total_delta_tokens={L}, batch_size={B}."
+            )
+        num_targets = torch.full(
+            (B,),
+            L // B,
+            dtype=seq_offsets.dtype,
+            device=delta_q.device,
+        )
+    else:
+        num_targets = num_targets.to(device=delta_q.device, dtype=seq_offsets.dtype)
+
+    delta_offsets = torch.zeros(
+        B + 1,
+        dtype=seq_offsets.dtype,
+        device=delta_q.device,
+    )
+    if B > 0:
+        delta_offsets[1:] = torch.cumsum(num_targets, dim=0)
+    max_delta_len = int(num_targets.max().item()) if num_targets.numel() > 0 else 0
+
+    delta_q = jagged_to_padded_dense(
+        values=delta_q.reshape(L, H * D),
+        offsets=[delta_offsets],
+        max_lengths=[max_delta_len],
+        padding_value=0.0,
+    ).view(B, max_delta_len, H, D).transpose(1, 2)
     
     full_k = jagged_to_padded_dense(
         values=k.reshape(-1, H * D),
@@ -230,7 +244,7 @@ def pytorch_cached_hstu_mha(
         max_lengths=[max_seq_len],
         padding_value=0.0,
     ).view(B, -1, H, V_dim).transpose(1, 2)
-    
+
     qk_attn = torch.einsum("bhxa,bhya->bhxy", delta_q, full_k) * alpha
     qk_attn = F.silu(qk_attn) / max_seq_len
     
@@ -245,20 +259,27 @@ def pytorch_cached_hstu_mha(
     )
     
     seq_lengths = seq_offsets[1:] - seq_offsets[:-1]
-    mask = torch.arange(max_seq_len, device=delta_q.device).view(1, -1)
-    mask = torch.logical_and(
-        mask >= (seq_lengths - delta_size).view(-1, 1),
-        mask < seq_lengths.view(-1, 1),
+    row_ids = (
+        seq_lengths.view(-1, 1)
+        - num_targets.view(-1, 1)
+        + torch.arange(max_delta_len, device=delta_q.device).view(1, -1)
     )
-    
-    valid_attn_mask = (
-        full_valid_attn_mask.expand(B, -1, -1)
-        .flatten(0, 1)[mask.view(-1), :]
-        .view(-1, delta_size, max_seq_len)
+    valid_delta_rows = (
+        torch.arange(max_delta_len, device=delta_q.device).view(1, -1)
+        < num_targets.view(-1, 1)
     )
+    row_ids = torch.clamp(row_ids, min=0, max=max_seq_len - 1)
+    valid_attn_mask = full_valid_attn_mask.gather(
+        dim=1,
+        index=row_ids.unsqueeze(-1).expand(-1, -1, max_seq_len),
+    )
+    valid_attn_mask = valid_attn_mask * valid_delta_rows.unsqueeze(-1)
     
     qk_attn = qk_attn * valid_attn_mask.unsqueeze(1)
     attn_output = torch.einsum("bhxd,bhdv->bhxv", qk_attn, full_v)
-    
-    return attn_output.transpose(1, 2).reshape(-1, H, V_dim)
+
+    return dense_to_jagged(
+        attn_output.transpose(1, 2).reshape(B, max_delta_len, H * V_dim),
+        [delta_offsets],
+    ).view(L, H, V_dim)
 
