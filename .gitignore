@@ -221,7 +221,9 @@ weights/
 *.tsv
 *.pkl
 *.pickle
+*.zip
 data/
+tmp/
 
 # Profiling
 *.prof
