@@ -23,10 +23,10 @@ Runtime topology:
 from functools import partial
 import inspect
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
-import logging
 
 import torch
 import torch.nn as nn
+from vllm.logger import init_logger
 
 from vllm_gr.utils import (
     move_hstu_sparse_inputs_to_device,
@@ -34,7 +34,7 @@ from vllm_gr.utils import (
     resolve_hstu_runtime_devices,
 )
 
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 
 
 def _get_callable_keyword_names(callable_obj: Any) -> tuple[set[str], bool]:
@@ -291,15 +291,39 @@ class HSTUForRecommendation(nn.Module):
                     "slot_mapping",
                     None,
                 )
+                num_computed_tokens = getattr(
+                    getattr(metadata, "common_attn_metadata", None),
+                    "_num_computed_tokens_cpu",
+                    None,
+                )
                 actual_token_slots = int(slot_mapping.numel()) if slot_mapping is not None else 0
+                actual_computed_tokens = (
+                    int(num_computed_tokens.to(dtype=torch.int64).sum().item())
+                    if num_computed_tokens is not None
+                    else 0
+                )
                 if actual_token_slots < expected_total_tokens:
-                    logger.warning(
-                        "Disable native HSTU KV cache for this step because "
-                        "scheduler-visible token slots do not cover the full "
-                        "HSTU sequence: slots=%d expected=%d",
-                        actual_token_slots,
-                        expected_total_tokens,
-                    )
+                    if actual_token_slots + actual_computed_tokens >= expected_total_tokens:
+                        logger.debug_once(
+                            "Skip native HSTU KV cache for this step because "
+                            "scheduler-visible token slots only cover the new "
+                            "delta while previously computed/prefix-cached "
+                            "tokens already cover the rest of the logical HSTU "
+                            "sequence: slots=%d computed=%d expected=%d",
+                            actual_token_slots,
+                            actual_computed_tokens,
+                            expected_total_tokens,
+                        )
+                    else:
+                        logger.warning_once(
+                            "Disable native HSTU KV cache for this step because "
+                            "scheduler-visible token slots and previously "
+                            "computed tokens still do not cover the full HSTU "
+                            "sequence: slots=%d computed=%d expected=%d",
+                            actual_token_slots,
+                            actual_computed_tokens,
+                            expected_total_tokens,
+                        )
                     return None
                 metadata.cache_layers = list(self._hstu_kv_cache_layers)
                 return metadata

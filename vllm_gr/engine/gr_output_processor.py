@@ -10,7 +10,6 @@ into candidate-score GRRequestOutput objects.
 """
 
 from typing import Any
-import logging
 
 import numpy as np
 import torch
@@ -26,8 +25,6 @@ from vllm.v1.engine.output_processor import (
 from vllm.v1.engine.parallel_sampling import ParentRequest
 
 from vllm_gr.outputs import GRRequestOutput, RecommendedItem
-
-logger = logging.getLogger("vllm_gr.output_processor")
 
 
 class GRRequestState(RequestState):
@@ -246,6 +243,9 @@ class GROutputProcessor(VLLMOutputProcessor):
         self.primary_task: str = primary_task
         self.primary_id_key: str = primary_id_key
         self.request_states: dict[str, GRRequestState] = {}
+        self.total_prefix_cache_requests: int = 0
+        self.total_prefix_cache_queries: int = 0
+        self.total_prefix_cache_hits: int = 0
 
     @property
     def num_pending_requests(self) -> int:
@@ -283,3 +283,23 @@ class GROutputProcessor(VLLMOutputProcessor):
             self.parent_requests[parent_req.request_id] = parent_req
 
         self.external_req_ids[req_state.external_req_id].append(request_id)
+
+    def update_scheduler_stats(self, scheduler_stats: Any | None):
+        super().update_scheduler_stats(scheduler_stats)
+        if scheduler_stats is None:
+            return
+
+        prefix_cache_stats = getattr(scheduler_stats, "prefix_cache_stats", None)
+        if prefix_cache_stats is None:
+            return
+
+        self.total_prefix_cache_requests += int(prefix_cache_stats.requests)
+        self.total_prefix_cache_queries += int(prefix_cache_stats.queries)
+        self.total_prefix_cache_hits += int(prefix_cache_stats.hits)
+
+    def get_prefix_cache_counters(self) -> dict[str, int]:
+        return {
+            "requests": self.total_prefix_cache_requests,
+            "queries": self.total_prefix_cache_queries,
+            "hits": self.total_prefix_cache_hits,
+        }

@@ -65,6 +65,12 @@ class GRLLMEngine(LLMEngine):
 
         logger.info("GRLLMEngine initialized")
 
+    def get_prefix_cache_counters(self) -> dict[str, int]:
+        getter = getattr(self.output_processor, "get_prefix_cache_counters", None)
+        if callable(getter):
+            return getter()
+        return {"requests": 0, "queries": 0, "hits": 0}
+
     def shutdown(self) -> None:
         if getattr(self, "_shutdown_complete", False):
             return

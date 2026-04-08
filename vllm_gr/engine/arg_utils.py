@@ -207,9 +207,6 @@ class GREngineArgs(EngineArgs):
         self.enforce_eager = True
         self._ensure_hstu_model_max_length_override(required_max_model_len)
 
-        # HSTU models don't use KV cache, so prefix caching must be disabled.
-        self.enable_prefix_caching = False
-
         worker_cls = self._select_worker_cls_for_model_family(self.model_family)
         if worker_cls is not None:
             self.worker_cls = worker_cls

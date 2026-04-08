@@ -174,6 +174,9 @@ class GRLLM(LLM):
     def get_engine(self) -> GRLLMEngine:
         return self.llm_engine
 
+    def get_prefix_cache_counters(self) -> dict[str, int]:
+        return self.llm_engine.get_prefix_cache_counters()
+
     def shutdown(self) -> None:
         if hasattr(self, 'llm_engine') and self.llm_engine is not None:
             self.llm_engine.shutdown()

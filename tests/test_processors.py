@@ -6,6 +6,7 @@
 import os
 import sys
 import importlib
+import types
 import unittest
 
 import torch
@@ -32,6 +33,7 @@ _HAS_VLLM_RUNTIME = _has_vllm_processor_runtime()
 _SKIP_REASON = (
     "vLLM processor/runtime submodules are unavailable in this environment"
 )
+_INT32_MAX = (1 << 31) - 1
 
 
 # ── Feature Extraction ────────────────────────────────────────────
@@ -39,6 +41,39 @@ _SKIP_REASON = (
 
 @unittest.skipUnless(_HAS_VLLM_RUNTIME, _SKIP_REASON)
 class TestExtractFeatures(unittest.TestCase):
+
+    @staticmethod
+    def _make_processor_with_context_layout():
+        from vllm_gr.engine.gr_input_processor import GRInputProcessor
+
+        processor = GRInputProcessor.__new__(GRInputProcessor)
+        processor.max_seq_len = 512
+        processor.max_candidates = 8
+        processor.uih_feature_names = ["item_id", "timestamp"]
+        processor.full_uih_feature_names = ["viewer_id", "item_id", "timestamp"]
+        processor.context_feature_names = ["viewer_id"]
+        processor.candidate_feature_names = ["item_candidate_id", "item_query_time"]
+        processor.primary_id_feature_name = "item_id"
+        processor._validate_lora = lambda _lora_request: None
+        processor._extract_features = GRInputProcessor._extract_features
+        processor._extract_context_features = (
+            GRInputProcessor._extract_context_features
+        )
+        processor.attach_schema_fingerprint = (
+            GRInputProcessor.attach_schema_fingerprint
+        )
+        processor.validate_feature_group = GRInputProcessor.validate_feature_group
+        processor.validate_context_group = GRInputProcessor.validate_context_group
+        processor.vllm_config = types.SimpleNamespace(
+            model_config=types.SimpleNamespace(
+                hf_config=types.SimpleNamespace(
+                    model_type="hstu",
+                    contextual_feature_to_max_length={"viewer_id": 2},
+                    contextual_feature_to_min_uih_length={"viewer_id": 2},
+                )
+            )
+        )
+        return processor
 
     def test_extract_multi_key_features(self):
         from vllm_gr.engine.gr_input_processor import GRInputProcessor
@@ -186,6 +221,104 @@ class TestExtractFeatures(unittest.TestCase):
         )
         self.assertEqual(request.gr_features.uih_values_per_key, [[11, 12], [101, 102]])
         self.assertEqual(request.gr_features.ctx_values_per_key, [[7], [1]])
+
+    def test_process_gr_prompt_builds_stable_prompt_identity(self):
+        from vllm.pooling_params import PoolingParams
+
+        processor = self._make_processor_with_context_layout()
+        prompt = {
+            "user_id": "u-cache",
+            "user_history": [
+                {"item_id": 11, "timestamp": 101},
+                {"item_id": 12, "timestamp": 102},
+                {"item_id": 13, "timestamp": 103},
+            ],
+            "candidates": [
+                {"item_candidate_id": 21, "item_query_time": 1001},
+                {"item_candidate_id": 22, "item_query_time": 1002},
+            ],
+            "context": {"viewer_id": 7},
+        }
+
+        request_a = processor._process_gr_prompt(
+            request_id="req-a",
+            prompt=prompt,
+            params=PoolingParams(task="embed"),
+        )
+        request_b = processor._process_gr_prompt(
+            request_id="req-b",
+            prompt=prompt,
+            params=PoolingParams(task="embed"),
+        )
+
+        self.assertEqual(request_a.prompt_token_ids, request_b.prompt_token_ids)
+        self.assertEqual(request_a.cache_salt, request_b.cache_salt)
+        self.assertTrue(request_a.cache_salt.startswith("hstu-prefix-v1:"))
+        self.assertEqual(
+            len(request_a.prompt_token_ids),
+            2 + len(prompt["user_history"]) + len(prompt["candidates"]),
+        )
+        self.assertTrue(
+            all(0 <= token_id <= _INT32_MAX for token_id in request_a.prompt_token_ids)
+        )
+
+    def test_process_gr_prompt_prompt_identity_changes_with_context_and_candidates(self):
+        from vllm.pooling_params import PoolingParams
+
+        processor = self._make_processor_with_context_layout()
+        base_prompt = {
+            "user_id": "u-diff",
+            "user_history": [
+                {"item_id": 11, "timestamp": 101},
+                {"item_id": 12, "timestamp": 102},
+                {"item_id": 13, "timestamp": 103},
+            ],
+            "candidates": [
+                {"item_candidate_id": 21, "item_query_time": 1001},
+                {"item_candidate_id": 22, "item_query_time": 1002},
+            ],
+            "context": {"viewer_id": 7},
+        }
+        context_changed_prompt = {
+            **base_prompt,
+            "context": {"viewer_id": 8},
+        }
+        candidate_changed_prompt = {
+            **base_prompt,
+            "candidates": [
+                {"item_candidate_id": 99, "item_query_time": 1001},
+                {"item_candidate_id": 22, "item_query_time": 1002},
+            ],
+        }
+
+        base_request = processor._process_gr_prompt(
+            request_id="req-base",
+            prompt=base_prompt,
+            params=PoolingParams(task="embed"),
+        )
+        context_request = processor._process_gr_prompt(
+            request_id="req-context",
+            prompt=context_changed_prompt,
+            params=PoolingParams(task="embed"),
+        )
+        candidate_request = processor._process_gr_prompt(
+            request_id="req-candidate",
+            prompt=candidate_changed_prompt,
+            params=PoolingParams(task="embed"),
+        )
+
+        self.assertNotEqual(
+            base_request.prompt_token_ids[:2],
+            context_request.prompt_token_ids[:2],
+        )
+        self.assertEqual(
+            base_request.prompt_token_ids[2:5],
+            candidate_request.prompt_token_ids[2:5],
+        )
+        self.assertNotEqual(
+            base_request.prompt_token_ids[5:],
+            candidate_request.prompt_token_ids[5:],
+        )
 
 
 # ── Output Construction ──────────────────────────────────────────

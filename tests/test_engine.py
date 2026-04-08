@@ -76,6 +76,22 @@ class TestGREngineArgs(unittest.TestCase):
             args = GREngineArgs(model="test-model", model_family="hstu")
         self.assertEqual(args.worker_cls, "vllm_gr.worker.gr_worker.GRWorker")
 
+    def test_hstu_defaults_do_not_force_disable_prefix_caching(self):
+        from vllm_gr.engine.arg_utils import GREngineArgs
+
+        with mock.patch.object(
+            GREngineArgs,
+            "_is_ascend_platform",
+            return_value=False,
+        ):
+            args = GREngineArgs(
+                model="test-model",
+                model_family="hstu",
+                enable_prefix_caching=True,
+            )
+
+        self.assertTrue(args.enable_prefix_caching)
+
     def test_unknown_model_family_does_not_apply_hstu_defaults(self):
         from vllm_gr.engine.arg_utils import GREngineArgs
 
@@ -236,6 +252,43 @@ class TestGRRequest(unittest.TestCase):
 
         self.assertFalse(is_gr_request(None))
         self.assertFalse(is_gr_request({}))
+
+
+@unittest.skipUnless(_HAS_VLLM_RUNTIME, _SKIP_REASON)
+class TestGROutputProcessorStats(unittest.TestCase):
+
+    def test_prefix_cache_counters_accumulate_scheduler_stats(self):
+        from vllm.v1.metrics.stats import PrefixCacheStats, SchedulerStats
+        from vllm_gr.engine.gr_output_processor import GROutputProcessor
+
+        processor = GROutputProcessor(
+            tokenizer=None,
+            log_stats=False,
+            stream_interval=1,
+        )
+
+        stats_a = SchedulerStats(
+            prefix_cache_stats=PrefixCacheStats(
+                requests=1,
+                queries=50,
+                hits=0,
+            )
+        )
+        stats_b = SchedulerStats(
+            prefix_cache_stats=PrefixCacheStats(
+                requests=1,
+                queries=50,
+                hits=32,
+            )
+        )
+
+        processor.update_scheduler_stats(stats_a)
+        processor.update_scheduler_stats(stats_b)
+
+        self.assertEqual(
+            processor.get_prefix_cache_counters(),
+            {"requests": 2, "queries": 100, "hits": 32},
+        )
 
 
 if __name__ == "__main__":

@@ -23,6 +23,10 @@ from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import SamplingParams
 from vllm.tokenizers import TokenizerLike
 
+from vllm_gr.inputs.hstu_prompt_identity import (
+    build_hstu_cache_salt,
+    build_hstu_prompt_token_ids,
+)
 from vllm_gr.gr_schema import (
     attach_schema_fingerprint as _attach_schema_fingerprint,
     build_schema_fingerprint as _build_schema_fingerprint,
@@ -113,16 +117,35 @@ class GRInputProcessor(InputProcessor):
             data_parallel_rank=data_parallel_rank,
         )
 
-    def _get_contextual_seq_len(self) -> int:
+    def _get_hstu_config(self) -> Any | None:
         vllm_config = getattr(self, "vllm_config", None)
         hf_config = getattr(vllm_config, "model_config", None)
         if hf_config is not None:
             hf_config = getattr(hf_config, "hf_config", None)
         if hf_config is None:
             hf_config = getattr(vllm_config, "hf_config", None)
-        return int(
-            sum(getattr(hf_config, "contextual_feature_to_max_length", {}).values())
-        )
+        return hf_config
+
+    def _get_contextual_feature_to_max_length(self) -> dict[str, int]:
+        hf_config = self._get_hstu_config()
+        raw_mapping = getattr(hf_config, "contextual_feature_to_max_length", {}) or {}
+        return {str(key): int(value) for key, value in raw_mapping.items()}
+
+    def _get_contextual_feature_to_min_uih_length(self) -> dict[str, int]:
+        hf_config = self._get_hstu_config()
+        raw_mapping = getattr(
+            hf_config,
+            "contextual_feature_to_min_uih_length",
+            {},
+        ) or {}
+        return {str(key): int(value) for key, value in raw_mapping.items()}
+
+    def _get_model_type(self) -> str:
+        hf_config = self._get_hstu_config()
+        model_type = getattr(hf_config, "model_type", None)
+        if isinstance(model_type, str) and model_type:
+            return model_type
+        return "hstu"
 
     def _process_gr_prompt(
         self,
@@ -216,12 +239,34 @@ class GRInputProcessor(InputProcessor):
             original_candidates=[dict(c) for c in candidates],
         )
 
+        contextual_feature_to_max_length = (
+            self._get_contextual_feature_to_max_length()
+        )
+        contextual_feature_to_min_uih_length = (
+            self._get_contextual_feature_to_min_uih_length()
+        )
         prompt_token_ids = self._build_prompt_token_ids(
             uih_keys=uih_keys,
             uih_values_per_key=uih_values_per_key,
+            cand_keys=cand_keys,
+            cand_values_per_key=cand_values_per_key,
+            ctx_keys=ctx_keys,
+            ctx_values_per_key=ctx_values_per_key,
             history_len=len(recent_history),
             num_candidates=len(candidates),
-            contextual_seq_len=self._get_contextual_seq_len(),
+            contextual_feature_to_max_length=contextual_feature_to_max_length,
+            contextual_feature_to_min_uih_length=(
+                contextual_feature_to_min_uih_length
+            ),
+        )
+        cache_salt = build_hstu_cache_salt(
+            schema_fingerprint=schema_fingerprint,
+            contextual_feature_to_max_length=contextual_feature_to_max_length,
+            contextual_feature_to_min_uih_length=(
+                contextual_feature_to_min_uih_length
+            ),
+            primary_id_feature_name=self.primary_id_feature_name,
+            model_type=self._get_model_type(),
         )
 
         request = GREngineCoreRequest(
@@ -233,7 +278,7 @@ class GRInputProcessor(InputProcessor):
             eos_token_id=None,
             arrival_time=arrival_time,
             lora_request=lora_request,
-            cache_salt=None,
+            cache_salt=cache_salt,
             data_parallel_rank=data_parallel_rank,
             priority=priority,
             trace_headers=trace_headers,
@@ -254,35 +299,30 @@ class GRInputProcessor(InputProcessor):
         self,
         uih_keys: list[str],
         uih_values_per_key: list[list[int]],
+        cand_keys: list[str],
+        cand_values_per_key: list[list[int]],
+        ctx_keys: list[str],
+        ctx_values_per_key: list[list[int]],
         history_len: int,
         num_candidates: int,
-        contextual_seq_len: int = 0,
+        contextual_feature_to_max_length: dict[str, int] | None = None,
+        contextual_feature_to_min_uih_length: dict[str, int] | None = None,
     ) -> list[int]:
-        """Build scheduler-visible token ids for the logical HSTU full sequence."""
-        total_len = contextual_seq_len + history_len + num_candidates
-        if total_len <= 0:
-            return [0]
-
-        prefix_placeholders = [0] * contextual_seq_len
-        pid = self.primary_id_feature_name
-        if pid not in uih_keys:
-            return prefix_placeholders + ([0] * (history_len + num_candidates))
-
-        history_key_idx = uih_keys.index(pid)
-        history_token_ids = list(uih_values_per_key[history_key_idx])
-        if len(history_token_ids) != history_len:
-            logger.warning(
-                "Primary history feature %s length mismatch: expected %d, got %d; "
-                "padding or truncating scheduler tokens to match.",
-                pid,
-                history_len,
-                len(history_token_ids),
-            )
-            history_token_ids = history_token_ids[:history_len]
-            if len(history_token_ids) < history_len:
-                history_token_ids.extend([0] * (history_len - len(history_token_ids)))
-
-        return prefix_placeholders + history_token_ids + ([0] * num_candidates)
+        """Build stable synthetic token ids for HSTU prefix-cache hashing."""
+        return build_hstu_prompt_token_ids(
+            uih_keys=uih_keys,
+            uih_values_per_key=uih_values_per_key,
+            cand_keys=cand_keys,
+            cand_values_per_key=cand_values_per_key,
+            ctx_keys=ctx_keys,
+            ctx_values_per_key=ctx_values_per_key,
+            history_len=history_len,
+            num_candidates=num_candidates,
+            contextual_feature_to_max_length=contextual_feature_to_max_length,
+            contextual_feature_to_min_uih_length=(
+                contextual_feature_to_min_uih_length
+            ),
+        )
 
     @staticmethod
     def attach_schema_fingerprint(

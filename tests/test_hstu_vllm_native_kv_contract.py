@@ -72,6 +72,7 @@ from vllm_gr.attention.backends.hstu_attn import (
 from vllm_gr.model_executor.layers.hstu_attention_layer import (
     HSTUKVCacheAttentionLayer,
 )
+from vllm_gr.model_executor.models.hstu_vllm import HSTUForRecommendation
 from vllm_gr.ops.hstu_attention import delta_hstu_mha
 
 
@@ -84,6 +85,46 @@ def _dummy_vllm_config(block_size: int = 16):
 
 
 class TestHSTUVllmNativeKVContract(unittest.TestCase):
+
+    @staticmethod
+    def _make_hstu_model_for_metadata_test():
+        model = HSTUForRecommendation.__new__(HSTUForRecommendation)
+        torch.nn.Module.__init__(model)
+        model.enable_kv_cache = True
+        model._hstu_kv_cache_layers = [SimpleNamespace(layer_name="layer0")]
+        return model
+
+    @staticmethod
+    def _make_attention_metadata_for_coverage_test(
+        *,
+        slot_count: int,
+        computed_tokens: int,
+        history_len: int = 6,
+        contextual_seq_len: int = 5,
+        num_targets: int = 6,
+    ) -> HSTUAttentionMetadata:
+        common = CommonAttentionMetadata(
+            query_start_loc=torch.tensor([0, slot_count], dtype=torch.int32),
+            query_start_loc_cpu=torch.tensor([0, slot_count], dtype=torch.int32),
+            seq_lens=torch.tensor([slot_count], dtype=torch.int32),
+            _seq_lens_cpu=torch.tensor([slot_count], dtype=torch.int32),
+            _num_computed_tokens_cpu=torch.tensor([computed_tokens], dtype=torch.int32),
+            num_reqs=1,
+            num_actual_tokens=slot_count,
+            max_query_len=slot_count,
+            max_seq_len=slot_count,
+            block_table_tensor=torch.zeros((1, 1), dtype=torch.int32),
+            slot_mapping=torch.arange(slot_count, dtype=torch.int64),
+            causal=True,
+        )
+        return HSTUAttentionMetadata(
+            common_attn_metadata=common,
+            num_targets=torch.tensor([num_targets], dtype=torch.int32),
+            history_lengths=torch.tensor([history_len], dtype=torch.int32),
+            contextual_seq_len=contextual_seq_len,
+            layer_names=["layer0"],
+            cache_layers=None,
+        )
 
     @staticmethod
     def _build_native_kv_test_fixture(
@@ -717,3 +758,53 @@ class TestHSTUVllmNativeKVContract(unittest.TestCase):
             )
 
         self.assertEqual(captured_rows, [seq_len])
+
+    def test_prefix_hit_coverage_falls_back_without_warning(self) -> None:
+        model = self._make_hstu_model_for_metadata_test()
+        metadata = self._make_attention_metadata_for_coverage_test(
+            slot_count=1,
+            computed_tokens=16,
+        )
+        fake_forward_context = SimpleNamespace(attn_metadata={"layer0": metadata})
+
+        with mock.patch(
+            "vllm.forward_context.is_forward_context_available",
+            return_value=True,
+        ), mock.patch(
+            "vllm.forward_context.get_forward_context",
+            return_value=fake_forward_context,
+        ), mock.patch(
+            "vllm_gr.model_executor.models.hstu_vllm.logger.debug_once"
+        ) as debug_once, mock.patch(
+            "vllm_gr.model_executor.models.hstu_vllm.logger.warning_once"
+        ) as warning_once:
+            result = model._get_hstu_attention_metadata()
+
+        self.assertIsNone(result)
+        debug_once.assert_called_once()
+        warning_once.assert_not_called()
+
+    def test_incomplete_coverage_keeps_warning(self) -> None:
+        model = self._make_hstu_model_for_metadata_test()
+        metadata = self._make_attention_metadata_for_coverage_test(
+            slot_count=1,
+            computed_tokens=0,
+        )
+        fake_forward_context = SimpleNamespace(attn_metadata={"layer0": metadata})
+
+        with mock.patch(
+            "vllm.forward_context.is_forward_context_available",
+            return_value=True,
+        ), mock.patch(
+            "vllm.forward_context.get_forward_context",
+            return_value=fake_forward_context,
+        ), mock.patch(
+            "vllm_gr.model_executor.models.hstu_vllm.logger.debug_once"
+        ) as debug_once, mock.patch(
+            "vllm_gr.model_executor.models.hstu_vllm.logger.warning_once"
+        ) as warning_once:
+            result = model._get_hstu_attention_metadata()
+
+        self.assertIsNone(result)
+        debug_once.assert_not_called()
+        warning_once.assert_called_once()
