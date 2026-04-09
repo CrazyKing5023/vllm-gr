@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from vllm.pooling_params import PoolingParams
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -181,6 +182,94 @@ def _hit_rate(hits: int, queries: int) -> float:
     return float(hits) / float(queries)
 
 
+def _get_runtime_cache_block_size(llm) -> int:
+    engine = llm.get_engine()
+    cache_config = getattr(engine.vllm_config, "cache_config", None)
+    if cache_config is None:
+        return 0
+    return int(getattr(cache_config, "block_size", 0) or 0)
+
+
+def _get_runtime_device_type(llm) -> str:
+    engine = llm.get_engine()
+    device_config = getattr(engine.vllm_config, "device_config", None)
+    return str(getattr(device_config, "device_type", "unknown"))
+
+
+def _estimate_prompt_token_ids_len(llm, case: dict[str, Any]) -> int:
+    engine = llm.get_engine()
+    request = engine.input_processor.process_inputs(
+        request_id=f"benchmark-len-{case['case_id']}",
+        prompt=_prompt_from_case(case),
+        params=PoolingParams(task="embed"),
+    )
+    prompt_token_ids = getattr(request, "prompt_token_ids", None) or []
+    return len(prompt_token_ids)
+
+
+def _estimate_cacheable_prefix_tokens(prompt_len: int, block_size: int) -> int:
+    if prompt_len <= 1 or block_size <= 0:
+        return 0
+    # vLLM prefix cache only reuses full blocks, and the last token is still
+    # recomputed so the effective upper bound is (prompt_len - 1).
+    return ((prompt_len - 1) // block_size) * block_size
+
+
+def _build_case_runtime_diagnostics(
+    llm,
+    cases: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    block_size = _get_runtime_cache_block_size(llm)
+    diagnostics: list[dict[str, Any]] = []
+    for case in cases:
+        prompt_len = _estimate_prompt_token_ids_len(llm, case)
+        diagnostics.append(
+            {
+                "case_id": case["case_id"],
+                "prompt_len": prompt_len,
+                "max_cacheable_prefix_tokens": _estimate_cacheable_prefix_tokens(
+                    prompt_len,
+                    block_size,
+                ),
+            }
+        )
+    return diagnostics
+
+
+def _print_runtime_cache_diagnostics(
+    llm,
+    case_diagnostics: list[dict[str, Any]],
+    *,
+    show_case_limit: int,
+) -> None:
+    block_size = _get_runtime_cache_block_size(llm)
+    device_type = _get_runtime_device_type(llm)
+    print("== Runtime Cache Config ==")
+    print(f"device_type={device_type} block_size={block_size}")
+    print("sample_prompt_lengths:")
+    for row in case_diagnostics[: max(show_case_limit, 0)]:
+        print(
+            "  case_id={case_id} prompt_len={prompt_len} "
+            "max_cacheable_prefix_tokens={max_cacheable_prefix_tokens}".format(
+                **row
+            )
+        )
+    if len(case_diagnostics) > max(show_case_limit, 0):
+        print(
+            f"  ... ({len(case_diagnostics) - max(show_case_limit, 0)} more cases)"
+        )
+
+    if case_diagnostics and all(
+        row["max_cacheable_prefix_tokens"] == 0 for row in case_diagnostics
+    ):
+        print(
+            "warning: all selected cases are shorter than one reusable KV block "
+            f"for the current runtime (block_size={block_size}). "
+            "Prefix cache queries will still be counted, but prefix hits are "
+            "expected to stay at 0."
+        )
+
+
 def _run_pass(
     *,
     llm,
@@ -255,6 +344,34 @@ def _run_pass(
     return summary
 
 
+def _assert_nonzero_hit_rate(
+    *,
+    summary: dict[str, Any],
+    case_diagnostics: list[dict[str, Any]],
+) -> None:
+    if summary["prefix_queries"] <= 0:
+        raise RuntimeError(
+            f"{summary['pass_name']} produced no prefix-cache queries; "
+            "benchmark cannot validate prefix reuse."
+        )
+
+    has_reusable_prefix = any(
+        int(row.get("max_cacheable_prefix_tokens", 0)) > 0
+        for row in case_diagnostics
+    )
+    if not has_reusable_prefix:
+        raise RuntimeError(
+            f"{summary['pass_name']} has no reusable prefix blocks in the selected "
+            "cases; benchmark input is not suitable for prefix-cache validation."
+        )
+
+    if summary["prefix_hit_rate"] <= 0.0:
+        raise RuntimeError(
+            f"{summary['pass_name']} prefix_hit_rate is 0; "
+            "treat this benchmark run as a failure."
+        )
+
+
 def main() -> int:
     args = _parse_args()
     input_payload = _load_json(args.input_json)
@@ -284,6 +401,18 @@ def main() -> int:
     }
 
     try:
+        case_diagnostics = _build_case_runtime_diagnostics(llm, cases)
+        _print_runtime_cache_diagnostics(
+            llm,
+            case_diagnostics,
+            show_case_limit=args.show_case_limit,
+        )
+        report["runtime_cache"] = {
+            "device_type": _get_runtime_device_type(llm),
+            "block_size": _get_runtime_cache_block_size(llm),
+            "cases": case_diagnostics,
+        }
+
         reset_ok = llm.reset_prefix_cache(reset_running_requests=True)
         print("== Prefix Cache Reset ==")
         print(f"reset_ok={reset_ok}")
@@ -304,6 +433,16 @@ def main() -> int:
                 show_case_limit=args.show_case_limit,
             )
             report["passes"].append(hot_summary)
+            _assert_nonzero_hit_rate(
+                summary=hot_summary,
+                case_diagnostics=case_diagnostics,
+            )
+
+        if args.hot_passes <= 0:
+            _assert_nonzero_hit_rate(
+                summary=cold_summary,
+                case_diagnostics=case_diagnostics,
+            )
 
         print("\n== Overall ==")
         for summary in report["passes"]:
@@ -340,8 +479,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except Exception as exc:  # pylint: disable=broad-except
-        print(f"[prefix_cache_benchmark] ERROR: {exc}", file=sys.stderr)
-        raise SystemExit(1)
+    main()

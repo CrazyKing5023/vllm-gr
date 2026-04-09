@@ -147,6 +147,136 @@ class GRFeatureRunnerMixin:
             "schema_fingerprint": schema_fingerprint,
         }
 
+    def _sync_hstu_static_forward_context(self) -> int:
+        compilation_config = getattr(
+            getattr(self, "vllm_config", None),
+            "compilation_config",
+            None,
+        )
+        static_forward_context = getattr(
+            compilation_config,
+            "static_forward_context",
+            None,
+        )
+        model = getattr(self, "model", None)
+        hstu_kv_layers = getattr(model, "_hstu_kv_cache_layers", None)
+        if static_forward_context is None or not hstu_kv_layers:
+            return 0
+
+        inserted = 0
+        for layer in hstu_kv_layers:
+            layer_name = getattr(layer, "layer_name", None)
+            if layer_name is None:
+                continue
+            if static_forward_context.get(layer_name) is layer:
+                continue
+            static_forward_context[layer_name] = layer
+            inserted += 1
+
+        if inserted:
+            logger.debug(
+                "Registered %d HSTU KV cache layers into static_forward_context.",
+                inserted,
+            )
+        return inserted
+
+    @staticmethod
+    def _extract_feature_length(lengths: torch.Tensor | None) -> int:
+        if lengths is None or lengths.numel() == 0:
+            return 0
+        return int(lengths.max().item())
+
+    def _build_hstu_request_lengths(
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor, int] | None:
+        if not self._gr_features_cache:
+            return None
+
+        hf_config = getattr(getattr(self, "model_config", None), "hf_config", None)
+        if hf_config is None or not bool(getattr(hf_config, "enable_kv_cache", False)):
+            return None
+
+        batch_req_ids = list(getattr(self.input_batch, "req_ids", ()))
+        if not batch_req_ids:
+            return None
+
+        num_targets: list[int] = []
+        history_lengths: list[int] = []
+        for req_id in batch_req_ids:
+            features = self._gr_features_cache.get(req_id)
+            if features is None:
+                return None
+            num_targets.append(
+                self._extract_feature_length(features.get("cand_lengths_per_key"))
+            )
+            history_lengths.append(
+                self._extract_feature_length(features.get("uih_lengths_per_key"))
+            )
+
+        contextual_seq_len = int(
+            sum(getattr(hf_config, "contextual_feature_to_max_length", {}).values())
+        )
+        return (
+            torch.tensor(num_targets, dtype=torch.int32, device=self.device),
+            torch.tensor(history_lengths, dtype=torch.int32, device=self.device),
+            contextual_seq_len,
+        )
+
+    def _prepare_hstu_attention_builders(self) -> None:
+        from vllm_gr.attention.backends.hstu_attn import (
+            HSTUAttentionMetadataBuilder,
+        )
+
+        hstu_builders: list[HSTUAttentionMetadataBuilder] = []
+        for kv_cache_groups in getattr(self, "attn_groups", ()):
+            for attn_group in kv_cache_groups:
+                for builder in attn_group.metadata_builders:
+                    if isinstance(builder, HSTUAttentionMetadataBuilder):
+                        hstu_builders.append(builder)
+
+        if not hstu_builders:
+            return
+
+        request_lengths = self._build_hstu_request_lengths()
+        for builder in hstu_builders:
+            if request_lengths is None:
+                builder.clear_request_lengths()
+            else:
+                num_targets, history_lengths, contextual_seq_len = request_lengths
+                builder.set_request_lengths(
+                    num_targets=num_targets,
+                    history_lengths=history_lengths,
+                    contextual_seq_len=contextual_seq_len,
+                )
+
+    def _prepare_inputs(self, *args, **kwargs):
+        # Both GPUModelRunner and vllm-ascend NPUModelRunner build attention
+        # metadata from inside `_prepare_inputs`, so inject HSTU request-length
+        # state here to keep the builder path shared across backends.
+        self._prepare_hstu_attention_builders()
+        return super()._prepare_inputs(*args, **kwargs)
+
+    def _get_hstu_kv_cache_spec_fallback(self) -> dict[str, Any]:
+        self._sync_hstu_static_forward_context()
+
+        model = getattr(self, "model", None)
+        hstu_kv_layers = getattr(model, "_hstu_kv_cache_layers", None)
+        if not hstu_kv_layers:
+            return {}
+
+        kv_cache_spec: dict[str, Any] = {}
+        for layer in hstu_kv_layers:
+            layer_name = getattr(layer, "layer_name", None)
+            if layer_name is None:
+                continue
+            spec_getter = getattr(layer, "get_kv_cache_spec", None)
+            if not callable(spec_getter):
+                continue
+            spec = spec_getter(self.vllm_config)
+            if spec is not None:
+                kv_cache_spec[layer_name] = spec
+        return kv_cache_spec
+
     def _preprocess(
         self,
         scheduler_output: "SchedulerOutput",

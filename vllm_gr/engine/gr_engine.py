@@ -9,7 +9,10 @@ with GR-specific versions (GRInputProcessor, GROutputProcessor) so the
 existing add_request() / step() pipeline handles GRPrompt transparently.
 """
 
+import gc
 import logging
+
+import torch
 
 from vllm.config import VllmConfig
 from vllm.usage.usage_lib import UsageContext
@@ -95,6 +98,39 @@ class GRLLMEngine(LLMEngine):
         if engine_core is not None:
             engine_core.shutdown()
             self.engine_core = None
+
+        for attr_name in (
+            "input_processor",
+            "output_processor",
+            "tokenizer",
+            "detokenizer",
+            "logger_manager",
+        ):
+            if hasattr(self, attr_name):
+                setattr(self, attr_name, None)
+
+        vllm_config = getattr(self, "vllm_config", None)
+        compilation_config = getattr(vllm_config, "compilation_config", None)
+        static_forward_context = getattr(
+            compilation_config,
+            "static_forward_context",
+            None,
+        )
+        if isinstance(static_forward_context, dict):
+            static_forward_context.clear()
+        try:
+            from vllm.config import get_cached_compilation_config
+        except ImportError:
+            get_cached_compilation_config = None
+        if get_cached_compilation_config is not None:
+            get_cached_compilation_config.cache_clear()
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            ipc_collect = getattr(torch.cuda, "ipc_collect", None)
+            if callable(ipc_collect):
+                ipc_collect()
         logger.info("GRLLMEngine shutdown complete")
 
     def _replace_processors(self) -> None:

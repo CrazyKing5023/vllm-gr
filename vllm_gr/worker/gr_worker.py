@@ -13,7 +13,9 @@ call in init_device() is a defense-in-depth measure that catches any
 vLLM modules loaded after the initial plugin execution.
 """
 
-import logging
+import gc
+
+import torch
 
 from vllm.logger import init_logger
 from vllm.v1.worker.gpu_worker import Worker as GPUWorker
@@ -36,3 +38,30 @@ class GRWorker(GPUWorker):
         self.model_runner = GRModelRunner(self.vllm_config, self.device)
 
         logger.info("GRWorker: using GRModelRunner on device %s", self.device)
+
+    def shutdown(self) -> None:
+        super().shutdown()
+
+        compilation_config = getattr(self.vllm_config, "compilation_config", None)
+        static_forward_context = getattr(
+            compilation_config,
+            "static_forward_context",
+            None,
+        )
+        if isinstance(static_forward_context, dict):
+            static_forward_context.clear()
+
+        if hasattr(self, "model_runner"):
+            runner = self.model_runner
+            if runner is not None:
+                model = getattr(runner, "model", None)
+                if model is not None and hasattr(model, "_hstu_kv_cache_layers"):
+                    model._hstu_kv_cache_layers = None
+            self.model_runner = None
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            ipc_collect = getattr(torch.cuda, "ipc_collect", None)
+            if callable(ipc_collect):
+                ipc_collect()

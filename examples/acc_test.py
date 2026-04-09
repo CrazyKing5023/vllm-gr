@@ -290,6 +290,8 @@ def main() -> int:
             )
             if idx % 20 == 0 or idx == total_cases:
                 print(f"progress: {idx}/{total_cases}")
+    except Exception as exc:
+        print(exc)
     finally:
         llm.shutdown()
 
@@ -312,8 +314,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except Exception as exc:  # pylint: disable=broad-except
-        print(f"[acc_test] ERROR: {exc}", file=sys.stderr)
-        raise SystemExit(1)
+        main()

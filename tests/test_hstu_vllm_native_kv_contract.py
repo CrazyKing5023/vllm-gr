@@ -58,11 +58,49 @@ if "torchrec" not in sys.modules:
         }
     )
 
+if "vllm_ascend.worker.model_runner_v1" not in sys.modules:
+    fake_vllm_ascend = types.ModuleType("vllm_ascend")
+    fake_vllm_ascend_worker = types.ModuleType("vllm_ascend.worker")
+    fake_vllm_ascend_runner = types.ModuleType("vllm_ascend.worker.model_runner_v1")
+
+    class _FakeNPUModelRunner:
+        def __init__(self, vllm_config, device):
+            self.vllm_config = vllm_config
+            self.model_config = getattr(vllm_config, "model_config", None)
+            self.device = device
+            self.attn_groups = []
+            self.model = None
+
+        def load_model(self, *args, **kwargs):
+            del args, kwargs
+            return None
+
+        def get_kv_cache_spec(self):
+            return {}
+
+        def initialize_kv_cache(self, kv_cache_config):
+            self._initialized_kv_cache_config = kv_cache_config
+            return None
+
+        def _build_attention_metadata(self, *args, **kwargs):
+            self._build_attention_metadata_called = (args, kwargs)
+            return {"base_called": True}
+
+    fake_vllm_ascend_runner.NPUModelRunner = _FakeNPUModelRunner
+    sys.modules.update(
+        {
+            "vllm_ascend": fake_vllm_ascend,
+            "vllm_ascend.worker": fake_vllm_ascend_worker,
+            "vllm_ascend.worker.model_runner_v1": fake_vllm_ascend_runner,
+        }
+    )
+
 from vllm.v1.attention.backend import CommonAttentionMetadata
 from vllm.v1.kv_cache_interface import FullAttentionSpec
 
 from vllm_gr.engine.arg_utils import GREngineArgs
 from vllm_gr.models.dlrm_v3.modules import stu as stu_module
+from vllm_gr.models.dlrm_v3.modules.hstu_transducer import HSTUTransducer
 from vllm_gr.models.dlrm_v3.modules.stu import STULayer, STULayerConfig
 from vllm_gr.attention.backends.hstu_attn import (
     HSTUAttentionMetadata,
@@ -74,6 +112,7 @@ from vllm_gr.model_executor.layers.hstu_attention_layer import (
 )
 from vllm_gr.model_executor.models.hstu_vllm import HSTUForRecommendation
 from vllm_gr.ops.hstu_attention import delta_hstu_mha
+from vllm_gr.worker.gr_npu_model_runner import GRNPUModelRunner
 
 
 def _dummy_vllm_config(block_size: int = 16):
@@ -92,6 +131,9 @@ class TestHSTUVllmNativeKVContract(unittest.TestCase):
         torch.nn.Module.__init__(model)
         model.enable_kv_cache = True
         model._hstu_kv_cache_layers = [SimpleNamespace(layer_name="layer0")]
+        model.config = SimpleNamespace(
+            contextual_feature_to_max_length={"ctx_a": 2, "ctx_b": 3}
+        )
         return model
 
     @staticmethod
@@ -257,12 +299,11 @@ class TestHSTUVllmNativeKVContract(unittest.TestCase):
             causal=True,
         )
 
-        builder.set_request_lengths(
-            num_targets=torch.tensor([2, 2], dtype=torch.int32),
-            history_lengths=torch.tensor([3, 1], dtype=torch.int32),
-            contextual_seq_len=0,
-        )
         metadata = builder.build(common_prefix_len=0, common_attn_metadata=common)
+        metadata.num_targets = torch.tensor([2, 2], dtype=torch.int32)
+        metadata.history_lengths = torch.tensor([3, 1], dtype=torch.int32)
+        metadata.contextual_seq_len = 0
+        metadata.reset_derived_cache()
 
         prefix_positions, delta_positions, full_positions = _build_hstu_token_positions(
             metadata,
@@ -763,7 +804,7 @@ class TestHSTUVllmNativeKVContract(unittest.TestCase):
         model = self._make_hstu_model_for_metadata_test()
         metadata = self._make_attention_metadata_for_coverage_test(
             slot_count=1,
-            computed_tokens=16,
+            computed_tokens=21,
         )
         fake_forward_context = SimpleNamespace(attn_metadata={"layer0": metadata})
 
@@ -778,7 +819,10 @@ class TestHSTUVllmNativeKVContract(unittest.TestCase):
         ) as debug_once, mock.patch(
             "vllm_gr.model_executor.models.hstu_vllm.logger.warning_once"
         ) as warning_once:
-            result = model._get_hstu_attention_metadata()
+            result = model._get_hstu_attention_metadata(
+                uih_seq_lengths=torch.tensor([11], dtype=torch.int32),
+                num_targets=torch.tensor([6], dtype=torch.int32),
+            )
 
         self.assertIsNone(result)
         debug_once.assert_called_once()
@@ -803,8 +847,382 @@ class TestHSTUVllmNativeKVContract(unittest.TestCase):
         ) as debug_once, mock.patch(
             "vllm_gr.model_executor.models.hstu_vllm.logger.warning_once"
         ) as warning_once:
-            result = model._get_hstu_attention_metadata()
+            result = model._get_hstu_attention_metadata(
+                uih_seq_lengths=torch.tensor([11], dtype=torch.int32),
+                num_targets=torch.tensor([6], dtype=torch.int32),
+            )
 
         self.assertIsNone(result)
         debug_once.assert_not_called()
         warning_once.assert_called_once()
+
+    def test_npu_runner_falls_back_to_hstu_layers_for_kv_cache_spec(self) -> None:
+        spec = FullAttentionSpec(
+            block_size=16,
+            num_kv_heads=2,
+            head_size=8,
+            head_size_v=16,
+            dtype=torch.float32,
+        )
+        layer = SimpleNamespace(
+            layer_name="hstu_kv_cache_layers.0",
+            get_kv_cache_spec=lambda _vllm_config: spec,
+        )
+        vllm_config = SimpleNamespace(
+            model_config=SimpleNamespace(
+                hf_config=SimpleNamespace(
+                    enable_kv_cache=True,
+                    contextual_feature_to_max_length={},
+                )
+            ),
+            compilation_config=SimpleNamespace(static_forward_context={}),
+        )
+
+        runner = GRNPUModelRunner(vllm_config, torch.device("cpu"))
+        runner.model = SimpleNamespace(_hstu_kv_cache_layers=[layer])
+
+        kv_cache_spec = runner.get_kv_cache_spec()
+
+        self.assertEqual(kv_cache_spec, {"hstu_kv_cache_layers.0": spec})
+        self.assertIs(
+            vllm_config.compilation_config.static_forward_context["hstu_kv_cache_layers.0"],
+            layer,
+        )
+
+    def test_builder_derives_contextual_seq_len_from_config(self) -> None:
+        common_metadata = CommonAttentionMetadata(
+            query_start_loc=torch.tensor([0, 4], dtype=torch.int32),
+            query_start_loc_cpu=torch.tensor([0, 4], dtype=torch.int32),
+            _seq_lens_cpu=torch.tensor([4], dtype=torch.int32),
+            seq_lens=torch.tensor([4], dtype=torch.int32),
+            num_reqs=1,
+            num_actual_tokens=4,
+            block_table_tensor=torch.zeros((1, 1), dtype=torch.int32),
+            slot_mapping=torch.zeros(4, dtype=torch.int64),
+            _num_computed_tokens_cpu=torch.tensor([0], dtype=torch.int32),
+            max_query_len=4,
+            max_seq_len=4,
+        )
+        builder = HSTUAttentionMetadataBuilder(
+            FullAttentionSpec(
+                block_size=16,
+                num_kv_heads=2,
+                head_size=8,
+                head_size_v=16,
+                dtype=torch.float32,
+            ),
+            ["layer0"],
+            SimpleNamespace(
+                model_config=SimpleNamespace(
+                    hf_config=SimpleNamespace(
+                        contextual_feature_to_max_length={"user_id": 1, "sex": 1},
+                    )
+                ),
+                speculative_config=None,
+                parallel_config=SimpleNamespace(decode_context_parallel_size=1),
+            ),
+            torch.device("cpu"),
+        )
+        metadata = builder.build(common_prefix_len=0, common_attn_metadata=common_metadata)
+
+        torch.testing.assert_close(
+            metadata.num_targets.to(dtype=torch.int64),
+            torch.tensor([0], dtype=torch.int64),
+        )
+        torch.testing.assert_close(
+            metadata.history_lengths.to(dtype=torch.int64),
+            torch.tensor([0], dtype=torch.int64),
+        )
+        self.assertEqual(metadata.contextual_seq_len, 2)
+
+    def test_model_syncs_hstu_attention_metadata_from_runtime_lengths(self) -> None:
+        model = self._make_hstu_model_for_metadata_test()
+        metadata = self._make_attention_metadata_for_coverage_test(
+            slot_count=22,
+            computed_tokens=0,
+            history_len=0,
+            contextual_seq_len=0,
+            num_targets=0,
+        )
+        fake_forward_context = SimpleNamespace(attn_metadata={"layer0": metadata})
+
+        with mock.patch(
+            "vllm.forward_context.is_forward_context_available",
+            return_value=True,
+        ), mock.patch(
+            "vllm.forward_context.get_forward_context",
+            return_value=fake_forward_context,
+        ):
+            result = model._get_hstu_attention_metadata(
+                uih_seq_lengths=torch.tensor([11], dtype=torch.int32),
+                num_targets=torch.tensor([6], dtype=torch.int32),
+            )
+
+        self.assertIs(result, metadata)
+        torch.testing.assert_close(
+            metadata.num_targets.to(dtype=torch.int64),
+            torch.tensor([6], dtype=torch.int64),
+        )
+        torch.testing.assert_close(
+            metadata.history_lengths.to(dtype=torch.int64),
+            torch.tensor([11], dtype=torch.int64),
+        )
+        self.assertEqual(metadata.contextual_seq_len, 5)
+
+    def test_npu_runner_uses_generic_kv_init_for_hstu(self) -> None:
+        vllm_config = SimpleNamespace(
+            model_config=SimpleNamespace(
+                hf_config=SimpleNamespace(model_type="hstu"),
+            ),
+            compilation_config=SimpleNamespace(static_forward_context={}),
+        )
+        runner = GRNPUModelRunner(vllm_config, torch.device("cpu"))
+        runner.model = SimpleNamespace(_hstu_kv_cache_layers=[object()])
+        runner.attn_groups = []
+        runner.cross_layers_kv_cache = None
+        runner.cross_layers_attn_backend = None
+        runner.may_add_encoder_only_layers_to_kv_cache_config = mock.Mock()
+        runner.maybe_add_kv_sharing_layers_to_kv_cache_groups = mock.Mock()
+        runner.may_reinitialize_input_batch = mock.Mock()
+
+        kv_cache_config = SimpleNamespace()
+        fake_kernel_block_sizes = [16]
+        fake_kv_caches = {"hstu_kv_cache_layers.0": object()}
+
+        fake_gpu_model_runner_module = types.ModuleType(
+            "vllm.v1.worker.gpu_model_runner"
+        )
+        fake_worker_utils_module = types.ModuleType("vllm.v1.worker.utils")
+
+        class _FakeGPUModelRunner:
+            initialize_attn_backend = mock.Mock()
+            _prepare_kernel_block_sizes = mock.Mock(
+                return_value=fake_kernel_block_sizes
+            )
+            initialize_metadata_builders = mock.Mock()
+            _allocate_kv_cache_tensors = mock.Mock(return_value={"raw": object()})
+            _reshape_kv_cache_tensors = mock.Mock(return_value=fake_kv_caches)
+
+        fake_gpu_model_runner_module.GPUModelRunner = _FakeGPUModelRunner
+        fake_worker_utils_module.bind_kv_cache = mock.Mock()
+
+        with mock.patch.dict(
+            sys.modules,
+            {
+                "vllm.v1.worker.gpu_model_runner": fake_gpu_model_runner_module,
+                "vllm.v1.worker.utils": fake_worker_utils_module,
+            },
+        ):
+            runner.initialize_kv_cache(kv_cache_config)
+
+        runner.may_add_encoder_only_layers_to_kv_cache_config.assert_called_once()
+        runner.maybe_add_kv_sharing_layers_to_kv_cache_groups.assert_called_once()
+        _FakeGPUModelRunner.initialize_attn_backend.assert_called_once()
+        _FakeGPUModelRunner._prepare_kernel_block_sizes.assert_called_once()
+        _FakeGPUModelRunner.initialize_metadata_builders.assert_called_once()
+        runner.may_reinitialize_input_batch.assert_called_once()
+        _FakeGPUModelRunner._allocate_kv_cache_tensors.assert_called_once()
+        _FakeGPUModelRunner._reshape_kv_cache_tensors.assert_called_once()
+        fake_worker_utils_module.bind_kv_cache.assert_called_once()
+
+    def test_hstu_transducer_falls_back_to_full_compute_when_cached_path_fails(
+        self,
+    ) -> None:
+        transducer = HSTUTransducer.__new__(HSTUTransducer)
+        torch.nn.Module.__init__(transducer)
+
+        seq_lengths = torch.tensor([5], dtype=torch.int64)
+        seq_offsets = torch.tensor([0, 5], dtype=torch.int64)
+        seq_timestamps = torch.arange(5, dtype=torch.int64)
+        seq_embeddings = torch.randn(5, 4)
+        num_targets = torch.tensor([2], dtype=torch.int64)
+        seq_payloads = {"payload": torch.tensor([1], dtype=torch.int64)}
+        cached_failure = RuntimeError(
+            "The expanded size of the tensor (22) must match the existing size (0)"
+        )
+        full_result = torch.randn_like(seq_embeddings)
+        postprocess_result = (None, torch.randn(2, 4))
+
+        transducer._preprocess = mock.Mock(
+            return_value=(
+                5,
+                3,
+                2,
+                seq_lengths,
+                seq_offsets,
+                seq_timestamps,
+                seq_embeddings,
+                num_targets,
+                seq_payloads,
+            )
+        )
+        transducer._can_use_vllm_kv_cache = mock.Mock(return_value=True)
+        transducer._cached_path_has_consistent_inputs = mock.Mock(return_value=True)
+        transducer._hstu_compute_cached = mock.Mock(side_effect=cached_failure)
+        transducer._should_fallback_cached_compute = mock.Mock(return_value=True)
+        transducer._hstu_compute = mock.Mock(return_value=full_result)
+        transducer._postprocess = mock.Mock(return_value=postprocess_result)
+
+        candidate_embeddings, full_embeddings = transducer.forward(
+            max_uih_len=3,
+            max_targets=2,
+            total_uih_len=3,
+            total_targets=2,
+            seq_lengths=seq_lengths,
+            seq_embeddings=seq_embeddings,
+            seq_timestamps=seq_timestamps,
+            num_targets=num_targets,
+            seq_payloads=seq_payloads,
+            hstu_attn_metadata=object(),
+        )
+
+        self.assertIs(candidate_embeddings, postprocess_result[1])
+        self.assertIs(full_embeddings, postprocess_result[0])
+        transducer._hstu_compute_cached.assert_called_once()
+        transducer._cached_path_has_consistent_inputs.assert_called_once_with(
+            seq_lengths=seq_lengths,
+            seq_embeddings=seq_embeddings,
+            num_targets=num_targets,
+            hstu_attn_metadata=mock.ANY,
+        )
+        transducer._should_fallback_cached_compute.assert_called_once_with(
+            cached_failure,
+            seq_embeddings=seq_embeddings,
+        )
+        transducer._hstu_compute.assert_called_once_with(
+            max_seq_len=5,
+            seq_lengths=seq_lengths,
+            seq_offsets=seq_offsets,
+            seq_timestamps=seq_timestamps,
+            seq_embeddings=seq_embeddings,
+            num_targets=num_targets,
+            hstu_attn_metadata=None,
+        )
+
+    def test_hstu_transducer_disables_cached_path_on_embedding_length_mismatch(
+        self,
+    ) -> None:
+        transducer = HSTUTransducer.__new__(HSTUTransducer)
+        torch.nn.Module.__init__(transducer)
+
+        seq_lengths = torch.tensor([5], dtype=torch.int64)
+        seq_offsets = torch.tensor([0, 5], dtype=torch.int64)
+        seq_timestamps = torch.arange(5, dtype=torch.int64)
+        seq_embeddings = torch.randn(3, 4)
+        num_targets = torch.tensor([2], dtype=torch.int64)
+        seq_payloads = {"payload": torch.tensor([1], dtype=torch.int64)}
+        full_result = torch.randn(5, 4)
+        postprocess_result = (None, torch.randn(2, 4))
+        metadata = SimpleNamespace(
+            common_attn_metadata=SimpleNamespace(
+                slot_mapping=torch.zeros(5, dtype=torch.int64),
+                _num_computed_tokens_cpu=torch.tensor([0], dtype=torch.int64),
+            )
+        )
+
+        transducer._preprocess = mock.Mock(
+            return_value=(
+                5,
+                3,
+                2,
+                seq_lengths,
+                seq_offsets,
+                seq_timestamps,
+                seq_embeddings,
+                num_targets,
+                seq_payloads,
+            )
+        )
+        transducer._can_use_vllm_kv_cache = mock.Mock(return_value=True)
+        transducer._hstu_compute_cached = mock.Mock()
+        transducer._hstu_compute = mock.Mock(return_value=full_result)
+        transducer._postprocess = mock.Mock(return_value=postprocess_result)
+
+        candidate_embeddings, full_embeddings = transducer.forward(
+            max_uih_len=3,
+            max_targets=2,
+            total_uih_len=3,
+            total_targets=2,
+            seq_lengths=seq_lengths,
+            seq_embeddings=seq_embeddings,
+            seq_timestamps=seq_timestamps,
+            num_targets=num_targets,
+            seq_payloads=seq_payloads,
+            hstu_attn_metadata=metadata,
+        )
+
+        self.assertIs(candidate_embeddings, postprocess_result[1])
+        self.assertIs(full_embeddings, postprocess_result[0])
+        transducer._hstu_compute_cached.assert_not_called()
+        transducer._hstu_compute.assert_called_once_with(
+            max_seq_len=5,
+            seq_lengths=seq_lengths,
+            seq_offsets=seq_offsets,
+            seq_timestamps=seq_timestamps,
+            seq_embeddings=seq_embeddings,
+            num_targets=num_targets,
+            hstu_attn_metadata=metadata,
+        )
+
+    def test_hstu_transducer_falls_back_when_cached_compute_returns_empty_shape(
+        self,
+    ) -> None:
+        transducer = HSTUTransducer.__new__(HSTUTransducer)
+        torch.nn.Module.__init__(transducer)
+
+        seq_lengths = torch.tensor([5], dtype=torch.int64)
+        seq_offsets = torch.tensor([0, 5], dtype=torch.int64)
+        seq_timestamps = torch.arange(5, dtype=torch.int64)
+        seq_embeddings = torch.randn(5, 4).to("cpu")
+        num_targets = torch.tensor([2], dtype=torch.int64)
+        seq_payloads = {"payload": torch.tensor([1], dtype=torch.int64)}
+        cached_result = torch.empty(0, 4)
+        full_result = torch.randn(5, 4)
+        postprocess_result = (None, torch.randn(2, 4))
+
+        transducer._preprocess = mock.Mock(
+            return_value=(
+                5,
+                3,
+                2,
+                seq_lengths,
+                seq_offsets,
+                seq_timestamps,
+                seq_embeddings,
+                num_targets,
+                seq_payloads,
+            )
+        )
+        transducer._can_use_vllm_kv_cache = mock.Mock(return_value=True)
+        transducer._cached_path_has_consistent_inputs = mock.Mock(return_value=True)
+        transducer._hstu_compute_cached = mock.Mock(return_value=cached_result)
+        transducer._should_fallback_cached_compute = mock.Mock(return_value=True)
+        transducer._hstu_compute = mock.Mock(return_value=full_result)
+        transducer._postprocess = mock.Mock(return_value=postprocess_result)
+
+        candidate_embeddings, full_embeddings = transducer.forward(
+            max_uih_len=3,
+            max_targets=2,
+            total_uih_len=3,
+            total_targets=2,
+            seq_lengths=seq_lengths,
+            seq_embeddings=seq_embeddings,
+            seq_timestamps=seq_timestamps,
+            num_targets=num_targets,
+            seq_payloads=seq_payloads,
+            hstu_attn_metadata=object(),
+        )
+
+        self.assertIs(candidate_embeddings, postprocess_result[1])
+        self.assertIs(full_embeddings, postprocess_result[0])
+        transducer._hstu_compute_cached.assert_called_once()
+        transducer._should_fallback_cached_compute.assert_called_once()
+        transducer._hstu_compute.assert_called_once_with(
+            max_seq_len=5,
+            seq_lengths=seq_lengths,
+            seq_offsets=seq_offsets,
+            seq_timestamps=seq_timestamps,
+            seq_embeddings=seq_embeddings,
+            num_targets=num_targets,
+            hstu_attn_metadata=None,
+        )

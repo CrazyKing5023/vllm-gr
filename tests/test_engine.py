@@ -92,6 +92,21 @@ class TestGREngineArgs(unittest.TestCase):
 
         self.assertTrue(args.enable_prefix_caching)
 
+    def test_hstu_defaults_disable_hybrid_kv_cache_manager(self):
+        from vllm_gr.engine.arg_utils import GREngineArgs
+
+        with mock.patch.object(
+            GREngineArgs,
+            "_is_ascend_platform",
+            return_value=True,
+        ):
+            args = GREngineArgs(
+                model="test-model",
+                model_family="hstu",
+            )
+
+        self.assertTrue(args.disable_hybrid_kv_cache_manager)
+
     def test_unknown_model_family_does_not_apply_hstu_defaults(self):
         from vllm_gr.engine.arg_utils import GREngineArgs
 

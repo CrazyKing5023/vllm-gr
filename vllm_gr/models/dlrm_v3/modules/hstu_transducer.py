@@ -90,6 +90,65 @@ class HSTUTransducer(HammerModule):
             and getattr(hstu_attn_metadata, "cache_layers", None)
         )
 
+    def _cached_path_has_consistent_inputs(
+        self,
+        *,
+        seq_lengths: torch.Tensor,
+        seq_embeddings: torch.Tensor,
+        num_targets: torch.Tensor,
+        hstu_attn_metadata: Optional[Any],
+    ) -> bool:
+        expected_tokens = int(seq_lengths.sum().item())
+        actual_tokens = int(seq_embeddings.shape[0])
+        if actual_tokens != expected_tokens:
+            common_attn_metadata = getattr(
+                hstu_attn_metadata,
+                "common_attn_metadata",
+                None,
+            )
+            slot_mapping = getattr(common_attn_metadata, "slot_mapping", None)
+            num_computed_tokens = getattr(
+                common_attn_metadata,
+                "_num_computed_tokens_cpu",
+                None,
+            )
+            slot_tokens = int(slot_mapping.numel()) if slot_mapping is not None else 0
+            computed_tokens = (
+                int(num_computed_tokens.to(dtype=torch.int64).sum().item())
+                if num_computed_tokens is not None
+                else 0
+            )
+            logger.warning(
+                "Disable HSTU cached path because preprocessed embeddings do not "
+                "cover the logical HSTU sequence: embeddings=%d expected=%d "
+                "slot_tokens=%d computed_tokens=%d total_targets=%d",
+                actual_tokens,
+                expected_tokens,
+                slot_tokens,
+                computed_tokens,
+                int(num_targets.sum().item()) if num_targets.numel() > 0 else 0,
+            )
+            return False
+        return True
+
+    def _should_fallback_cached_compute(
+        self,
+        exc: Exception,
+        *,
+        seq_embeddings: torch.Tensor,
+    ) -> bool:
+        if seq_embeddings.device.type != "npu":
+            return False
+        if not isinstance(exc, (RuntimeError, ValueError)):
+            return False
+        message = str(exc).lower()
+        return (
+            "expanded size of the tensor" in message
+            or "must match the existing size" in message
+            or "shape mismatch" in message
+            or "cached compute returned mismatched embedding shape" in message
+        )
+
     def _preprocess(
         self,
         max_uih_len: int,
@@ -357,14 +416,49 @@ class HSTUTransducer(HammerModule):
             and torch.any(num_targets > 0).item()
         )
         if use_vllm_kv_cache:
-            encoded_embeddings = self._hstu_compute_cached(
-                max_seq_len=max_seq_len,
+            use_vllm_kv_cache = self._cached_path_has_consistent_inputs(
                 seq_lengths=seq_lengths,
-                seq_offsets=seq_offsets,
                 seq_embeddings=seq_embeddings,
                 num_targets=num_targets,
                 hstu_attn_metadata=hstu_attn_metadata,
             )
+        if use_vllm_kv_cache:
+            try:
+                encoded_embeddings = self._hstu_compute_cached(
+                    max_seq_len=max_seq_len,
+                    seq_lengths=seq_lengths,
+                    seq_offsets=seq_offsets,
+                    seq_embeddings=seq_embeddings,
+                    num_targets=num_targets,
+                    hstu_attn_metadata=hstu_attn_metadata,
+                )
+                if encoded_embeddings.shape != seq_embeddings.shape:
+                    raise RuntimeError(
+                        "HSTU cached compute returned mismatched embedding shape: "
+                        f"expected={tuple(seq_embeddings.shape)} "
+                        f"got={tuple(encoded_embeddings.shape)}"
+                    )
+            except Exception as exc:
+                if not self._should_fallback_cached_compute(
+                    exc,
+                    seq_embeddings=seq_embeddings,
+                ):
+                    raise
+                logger.warning(
+                    "Fallback to full HSTU forward because cached path failed "
+                    "on %s with %s",
+                    seq_embeddings.device,
+                    exc,
+                )
+                encoded_embeddings = self._hstu_compute(
+                    max_seq_len=max_seq_len,
+                    seq_lengths=seq_lengths,
+                    seq_offsets=seq_offsets,
+                    seq_timestamps=seq_timestamps,
+                    seq_embeddings=seq_embeddings,
+                    num_targets=num_targets,
+                    hstu_attn_metadata=None,
+                )
         else:
             encoded_embeddings = self._hstu_compute(
                 max_seq_len=max_seq_len,

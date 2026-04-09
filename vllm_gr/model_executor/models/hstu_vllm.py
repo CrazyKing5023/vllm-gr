@@ -250,7 +250,11 @@ class HSTUForRecommendation(nn.Module):
             )
         return configs
 
-    def _get_hstu_attention_metadata(self) -> Optional[Any]:
+    def _get_hstu_attention_metadata(
+        self,
+        uih_seq_lengths: Optional[torch.Tensor] = None,
+        num_targets: Optional[torch.Tensor] = None,
+    ) -> Optional[Any]:
         if not self.enable_kv_cache or len(self._hstu_kv_cache_layers) == 0:
             return None
 
@@ -279,6 +283,45 @@ class HSTUForRecommendation(nn.Module):
                 continue
             metadata = attn_metadata.get(layer_name)
             if metadata is not None:
+                runtime_uih_seq_lengths = (
+                    uih_seq_lengths.to(
+                        device=metadata.history_lengths.device,
+                        dtype=metadata.history_lengths.dtype,
+                    )
+                    if uih_seq_lengths is not None
+                    else None
+                )
+                runtime_num_targets = (
+                    num_targets.to(
+                        device=metadata.num_targets.device,
+                        dtype=metadata.num_targets.dtype,
+                    )
+                    if num_targets is not None
+                    else None
+                )
+                if (
+                    runtime_uih_seq_lengths is not None
+                    and int(metadata.history_lengths.to(dtype=torch.int64).sum().item()) == 0
+                    and int(runtime_uih_seq_lengths.to(dtype=torch.int64).sum().item()) > 0
+                ):
+                    metadata.history_lengths = runtime_uih_seq_lengths
+                if (
+                    runtime_num_targets is not None
+                    and int(metadata.num_targets.to(dtype=torch.int64).sum().item()) == 0
+                    and int(runtime_num_targets.to(dtype=torch.int64).sum().item()) > 0
+                ):
+                    metadata.num_targets = runtime_num_targets
+                if (
+                    int(getattr(metadata, "contextual_seq_len", 0)) == 0
+                    and getattr(self.config, "contextual_feature_to_max_length", None)
+                ):
+                    metadata.contextual_seq_len = int(
+                        sum(self.config.contextual_feature_to_max_length.values())
+                    )
+
+                total_delta_tokens = int(
+                    metadata.num_targets.to(dtype=torch.int64).sum().item()
+                )
                 expected_total_tokens = int(
                     (
                         metadata.history_lengths.to(dtype=torch.int64)
@@ -303,7 +346,24 @@ class HSTUForRecommendation(nn.Module):
                     else 0
                 )
                 if actual_token_slots < expected_total_tokens:
-                    if actual_token_slots + actual_computed_tokens >= expected_total_tokens:
+                    if (
+                        actual_computed_tokens == 0
+                        and actual_token_slots == total_delta_tokens
+                    ):
+                        logger.debug_once(
+                            "Skip native HSTU KV cache for this cold-start step "
+                            "because scheduler-visible token slots only cover "
+                            "the newly scheduled delta tokens: slots=%d "
+                            "computed=%d delta=%d expected=%d",
+                            actual_token_slots,
+                            actual_computed_tokens,
+                            total_delta_tokens,
+                            expected_total_tokens,
+                        )
+                    elif (
+                        actual_token_slots + actual_computed_tokens
+                        >= expected_total_tokens
+                    ):
                         logger.debug_once(
                             "Skip native HSTU KV cache for this step because "
                             "scheduler-visible token slots only cover the new "

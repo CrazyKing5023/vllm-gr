@@ -10,9 +10,11 @@ processors) and drives the engine loop to collect GRRequestOutput results.
 """
 
 from typing import Optional, Union, Sequence, List
+import gc
 import time
 import logging
 
+import torch
 from tqdm.auto import tqdm
 
 from vllm.entrypoints.llm import LLM
@@ -181,6 +183,14 @@ class GRLLM(LLM):
         if hasattr(self, 'llm_engine') and self.llm_engine is not None:
             self.llm_engine.shutdown()
             self.llm_engine = None
+        self.default_sampling_params = None
+        self.io_processor = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            ipc_collect = getattr(torch.cuda, "ipc_collect", None)
+            if callable(ipc_collect):
+                ipc_collect()
         logger.info("GRLLM shutdown complete")
 
     def __enter__(self):

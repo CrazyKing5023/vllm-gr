@@ -29,7 +29,6 @@ from vllm_gr.inputs.hstu_prompt_identity import (
 )
 from vllm_gr.gr_schema import (
     attach_schema_fingerprint as _attach_schema_fingerprint,
-    build_schema_fingerprint as _build_schema_fingerprint,
     extract_context_features as _extract_context_features_helper,
     extract_features as _extract_features_helper,
     validate_context_group as _validate_context_group,
@@ -333,20 +332,6 @@ class GRInputProcessor(InputProcessor):
     ) -> tuple[list[str], list[str], list[str], str]:
         """Attach a stable request-schema fingerprint for logging/debugging."""
         return _attach_schema_fingerprint(
-            uih_keys=uih_keys,
-            cand_keys=cand_keys,
-            ctx_keys=ctx_keys,
-        )
-
-    @staticmethod
-    def build_schema_fingerprint(
-        *,
-        uih_keys: list[str],
-        cand_keys: list[str],
-        ctx_keys: list[str],
-    ) -> str:
-        """Return a stable local fingerprint for a request schema."""
-        return _build_schema_fingerprint(
             uih_keys=uih_keys,
             cand_keys=cand_keys,
             ctx_keys=ctx_keys,
