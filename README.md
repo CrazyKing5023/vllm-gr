@@ -93,7 +93,6 @@ python -m pip install -e ".[all-gpu]"
 推荐最常用的开发/验证安装：
 
 ```bash
-cd /root/PROJECT/HSTU_Update/GR_Repo_main
 python -m pip install -e ".[npu,dev,safetensors]"
 ```
 
@@ -200,6 +199,174 @@ python scripts/run_tests.py
 python scripts/run_tests.py --suite gpu-smoke
 python scripts/run_tests.py --suite npu-smoke
 ```
+
+## 如何把新用例接进当前 CI
+
+当前 `/retest` 对这个仓默认执行的是统一测试入口，而不是直接扫描整个 `tests/` 目录。
+
+可以把当前 CI 理解成下面这条链路：
+
+```text
+PR /retest
+  -> CI clone 当前 MR 对应代码
+  -> python scripts/run_tests.py --suite unit gpu-smoke
+  -> 只执行 SUITE_DEFINITIONS 里显式列出的测试文件
+```
+
+这意味着：
+
+- 新增 `tests/test_xxx.py` 文件本身还不够
+- 还需要把这个文件加入 `scripts/run_tests.py` 里的 `SUITE_DEFINITIONS`
+- 如果不加入 suite，CI 默认不会跑到这个文件
+
+### 最稳妥的接入方式
+
+如果你的新用例属于默认门禁，推荐按下面 4 步做：
+
+1. 在 `tests/` 下新增测试文件
+2. 在 `scripts/run_tests.py` 的 `SUITE_DEFINITIONS` 里，把文件名加入合适的 suite
+3. 先在本地执行统一入口验证
+4. push 到 MR 分支后，在 PR 里评论 `/retest`
+
+### 默认门禁到底跑什么
+
+当前默认门禁等价于：
+
+```bash
+python scripts/run_tests.py --suite unit gpu-smoke
+```
+
+其中：
+
+- `unit` 适合纯逻辑、协议、contract、无外部大依赖的测试
+- `gpu-smoke` 适合需要单独脚本跑起来的 GPU 烟测
+- 如果你的用例是 NPU 烟测，一般不该塞进 `unit`，而应放进 `npu-smoke` 或新建 suite
+
+### 示例 1：把一个新 contract 用例加入默认 CI
+
+假设你新增了文件：
+
+```text
+tests/test_batch_recommendation_contract.py
+```
+
+如果你希望它进入默认 `/retest`，最直接的方法是把它加入 `unit`：
+
+```python
+SUITE_DEFINITIONS: dict[str, dict[str, object]] = {
+    "unit": {
+        "label": "Core Unit Tests",
+        "runner": "pytest",
+        "files": [
+            "test_engine.py",
+            "test_gr_schema_contract.py",
+            "test_processors.py",
+            "test_embedding_collection_patch.py",
+            "test_gr_runner_core.py",
+            "test_dataset_config_parity.py",
+            "test_checkpoint_conversion_contract.py",
+            "test_output_contract.py",
+            "test_positional_encoder_parity.py",
+            "test_run_tests_script.py",
+            "test_hstu_attention_contract.py",
+            "test_batch_recommendation_contract.py",
+        ],
+    },
+}
+```
+
+然后先本地验证：
+
+```bash
+python scripts/run_tests.py --suite unit
+```
+
+如果只想快速确认这个新文件本身，也可以先单独跑：
+
+```bash
+python -m pytest tests/test_batch_recommendation_contract.py -q
+```
+
+确认通过后：
+
+```bash
+git add tests/test_batch_recommendation_contract.py scripts/run_tests.py
+git commit -m "Add batch recommendation contract test to unit suite"
+git push
+```
+
+然后在对应 PR 评论：
+
+```text
+/retest
+```
+
+### 示例 2：新增一个独立 suite
+
+如果你的测试不适合放进默认 `unit`，也可以单独定义一个 suite，例如：
+
+```python
+SUITE_DEFINITIONS: dict[str, dict[str, object]] = {
+    "unit": {
+        "label": "Core Unit Tests",
+        "runner": "pytest",
+        "files": [
+            "test_engine.py",
+            "test_gr_schema_contract.py",
+        ],
+    },
+    "batch-contract": {
+        "label": "Batch Recommendation Contract Tests",
+        "runner": "pytest",
+        "files": [
+            "test_batch_recommendation_contract.py",
+        ],
+    },
+}
+```
+
+本地验证：
+
+```bash
+python scripts/run_tests.py --suite batch-contract
+```
+
+注意：
+
+- 这样做以后，本地可以跑到这个 suite
+- 但如果 CI 默认仍然执行 `python scripts/run_tests.py --suite unit gpu-smoke`，那么 `/retest` 还不会自动跑 `batch-contract`
+- 只有当 CI 的测试命令被改成包含这个 suite，或者你把它并入默认 `unit`，它才会进入默认门禁
+
+### 什么时候不需要改 CI 基础设施
+
+下面这种情况，通常完全不用改 webhook、queue、worker、容器脚本：
+
+- 只是新增 `tests/test_xxx.py`
+- 并把它加入现有 `unit` / `gpu-smoke` / `npu-smoke`
+- 仍然使用 `python scripts/run_tests.py` 作为统一入口
+
+也就是说，大多数“新增一个普通用例并让 `/retest` 跑到它”的需求，只需要改仓库自身：
+
+- `tests/`
+- `scripts/run_tests.py`
+
+### 提交前建议检查
+
+建议至少跑下面其中一组：
+
+```bash
+python scripts/run_tests.py --suite unit
+python scripts/run_tests.py --suite gpu-smoke
+python scripts/run_tests.py --all --auto-platform
+```
+
+最小检查建议：
+
+- 新增的测试文件名符合 `test_*.py`
+- 测试文件放在 `tests/` 下
+- 文件名已经加入 `scripts/run_tests.py`
+- 本地 `pytest` 或统一入口能跑通
+- push 后再用 PR 评论 `/retest`
 
 ### 3. 跑 demo examples
 
