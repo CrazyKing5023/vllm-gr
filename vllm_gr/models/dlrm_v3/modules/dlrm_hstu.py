@@ -11,7 +11,7 @@ Supports multi-task prediction and user-item interaction modeling.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import torch
 from torch.autograd.profiler import record_function
@@ -40,10 +40,7 @@ from vllm_gr.models.dlrm_v3.modules.preprocessors import ContextualPreprocessor
 from vllm_gr.models.dlrm_v3.modules.stu import STU, STULayer, STULayerConfig, STUStack
 from vllm_gr.ops.jagged_tensors import concat_2D_jagged
 from vllm_gr.ops.layer_norm import LayerNorm, SwishLayerNorm
-from vllm_gr.utils import (
-    ReliableOps,
-    get_hstu_autocast_context,
-)
+from vllm_gr.utils import ReliableOps
 
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -95,6 +92,7 @@ class DlrmHSTUConfig:
     action_embedding_init_std: float = 0.1
     enable_postprocessor: bool = True
     use_layer_norm_postprocessor: bool = False
+    enable_kv_cache: bool = True
 
 class DlrmHSTU(HammerModule):
     """
@@ -156,6 +154,20 @@ class DlrmHSTU(HammerModule):
             and (uih_feature_name in self._hstu_configs.user_embedding_feature_names)
             and (uih_feature_name != self._hstu_configs.uih_post_id_feature_name)
         ]
+        self._scalar_payload_pairs: List[Tuple[str, str]] = [
+            (uih_feature_name, candidate_feature_name)
+            for (
+                uih_feature_name,
+                candidate_feature_name,
+            ) in self._hstu_configs.merge_uih_candidate_feature_mapping
+            if (
+                candidate_feature_name
+                not in self._hstu_configs.item_embedding_feature_names
+                and uih_feature_name
+                not in self._hstu_configs.user_embedding_feature_names
+            )
+        ]
+        self._merged_sequence_feature_names: List[str] = []
 
         preprocessor = ContextualPreprocessor(
             input_embedding_dim=hstu_configs.hstu_embedding_table_dim,
@@ -381,6 +393,40 @@ class DlrmHSTU(HammerModule):
             },
         }
 
+    def _merge_uih_and_candidate_embeddings(
+        self,
+        seq_embeddings: Dict[str, SequenceEmbedding],
+        uih_seq_lengths: torch.Tensor,
+        max_uih_len: int,
+        num_candidates: torch.Tensor,
+        max_num_candidates: int,
+    ) -> Dict[str, SequenceEmbedding]:
+        merged_embedding_keys: List[str] = []
+        for (
+            uih_feature_name,
+            candidate_feature_name,
+        ) in self._hstu_configs.merge_uih_candidate_feature_mapping:
+            if uih_feature_name in seq_embeddings:
+                seq_embeddings[uih_feature_name] = SequenceEmbedding(
+                    lengths=uih_seq_lengths + num_candidates,
+                    embedding=concat_2D_jagged(
+                        max_seq_len=max_uih_len + max_num_candidates,
+                        max_len_left=max_uih_len,
+                        offsets_left=_cumsum(uih_seq_lengths),
+                        values_left=seq_embeddings[uih_feature_name].embedding,
+                        max_len_right=max_num_candidates,
+                        offsets_right=_cumsum(num_candidates),
+                        values_right=seq_embeddings[
+                            candidate_feature_name
+                        ].embedding,
+                        kernel=self.hammer_kernel(),
+                    ),
+                )
+                if uih_feature_name not in merged_embedding_keys:
+                    merged_embedding_keys.append(uih_feature_name)
+        self._merged_sequence_feature_names = merged_embedding_keys
+        return seq_embeddings
+
     # =========================================================================
     # _item_forward / _user_forward
     # =========================================================================
@@ -405,6 +451,7 @@ class DlrmHSTU(HammerModule):
         seq_embeddings: Dict[str, SequenceEmbedding],
         payload_features: Dict[str, torch.Tensor],
         num_candidates: torch.Tensor,
+        hstu_attn_metadata: Optional[Any] = None,
     ) -> torch.Tensor:
         source_lengths = seq_embeddings[
             self._hstu_configs.uih_post_id_feature_name
@@ -447,6 +494,7 @@ class DlrmHSTU(HammerModule):
             seq_timestamps=source_timestamps,
             seq_payloads=seq_payloads,
             num_targets=num_candidates,
+            hstu_attn_metadata=hstu_attn_metadata,
         )
 
         return candidates_user_embeddings.to(dtype)
@@ -463,31 +511,15 @@ class DlrmHSTU(HammerModule):
         uih_seq_lengths: torch.Tensor,
         max_num_candidates: int,
         num_candidates: torch.Tensor,
+        hstu_attn_metadata: Optional[Any] = None,
     ) -> torch.Tensor:
-        merged_embedding_keys: List[str] = []
-        for (
-            uih_feature_name,
-            candidate_feature_name,
-        ) in self._hstu_configs.merge_uih_candidate_feature_mapping:
-            if uih_feature_name in seq_embeddings:
-                seq_embeddings[uih_feature_name] = SequenceEmbedding(
-                    lengths=uih_seq_lengths + num_candidates,
-                    embedding=concat_2D_jagged(
-                        max_seq_len=max_uih_len + max_num_candidates,
-                        max_len_left=max_uih_len,
-                        offsets_left=_cumsum(uih_seq_lengths),
-                        values_left=seq_embeddings[uih_feature_name].embedding,
-                        max_len_right=max_num_candidates,
-                        offsets_right=_cumsum(num_candidates),
-                        values_right=seq_embeddings[
-                            candidate_feature_name
-                        ].embedding,
-                        kernel=self.hammer_kernel(),
-                    ),
-                )
-                if uih_feature_name not in merged_embedding_keys:
-                    merged_embedding_keys.append(uih_feature_name)
-
+        seq_embeddings = self._merge_uih_and_candidate_embeddings(
+            seq_embeddings=seq_embeddings,
+            uih_seq_lengths=uih_seq_lengths,
+            max_uih_len=max_uih_len,
+            num_candidates=num_candidates,
+            max_num_candidates=max_num_candidates,
+        )
         with record_function("## item_forward ##"):
             candidates_item_embeddings = self._item_forward(seq_embeddings)
 
@@ -498,15 +530,14 @@ class DlrmHSTU(HammerModule):
                 seq_embeddings=seq_embeddings,
                 payload_features=payload_features,
                 num_candidates=num_candidates,
+                hstu_attn_metadata=hstu_attn_metadata,
             )
 
         with record_function("## multitask_module ##"):
-            mt_target_preds = self._multitask_module(
-                    encoded_user_embeddings=candidates_user_embeddings,
-                    item_embeddings=candidates_item_embeddings,
-                )
-
-        return mt_target_preds
+            return self._multitask_module(
+                encoded_user_embeddings=candidates_user_embeddings,
+                item_embeddings=candidates_item_embeddings,
+            )
 
     # =========================================================================
     # forward: KJT → preprocess → main_forward

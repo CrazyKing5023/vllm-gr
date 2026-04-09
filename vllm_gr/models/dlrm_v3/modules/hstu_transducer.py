@@ -2,20 +2,20 @@
 # Ported to vllm-GR with modifications.
 # Licensed under the Apache License, Version 2.0
 
-"""HSTU Transducer module"""
+"""HSTU Transducer module."""
 
 import logging
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 from torch.profiler import record_function
 
-from vllm_gr.models.dlrm_v3.common import HammerModule, fx_unwrap_optional_tensor
+from vllm_gr.models.dlrm_v3.common import HammerModule
 from vllm_gr.models.dlrm_v3.modules.positional_encoder import HSTUPositionalEncoder
 from vllm_gr.models.dlrm_v3.modules.postprocessors import L2NormPostprocessor, OutputPostprocessor
 from vllm_gr.models.dlrm_v3.modules.preprocessors import InputPreprocessor
 from vllm_gr.models.dlrm_v3.modules.stu import STU
-from vllm_gr.ops.jagged_tensors import split_2D_jagged
+from vllm_gr.ops.jagged_tensors import concat_2D_jagged, split_2D_jagged
 from vllm_gr.utils import ReliableOps
 
 
@@ -80,6 +80,15 @@ class HSTUTransducer(HammerModule):
                     torch.nn.init.xavier_normal_(m.weight)
                 if m.bias is not None and m.bias.dim() >= 2:
                     torch.nn.init.xavier_normal_(m.bias)
+
+    def _can_use_vllm_kv_cache(
+        self,
+        hstu_attn_metadata: Optional[Any],
+    ) -> bool:
+        return bool(
+            hstu_attn_metadata is not None
+            and getattr(hstu_attn_metadata, "cache_layers", None)
+        )
 
     def _preprocess(
         self,
@@ -158,7 +167,9 @@ class HSTUTransducer(HammerModule):
         seq_timestamps: torch.Tensor,
         seq_embeddings: torch.Tensor,
         num_targets: torch.Tensor,
+        hstu_attn_metadata: Optional[Any] = None,
     ) -> torch.Tensor:
+        del seq_timestamps
         with record_function("hstu"):
             seq_embeddings = self._stu_module(
                 max_seq_len=max_seq_len,
@@ -166,8 +177,76 @@ class HSTUTransducer(HammerModule):
                 x_lengths=seq_lengths,
                 x_offsets=seq_offsets,
                 num_targets=(None if self._listwise_training else num_targets),
+                hstu_attn_metadata=hstu_attn_metadata,
+                hstu_attention_mode="full",
             )
         return seq_embeddings
+
+    def _hstu_compute_cached(
+        self,
+        max_seq_len: int,
+        seq_lengths: torch.Tensor,
+        seq_offsets: torch.Tensor,
+        seq_embeddings: torch.Tensor,
+        num_targets: torch.Tensor,
+        hstu_attn_metadata: Optional[Any] = None,
+    ) -> torch.Tensor:
+        del seq_offsets
+        prefix_lengths = seq_lengths - num_targets
+        if prefix_lengths.numel() == 0 or int(prefix_lengths.max().item()) <= 0:
+            return self._hstu_compute(
+                max_seq_len=max_seq_len,
+                seq_lengths=seq_lengths,
+                seq_offsets=complete_cumsum(seq_lengths),
+                seq_timestamps=torch.empty(0, device=seq_embeddings.device),
+                seq_embeddings=seq_embeddings,
+                num_targets=num_targets,
+                hstu_attn_metadata=hstu_attn_metadata,
+            )
+
+        prefix_offsets = complete_cumsum(prefix_lengths)
+        delta_offsets = complete_cumsum(num_targets)
+        max_prefix_len = int(prefix_lengths.max().item())
+        max_delta_len = int(num_targets.max().item()) if num_targets.numel() > 0 else 0
+
+        prefix_embeddings, delta_embeddings = split_2D_jagged(
+            values=seq_embeddings,
+            max_seq_len=max_seq_len,
+            offsets_left=prefix_offsets,
+            offsets_right=delta_offsets,
+            kernel=self.hammer_kernel(),
+        )
+
+        prefix_outputs = self._stu_module(
+            max_seq_len=max_prefix_len,
+            x=prefix_embeddings,
+            x_lengths=prefix_lengths,
+            x_offsets=prefix_offsets,
+            num_targets=torch.zeros_like(num_targets),
+            hstu_attn_metadata=hstu_attn_metadata,
+            hstu_attention_mode="prefix",
+        )
+
+        if max_delta_len == 0:
+            return prefix_outputs
+
+        delta_outputs = self._stu_module.cached_forward(
+            delta_x=delta_embeddings,
+            num_targets=(None if self._listwise_training else num_targets),
+            hstu_attn_metadata=hstu_attn_metadata,
+            hstu_attention_mode="delta",
+        )
+
+        return concat_2D_jagged(
+            max_seq_len=max_seq_len,
+            values_left=prefix_outputs,
+            values_right=delta_outputs,
+            max_len_left=max_prefix_len,
+            max_len_right=max_delta_len,
+            offsets_left=prefix_offsets,
+            offsets_right=delta_offsets,
+            kernel=self.hammer_kernel(),
+        )
 
     def _postprocess(
         self,
@@ -243,6 +322,7 @@ class HSTUTransducer(HammerModule):
         seq_timestamps: torch.Tensor,
         num_targets: torch.Tensor,
         seq_payloads: Dict[str, torch.Tensor],
+        hstu_attn_metadata: Optional[Any] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Forward pass of HSTU Transducer.
@@ -250,8 +330,6 @@ class HSTUTransducer(HammerModule):
         Returns:
             (candidate_embeddings, full_embeddings or None)
         """
-        orig_dtype = seq_embeddings.dtype
-
         (
             max_seq_len,
             total_uih_len,
@@ -274,14 +352,29 @@ class HSTUTransducer(HammerModule):
             seq_payloads=seq_payloads,
         )
 
-        encoded_embeddings = self._hstu_compute(
-            max_seq_len=max_seq_len,
-            seq_lengths=seq_lengths,
-            seq_offsets=seq_offsets,
-            seq_timestamps=seq_timestamps,
-            seq_embeddings=seq_embeddings,
-            num_targets=num_targets,
+        use_vllm_kv_cache = (
+            self._can_use_vllm_kv_cache(hstu_attn_metadata)
+            and torch.any(num_targets > 0).item()
         )
+        if use_vllm_kv_cache:
+            encoded_embeddings = self._hstu_compute_cached(
+                max_seq_len=max_seq_len,
+                seq_lengths=seq_lengths,
+                seq_offsets=seq_offsets,
+                seq_embeddings=seq_embeddings,
+                num_targets=num_targets,
+                hstu_attn_metadata=hstu_attn_metadata,
+            )
+        else:
+            encoded_embeddings = self._hstu_compute(
+                max_seq_len=max_seq_len,
+                seq_lengths=seq_lengths,
+                seq_offsets=seq_offsets,
+                seq_timestamps=seq_timestamps,
+                seq_embeddings=seq_embeddings,
+                num_targets=num_targets,
+                hstu_attn_metadata=hstu_attn_metadata,
+            )
 
         encoded_embeddings, encoded_candidate_embeddings = self._postprocess(
             max_seq_len=max_seq_len,

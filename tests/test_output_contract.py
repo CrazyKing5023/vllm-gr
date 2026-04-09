@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import importlib.machinery
 import importlib.util
 from pathlib import Path
 from collections import namedtuple
@@ -170,6 +171,13 @@ def _fake_torchrec_embedding_config_module(*, with_bf16: bool):
 
     fake_embedding_configs.DataType = FakeDataType
     fake_embedding_configs.EmbeddingConfig = FakeEmbeddingConfig
+    fake_torchrec.__spec__ = importlib.machinery.ModuleSpec("torchrec", loader=None)
+    fake_torchrec_modules.__spec__ = importlib.machinery.ModuleSpec(
+        "torchrec.modules", loader=None
+    )
+    fake_embedding_configs.__spec__ = importlib.machinery.ModuleSpec(
+        "torchrec.modules.embedding_configs", loader=None
+    )
 
     sys.modules.update(
         {
@@ -207,6 +215,13 @@ def _fake_torchrec_jagged_tensor_module():
             return types.SimpleNamespace(**kwargs)
 
     fake_jagged_tensor.KeyedJaggedTensor = FakeKeyedJaggedTensor
+    fake_torchrec.__spec__ = importlib.machinery.ModuleSpec("torchrec", loader=None)
+    fake_torchrec_sparse.__spec__ = importlib.machinery.ModuleSpec(
+        "torchrec.sparse", loader=None
+    )
+    fake_jagged_tensor.__spec__ = importlib.machinery.ModuleSpec(
+        "torchrec.sparse.jagged_tensor", loader=None
+    )
     sys.modules.update(
         {
             "torchrec": fake_torchrec,
