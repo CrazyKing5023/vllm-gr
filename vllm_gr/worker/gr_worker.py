@@ -15,10 +15,9 @@ vLLM modules loaded after the initial plugin execution.
 
 import gc
 
-import torch
-
 from vllm.logger import init_logger
 from vllm.v1.worker.gpu_worker import Worker as GPUWorker
+from vllm_gr.utils.npu_adapter import release_accelerator_memory
 
 logger = init_logger(__name__)
 
@@ -60,8 +59,4 @@ class GRWorker(GPUWorker):
             self.model_runner = None
 
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            ipc_collect = getattr(torch.cuda, "ipc_collect", None)
-            if callable(ipc_collect):
-                ipc_collect()
+        release_accelerator_memory()

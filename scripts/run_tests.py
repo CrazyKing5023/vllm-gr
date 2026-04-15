@@ -49,6 +49,8 @@ SUITE_DEFINITIONS: dict[str, dict[str, object]] = {
             "test_hstu_vllm_native_kv_contract.py",
             "test_hstu_prefix_cache_contract.py",
             "test_prefix_cache_benchmark_input.py",
+            "test_yuanrong_monkey_patch.py",
+            "test_yuanrong_backend.py",
         ],
     },
     "gpu-smoke": {

@@ -12,8 +12,6 @@ existing add_request() / step() pipeline handles GRPrompt transparently.
 import gc
 import logging
 
-import torch
-
 from vllm.config import VllmConfig
 from vllm.usage.usage_lib import UsageContext
 from vllm.v1.engine.llm_engine import LLMEngine
@@ -25,6 +23,7 @@ from vllm_gr.config.gr_config import GRConfig
 from vllm_gr.engine.arg_utils import GREngineArgs
 from vllm_gr.engine.gr_input_processor import GRInputProcessor
 from vllm_gr.engine.gr_output_processor import GROutputProcessor
+from vllm_gr.utils.npu_adapter import release_accelerator_memory
 
 logger = logging.getLogger("vllm_gr.engine")
 
@@ -126,11 +125,7 @@ class GRLLMEngine(LLMEngine):
             get_cached_compilation_config.cache_clear()
 
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            ipc_collect = getattr(torch.cuda, "ipc_collect", None)
-            if callable(ipc_collect):
-                ipc_collect()
+        release_accelerator_memory()
         logger.info("GRLLMEngine shutdown complete")
 
     def _replace_processors(self) -> None:

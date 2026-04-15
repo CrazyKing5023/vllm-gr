@@ -174,3 +174,52 @@ def is_npu_device(device: torch.device) -> bool:
 
 def is_cuda_device(device: torch.device) -> bool:
     return get_device_backend(device) == DeviceType.CUDA
+
+
+def _cleanup_torch_backend(backend, *, collect_ipc: bool) -> bool:
+    """Best-effort cleanup for a torch accelerator backend."""
+    if backend is None:
+        return False
+
+    is_available = getattr(backend, "is_available", None)
+    if callable(is_available):
+        try:
+            if not is_available():
+                return False
+        except Exception:
+            logger.debug("Backend availability probe failed", exc_info=True)
+            return False
+
+    cleaned = False
+    synchronize = getattr(backend, "synchronize", None)
+    if callable(synchronize):
+        try:
+            synchronize()
+            cleaned = True
+        except Exception:
+            logger.debug("Backend synchronize failed during cleanup", exc_info=True)
+
+    empty_cache = getattr(backend, "empty_cache", None)
+    if callable(empty_cache):
+        try:
+            empty_cache()
+            cleaned = True
+        except Exception:
+            logger.debug("Backend empty_cache failed during cleanup", exc_info=True)
+
+    if collect_ipc:
+        ipc_collect = getattr(backend, "ipc_collect", None)
+        if callable(ipc_collect):
+            try:
+                ipc_collect()
+                cleaned = True
+            except Exception:
+                logger.debug("Backend ipc_collect failed during cleanup", exc_info=True)
+
+    return cleaned
+
+
+def release_accelerator_memory() -> None:
+    """Release cached CUDA/NPU memory after engine shutdown."""
+    _cleanup_torch_backend(getattr(torch, "npu", None), collect_ipc=False)
+    _cleanup_torch_backend(getattr(torch, "cuda", None), collect_ipc=True)

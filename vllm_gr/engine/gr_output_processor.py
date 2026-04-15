@@ -246,6 +246,9 @@ class GROutputProcessor(VLLMOutputProcessor):
         self.total_prefix_cache_requests: int = 0
         self.total_prefix_cache_queries: int = 0
         self.total_prefix_cache_hits: int = 0
+        self.total_connector_prefix_cache_requests: int = 0
+        self.total_connector_prefix_cache_queries: int = 0
+        self.total_connector_prefix_cache_hits: int = 0
 
     @property
     def num_pending_requests(self) -> int:
@@ -290,16 +293,23 @@ class GROutputProcessor(VLLMOutputProcessor):
             return
 
         prefix_cache_stats = getattr(scheduler_stats, "prefix_cache_stats", None)
-        if prefix_cache_stats is None:
-            return
+        if prefix_cache_stats is not None:
+            self.total_prefix_cache_requests += int(prefix_cache_stats.requests)
+            self.total_prefix_cache_queries += int(prefix_cache_stats.queries)
+            self.total_prefix_cache_hits += int(prefix_cache_stats.hits)
 
-        self.total_prefix_cache_requests += int(prefix_cache_stats.requests)
-        self.total_prefix_cache_queries += int(prefix_cache_stats.queries)
-        self.total_prefix_cache_hits += int(prefix_cache_stats.hits)
+        connector_stats = getattr(scheduler_stats, "connector_prefix_cache_stats", None)
+        if connector_stats is not None:
+            self.total_connector_prefix_cache_requests += int(connector_stats.requests)
+            self.total_connector_prefix_cache_queries += int(connector_stats.queries)
+            self.total_connector_prefix_cache_hits += int(connector_stats.hits)
 
     def get_prefix_cache_counters(self) -> dict[str, int]:
         return {
             "requests": self.total_prefix_cache_requests,
             "queries": self.total_prefix_cache_queries,
             "hits": self.total_prefix_cache_hits,
+            "connector_requests": self.total_connector_prefix_cache_requests,
+            "connector_queries": self.total_connector_prefix_cache_queries,
+            "connector_hits": self.total_connector_prefix_cache_hits,
         }
