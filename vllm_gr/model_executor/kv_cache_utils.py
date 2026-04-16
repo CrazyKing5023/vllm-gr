@@ -62,7 +62,10 @@ def write_to_paged_cache(
         num_kv_heads,
         head_size + head_size_v,
     )
-    flat_cache[flat_slot_mapping[valid_mask]] = packed_kv[valid_mask]
+    valid_token_indices = torch.nonzero(valid_mask, as_tuple=False).reshape(-1)
+    slot_indices = flat_slot_mapping.index_select(0, valid_token_indices)
+    packed_kv = packed_kv.index_select(0, valid_token_indices)
+    flat_cache.index_copy_(0, slot_indices, packed_kv)
 
 
 def read_from_paged_cache(

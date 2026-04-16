@@ -41,31 +41,23 @@ def _concat_2D_jagged_jagged(
     offsets_left: torch.Tensor,
     offsets_right: torch.Tensor,
 ) -> torch.Tensor:
-    max_seq_len = max_len_left + max_len_right
-    lengths_left = offsets_left[1:] - offsets_left[:-1]
-    lengths_right = offsets_right[1:] - offsets_right[:-1]
-    padded_left = _pytorch_jagged_to_padded_dense(
-        values=values_left,
-        offsets=offsets_left,
-        max_length=max_len_left,
-        padding_value=0.0,
-    )
-    padded_right = _pytorch_jagged_to_padded_dense(
-        values=values_right,
-        offsets=offsets_right,
-        max_length=max_len_right,
-        padding_value=0.0,
-    )
-    concatted_dense = torch.cat([padded_left, padded_right], dim=1)
-    mask = torch.arange(max_seq_len, device=offsets_left.device).view(1, -1)
-    mask = torch.logical_or(
-        mask < lengths_left.view(-1, 1),
-        torch.logical_and(
-            mask >= max_len_left,
-            mask < max_len_left + lengths_right.view(-1, 1),
-        ),
-    )
-    return concatted_dense.flatten(0, 1)[mask.view(-1), :]
+    del max_len_left, max_len_right
+    pieces: list[torch.Tensor] = []
+    batch_size = int(offsets_left.numel()) - 1
+    for idx in range(batch_size):
+        left_start = int(offsets_left[idx].item())
+        left_end = int(offsets_left[idx + 1].item())
+        right_start = int(offsets_right[idx].item())
+        right_end = int(offsets_right[idx + 1].item())
+
+        if left_end > left_start:
+            pieces.append(values_left[left_start:left_end])
+        if right_end > right_start:
+            pieces.append(values_right[right_start:right_end])
+
+    if not pieces:
+        return values_left.new_empty((0, values_left.shape[1]))
+    return torch.cat(pieces, dim=0)
 
 
 def pytorch_concat_2D_jagged(
@@ -130,22 +122,34 @@ def _split_2D_jagged_jagged(
     offsets_left: torch.Tensor,
     offsets_right: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    offsets = offsets_left + offsets_right
-    padded_values = _pytorch_jagged_to_padded_dense(
-        values=values,
-        offsets=offsets,
-        max_length=max_seq_len,
-        padding_value=0.0,
-    ).flatten(0, 1)
-    lengths_left = offsets_left[1:] - offsets_left[:-1]
-    lengths_right = offsets_right[1:] - offsets_right[:-1]
-    mask = torch.arange(max_seq_len, device=values.device).view(1, -1)
-    mask_left = mask < lengths_left.view(-1, 1)
-    mask_right = torch.logical_and(
-        mask >= lengths_left.view(-1, 1),
-        mask < (lengths_left + lengths_right).view(-1, 1),
-    )
-    return padded_values[mask_left.view(-1), :], padded_values[mask_right.view(-1), :]
+    del max_seq_len
+    left_pieces: list[torch.Tensor] = []
+    right_pieces: list[torch.Tensor] = []
+    batch_size = int(offsets_left.numel()) - 1
+
+    for idx in range(batch_size):
+        left_len = int((offsets_left[idx + 1] - offsets_left[idx]).item())
+        right_len = int((offsets_right[idx + 1] - offsets_right[idx]).item())
+        start = int((offsets_left[idx] + offsets_right[idx]).item())
+        middle = start + left_len
+        end = middle + right_len
+
+        if left_len > 0:
+            left_pieces.append(values[start:middle])
+        if right_len > 0:
+            right_pieces.append(values[middle:end])
+
+    if left_pieces:
+        left = torch.cat(left_pieces, dim=0)
+    else:
+        left = values.new_empty((0, values.shape[1]))
+
+    if right_pieces:
+        right = torch.cat(right_pieces, dim=0)
+    else:
+        right = values.new_empty((0, values.shape[1]))
+
+    return left, right
 
 
 def pytorch_split_2D_jagged(

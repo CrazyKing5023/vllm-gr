@@ -205,10 +205,12 @@ class GREngineArgs(EngineArgs):
         self.skip_tokenizer_init = True
         self.runner = "pooling"
         self.enforce_eager = True
+        # HSTU currently exposes a single full-attention KV cache spec.
+        # Hybrid KV cache coordination is for mixed attention-group models and
+        # provides no benefit here; forcing it off also avoids NPU runtimes
+        # incorrectly routing single-group HSTU models through the hybrid path.
+        self.disable_hybrid_kv_cache_manager = True
         self._ensure_hstu_model_max_length_override(required_max_model_len)
-
-        # HSTU models don't use KV cache, so prefix caching must be disabled.
-        self.enable_prefix_caching = False
 
         worker_cls = self._select_worker_cls_for_model_family(self.model_family)
         if worker_cls is not None:

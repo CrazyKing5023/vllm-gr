@@ -23,6 +23,7 @@ from vllm.v1.attention.backend import (
 )
 from vllm.v1.kv_cache_interface import FullAttentionSpec
 
+from vllm_gr.config.hstu_config import get_hstu_contextual_seq_len
 from vllm_gr.ops.hstu_attention import delta_hstu_mha, hstu_mha
 
 
@@ -292,7 +293,10 @@ class HSTUAttentionMetadataBuilder(AttentionMetadataBuilder[HSTUAttentionMetadat
         self._init_reorder_batch_threshold(reorder_batch_threshold=1)
         self._num_targets: torch.Tensor | None = None
         self._history_lengths: torch.Tensor | None = None
-        self._contextual_seq_len: int = 0
+        hf_config = getattr(getattr(vllm_config, "model_config", None), "hf_config", None)
+        self._contextual_seq_len: int = (
+            get_hstu_contextual_seq_len(hf_config) if hf_config is not None else 0
+        )
 
     def set_request_lengths(
         self,
@@ -308,7 +312,6 @@ class HSTUAttentionMetadataBuilder(AttentionMetadataBuilder[HSTUAttentionMetadat
     def clear_request_lengths(self) -> None:
         self._num_targets = None
         self._history_lengths = None
-        self._contextual_seq_len = 0
 
     def build(
         self,

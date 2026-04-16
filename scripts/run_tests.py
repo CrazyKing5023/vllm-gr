@@ -46,6 +46,9 @@ SUITE_DEFINITIONS: dict[str, dict[str, object]] = {
             "test_positional_encoder_parity.py",
             "test_run_tests_script.py",
             "test_hstu_attention_contract.py",
+            "test_hstu_vllm_native_kv_contract.py",
+            "test_hstu_prefix_cache_contract.py",
+            "test_prefix_cache_benchmark_input.py",
         ],
     },
     "gpu-smoke": {
