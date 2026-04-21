@@ -30,6 +30,7 @@ classifiers = [
 dependencies = [
     "msgspec",
     "pandas>=2.0.0",
+    "requests>=2.32.0",
     "tqdm>=4.66.0",
 ]
 
@@ -115,6 +116,9 @@ Issues = "https://github.com/your-org/vllm-GR/issues"
 
 [project.entry-points."vllm.general_plugins"]
 vllm_gr = "vllm_gr.plugin:register"
+
+[project.scripts]
+vllm-gr = "vllm_gr.entrypoints.cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

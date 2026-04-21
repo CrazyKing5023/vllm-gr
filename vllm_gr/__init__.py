@@ -25,7 +25,7 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str, bool]] = {
     "is_gr_prompt": ("vllm_gr.inputs.data", "is_gr_prompt", False),
     "RecommendedItem": ("vllm_gr.outputs", "RecommendedItem", True),
     "GRRequestOutput": ("vllm_gr.outputs", "GRRequestOutput", True),
-    "GRLLM": ("vllm_gr.entrypoint.gr", "GRLLM", True),
+    "GRLLM": ("vllm_gr.entrypoints.gr", "GRLLM", True),
 }
 
 _COMPAT_EXPORTS: dict[str, tuple[str, str, bool]] = {

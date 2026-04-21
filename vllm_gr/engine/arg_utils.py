@@ -2,11 +2,14 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-GREngineArgs: Engine arguments for generative recommendation.
+Engine arguments for generative recommendation.
 
-Inherits from vLLM EngineArgs to maintain compatibility while adding
-GR-specific parameters.
+This module extends vLLM's ``EngineArgs`` / ``AsyncEngineArgs`` with
+GR-specific parameters while keeping the underlying vLLM configuration
+contract intact.
 """
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, Any, Dict
@@ -15,7 +18,7 @@ import json
 import glob
 import logging
 
-from vllm.engine.arg_utils import EngineArgs
+from vllm.engine.arg_utils import AsyncEngineArgs, EngineArgs
 from vllm.platforms import current_platform
 
 from vllm_gr.config.hstu_config import (
@@ -26,8 +29,7 @@ from vllm_gr.config.hstu_config import (
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class GREngineArgs(EngineArgs):
+class GRCommonEngineArgsMixin:
     """
     GR Engine Arguments - Inherits from vLLM EngineArgs.
     
@@ -71,7 +73,7 @@ class GREngineArgs(EngineArgs):
     # Keep the default strict so local model directories without weights fail
     # fast unless the caller clearly requests dummy loading.
     allow_missing_weights: bool = False
-    
+
     def __post_init__(self):
         """Post-init processing to ensure proper configuration."""
         super().__post_init__()
@@ -100,7 +102,7 @@ class GREngineArgs(EngineArgs):
         if model_family == "hstu":
             return self._select_hstu_worker_cls()
         return None
-    
+
     def _has_model_weights(self) -> bool:
         """Check if the model path contains HuggingFace-style weight files."""
         if not self.model:
@@ -117,16 +119,9 @@ class GREngineArgs(EngineArgs):
                 return True
 
         return False
-    
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "GREngineArgs":
-        """Create from dictionary."""
-        # Filter to only include valid fields
-        valid_fields = {f.name for f in cls.__dataclass_fields__.values()}
-        filtered = {k: v for k, v in d.items() if k in valid_fields}
-        return cls(**filtered)
-    
-    def _normalize_model_family(self, value: Optional[str]) -> Optional[str]:
+
+    @staticmethod
+    def _normalize_model_family(value: Optional[str]) -> Optional[str]:
         if value is None:
             return None
         normalized = value.strip().lower()
@@ -286,7 +281,7 @@ class GREngineArgs(EngineArgs):
                 return updated
 
             self.hf_overrides = _wrapped_hf_overrides
-    
+
     def _apply_dataset_overrides(self) -> None:
         """Merge dataset-specific overrides into ``hf_overrides`` (in-memory).
 
@@ -316,19 +311,69 @@ class GREngineArgs(EngineArgs):
             self.hf_overrides = merged
         elif self.hf_overrides is None:
             self.hf_overrides = overrides
+    
         logger.info("Applied dataset=%s overrides via hf_overrides", self.dataset)
 
-    def create_engine_config(self, usage_context=None):
+    def create_engine_config(self, usage_context=None, headless: bool = False):
         """
-        Create engine configuration for GR models.
+        Create the vLLM engine config for GR models.
 
-        Explicitly initializes the current process via ``vllm_gr.plugin``
-        before calling the parent implementation. Dataset overrides have
-        already been merged into ``hf_overrides`` during ``__post_init__``.
+        ``initialize_runtime`` must run in the current process before the base
+        vLLM engine config path so custom registrations and plugins are active.
+        Dataset overrides have already been merged into ``hf_overrides`` during
+        ``__post_init__``.
         """
         from vllm_gr.plugin import initialize_runtime
 
         initialize_runtime()
-
         logger.info("Creating engine config for model: %s", self.model)
-        return super().create_engine_config(usage_context)
+        return super().create_engine_config(
+            usage_context=usage_context,
+            headless=headless,
+        )
+
+
+@dataclass
+class GREngineArgs(GRCommonEngineArgsMixin, EngineArgs):
+    """
+    GR Engine arguments for offline/synchronous recommendation runtime.
+
+    Feature names and task metadata are sourced from the model config
+    (HSTUConfig / hf_config) rather than duplicated in CLI/runtime args.
+    """
+
+    max_seq_len: int = 512
+    max_candidates: int = 1000
+    dataset: Optional[str] = None
+    model_family: Optional[str] = None
+    allow_missing_weights: bool = False
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "GREngineArgs":
+        """Create engine args from a dictionary, ignoring unknown fields."""
+        # Filter to only include valid fields.
+        valid_fields = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered = {k: v for k, v in d.items() if k in valid_fields}
+        return cls(**filtered)
+
+
+@dataclass
+class GRAsyncEngineArgs(GRCommonEngineArgsMixin, AsyncEngineArgs):
+    """
+    GR async engine arguments for online serving.
+
+    The async variant shares the same GR policy as ``GREngineArgs`` while
+    inheriting the extra async-serving flags from vLLM's ``AsyncEngineArgs``.
+    Feature names and task metadata remain sourced from the model config.
+    """
+
+    max_seq_len: int = 512
+    max_candidates: int = 1000
+    dataset: Optional[str] = None
+    model_family: Optional[str] = None
+    allow_missing_weights: bool = False
+
+    @classmethod
+    def from_cli_args(cls, args):
+        """Build async engine args from parsed CLI args."""
+        return super().from_cli_args(args)

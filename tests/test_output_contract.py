@@ -441,7 +441,12 @@ def _fake_arg_utils_runtime():
         def __post_init__(self):
             return None
 
+    @dataclass
+    class _AsyncEngineArgs(_EngineArgs):
+        enable_log_requests: bool = False
+
     fake_engine_arg_utils.EngineArgs = _EngineArgs
+    fake_engine_arg_utils.AsyncEngineArgs = _AsyncEngineArgs
     fake_platforms.current_platform = types.SimpleNamespace(device_type="cuda")
 
     sys.modules.update(

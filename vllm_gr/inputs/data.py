@@ -12,10 +12,10 @@ HSTU model configuration (e.g. ``movie_id`` for MovieLens UIH,
 
 from typing import Any, Union, List, Dict
 
-try:
-    from typing import TypedDict, NotRequired
-except ImportError:
-    from typing_extensions import TypedDict, NotRequired
+# Pydantic v2 requires typing_extensions.TypedDict on Python < 3.12.
+# Keep using typing_extensions to stay compatible with the supported
+# Python range (>=3.10,<3.14).
+from typing_extensions import NotRequired, TypedDict
 
 
 class GRPrompt(TypedDict):
