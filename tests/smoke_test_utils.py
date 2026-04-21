@@ -59,7 +59,7 @@ class SmokeHarness:
         self.current_platform.device_type = device_type
 
     def create_llm(self, **kwargs):
-        module = importlib.import_module("vllm_gr.entrypoint.gr")
+        module = importlib.import_module("vllm_gr.entrypoints.gr")
         kwargs.setdefault("model_family", "hstu")
         return module.GRLLM(model="test-model", **kwargs)
 
@@ -141,7 +141,7 @@ def smoke_harness(initial_device_type: str = "cuda"):
         def __post_init__(self):
             return None
 
-        def create_engine_config(self, usage_context=None):
+        def create_engine_config(self, usage_context=None, headless: bool = False):
             state["trace"].append(("engine_config", current_platform.device_type))
             return SimpleNamespace(
                 worker_cls=self.worker_cls,
@@ -150,6 +150,10 @@ def smoke_harness(initial_device_type: str = "cuda"):
                 model_config=SimpleNamespace(hf_config=_build_fake_hf_config()),
                 scheduler_config=SimpleNamespace(stream_interval=1),
             )
+
+    @dataclass
+    class FakeAsyncEngineArgs(FakeEngineArgs):
+        enable_log_requests: bool = False
 
     class UsageContext:
         ENGINE_CONTEXT = "engine"
@@ -393,6 +397,7 @@ def smoke_harness(initial_device_type: str = "cuda"):
         return logging.getLogger(name)
 
     fake_engine_arg_utils.EngineArgs = FakeEngineArgs
+    fake_engine_arg_utils.AsyncEngineArgs = FakeAsyncEngineArgs
     fake_platforms.current_platform = current_platform
     fake_config.VllmConfig = SimpleNamespace
     fake_usage_lib.UsageContext = UsageContext

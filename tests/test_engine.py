@@ -9,7 +9,10 @@ import importlib
 import unittest
 from unittest import mock
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEMO_MODEL_DIR = os.path.join(ROOT, "examples", "configs", "movielens-1m")
+
+sys.path.insert(0, ROOT)
 
 
 def _has_vllm_engine_runtime() -> bool:
@@ -47,8 +50,8 @@ class TestGREngineArgs(unittest.TestCase):
     def test_default_values(self):
         from vllm_gr.engine.arg_utils import GREngineArgs
 
-        args = GREngineArgs(model="test-model")
-        self.assertEqual(args.model, "test-model")
+        args = GREngineArgs(model=DEMO_MODEL_DIR, allow_missing_weights=True)
+        self.assertEqual(args.model, DEMO_MODEL_DIR)
         self.assertEqual(args.max_seq_len, 512)
         self.assertEqual(args.max_candidates, 1000)
 
@@ -56,11 +59,12 @@ class TestGREngineArgs(unittest.TestCase):
         from vllm_gr.engine.arg_utils import GREngineArgs
 
         args = GREngineArgs(
-            model="hstu-large",
+            model=DEMO_MODEL_DIR,
             max_seq_len=256,
             max_candidates=500,
             tensor_parallel_size=4,
             gpu_memory_utilization=0.8,
+            allow_missing_weights=True,
         )
         self.assertEqual(args.max_seq_len, 256)
         self.assertEqual(args.max_candidates, 500)
@@ -73,13 +77,25 @@ class TestGREngineArgs(unittest.TestCase):
             "_is_ascend_platform",
             return_value=False,
         ):
-            args = GREngineArgs(model="test-model", model_family="hstu")
+            args = GREngineArgs(
+                model=DEMO_MODEL_DIR,
+                model_family="hstu",
+                allow_missing_weights=True,
+            )
         self.assertEqual(args.worker_cls, "vllm_gr.worker.gr_worker.GRWorker")
 
     def test_unknown_model_family_does_not_apply_hstu_defaults(self):
         from vllm_gr.engine.arg_utils import GREngineArgs
 
-        args = GREngineArgs(model="test-model")
+        with mock.patch.object(
+            GREngineArgs,
+            "_read_model_type_from_local_config",
+            return_value=None,
+        ):
+            args = GREngineArgs(
+                model=DEMO_MODEL_DIR,
+                allow_missing_weights=True,
+            )
         self.assertNotEqual(
             args.worker_cls,
             "vllm_gr.worker.gr_worker.GRWorker",
@@ -87,7 +103,8 @@ class TestGREngineArgs(unittest.TestCase):
         self.assertFalse(args.trust_remote_code)
 
     def test_grllm_does_not_force_hstu_model_family(self):
-        from vllm_gr.entrypoint.gr import GRLLM
+        from vllm_gr.entrypoints.gr import GRLLM
+        from vllm_gr.engine.arg_utils import GREngineArgs
 
         captured: dict[str, object] = {}
         fake_engine = mock.Mock()
@@ -96,11 +113,18 @@ class TestGREngineArgs(unittest.TestCase):
             captured["model_family"] = engine_args.model_family
             return fake_engine
 
-        with mock.patch(
-            "vllm_gr.entrypoint.gr.GRLLMEngine.from_engine_args",
+        with mock.patch.object(
+            GREngineArgs,
+            "_read_model_type_from_local_config",
+            return_value=None,
+        ), mock.patch(
+            "vllm_gr.entrypoints.gr.GRLLMEngine.from_engine_args",
             side_effect=_fake_from_engine_args,
         ):
-            llm = GRLLM(model="test-model")
+            llm = GRLLM(
+                model=DEMO_MODEL_DIR,
+                allow_missing_weights=True,
+            )
 
         self.assertIsNone(captured["model_family"])
         self.assertIsNone(llm.model_family)
@@ -115,7 +139,11 @@ class TestGREngineArgs(unittest.TestCase):
     def test_dataset_overrides_use_hf_overrides(self):
         from vllm_gr.engine.arg_utils import GREngineArgs
 
-        args = GREngineArgs(model="test-model", dataset="movielens-1m")
+        args = GREngineArgs(
+            model=DEMO_MODEL_DIR,
+            dataset="movielens-1m",
+            allow_missing_weights=True,
+        )
         self.assertIsInstance(args.hf_overrides, dict)
         self.assertEqual(
             args.hf_overrides["uih_post_id_feature_name"], "movie_id",
@@ -125,9 +153,10 @@ class TestGREngineArgs(unittest.TestCase):
         from vllm_gr.engine.arg_utils import GREngineArgs
 
         args = GREngineArgs(
-            model="test-model",
+            model=DEMO_MODEL_DIR,
             dataset="movielens-1m",
             hf_overrides={"hstu_attn_num_layers": 99},
+            allow_missing_weights=True,
         )
         self.assertEqual(args.hf_overrides["hstu_attn_num_layers"], 99)
         self.assertEqual(

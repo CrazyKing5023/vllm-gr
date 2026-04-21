@@ -25,7 +25,7 @@ from vllm_gr.outputs import GRRequestOutput
 from vllm_gr.engine.arg_utils import GREngineArgs
 from vllm_gr.engine.gr_engine import GRLLMEngine
 
-logger = logging.getLogger("vllm_gr.entrypoint")
+logger = logging.getLogger("vllm_gr.entrypoints")
 
 
 class GRLLM(LLM):

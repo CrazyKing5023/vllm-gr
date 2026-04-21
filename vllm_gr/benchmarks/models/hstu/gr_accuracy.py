@@ -24,6 +24,7 @@ from vllm_gr.benchmarks.models.hstu.datasets import (
     SUPPORTED_HSTU_DATASETS,
     get_samples,
 )
+from vllm_gr.entrypoints.gr import GRLLM
 
 
 def run_gr_vllm(
@@ -39,8 +40,6 @@ def run_gr_vllm(
     }
     if args.dtype is not None:
         engine_kwargs["dtype"] = args.dtype
-
-    from vllm_gr.entrypoint.gr import GRLLM
 
     with GRLLM(model=args.model, **engine_kwargs) as llm:
         outputs: list[Any] = []
