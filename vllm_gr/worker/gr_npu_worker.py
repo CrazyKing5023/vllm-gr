@@ -3,8 +3,11 @@
 
 """Ascend NPU worker for GR/HSTU execution."""
 
+import gc
+
 from vllm.logger import init_logger
 from vllm_ascend.worker.worker import NPUWorker
+from vllm_gr.utils.npu_adapter import release_accelerator_memory
 
 logger = init_logger(__name__)
 
@@ -25,3 +28,26 @@ class GRNPUWorker(NPUWorker):
             "GRNPUWorker: using GRNPUModelRunner on device %s",
             self.device,
         )
+
+    def shutdown(self) -> None:
+        super().shutdown()
+
+        compilation_config = getattr(self.vllm_config, "compilation_config", None)
+        static_forward_context = getattr(
+            compilation_config,
+            "static_forward_context",
+            None,
+        )
+        if isinstance(static_forward_context, dict):
+            static_forward_context.clear()
+
+        if hasattr(self, "model_runner"):
+            runner = self.model_runner
+            if runner is not None:
+                model = getattr(runner, "model", None)
+                if model is not None and hasattr(model, "_hstu_kv_cache_layers"):
+                    model._hstu_kv_cache_layers = None
+            self.model_runner = None
+
+        gc.collect()
+        release_accelerator_memory()

@@ -14,7 +14,6 @@ import gc
 import time
 import logging
 
-import torch
 from tqdm.auto import tqdm
 
 from vllm.entrypoints.llm import LLM
@@ -26,6 +25,7 @@ from vllm_gr.inputs.data import GRPrompt, is_gr_prompt
 from vllm_gr.outputs import GRRequestOutput
 from vllm_gr.engine.arg_utils import GREngineArgs
 from vllm_gr.engine.gr_engine import GRLLMEngine
+from vllm_gr.utils.npu_adapter import release_accelerator_memory
 
 logger = logging.getLogger("vllm_gr.entrypoints")
 
@@ -186,11 +186,7 @@ class GRLLM(LLM):
         self.default_sampling_params = None
         self.io_processor = None
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            ipc_collect = getattr(torch.cuda, "ipc_collect", None)
-            if callable(ipc_collect):
-                ipc_collect()
+        release_accelerator_memory()
         logger.info("GRLLM shutdown complete")
 
     def __enter__(self):

@@ -331,7 +331,14 @@ class TestGROutputProcessorStats(unittest.TestCase):
 
         self.assertEqual(
             processor.get_prefix_cache_counters(),
-            {"requests": 2, "queries": 100, "hits": 32},
+            {
+                "requests": 2,
+                "queries": 100,
+                "hits": 32,
+                "connector_requests": 0,
+                "connector_queries": 0,
+                "connector_hits": 0,
+            },
         )
 
 

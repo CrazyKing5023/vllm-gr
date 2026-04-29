@@ -160,6 +160,84 @@ python -c "import vllm, msgspec, tqdm, pytest, safetensors; print('npu python de
 - 目标 accelerator 可见
 - 没有 import error
 
+## YuanRong KV Pool (当前仅支持NPU)
+
+### 1. 安装yuanrong-datasystem
+
+```bash
+pip install https://gitcode.com/openeuler/yuanrong-datasystem/releases/download/v0.7.6.rc1/openyuanrong_datasystem-0.7.6rc1-cp311-cp311-manylinux_2_35_aarch64.whl
+```
+
+### 2. 启动 etcd
+
+```bash
+ETCD_VERSION="v3.5.12"
+ETCD_ARCH="linux-arm64"
+wget https://github.com/etcd-io/etcd/releases/download/${ETCD_VERSION}/etcd-${ETCD_VERSION}-${ETCD_ARCH}.tar.gz
+tar -xvf etcd-${ETCD_VERSION}-${ETCD_ARCH}.tar.gz
+cd etcd-${ETCD_VERSION}-${ETCD_ARCH}
+sudo cp etcd etcdctl /usr/local/bin/
+
+etcd \
+  --name etcd-single \
+  --data-dir /tmp/etcd-data \
+  --listen-client-urls http://0.0.0.0:2379 \
+  --advertise-client-urls http://0.0.0.0:2379 \
+  --listen-peer-urls http://0.0.0.0:2380 \
+  --initial-advertise-peer-urls http://0.0.0.0:2380 \
+  --initial-cluster etcd-single=http://0.0.0.0:2380 &
+
+etcdctl --endpoints "127.0.0.1:2379" put key "value"
+etcdctl --endpoints "127.0.0.1:2379" get key
+```
+
+### 3. 启动 Datasystem Worker
+
+```bash
+dscli start -w \
+  --worker_address "${WORKER_IP}:31501" \
+  --etcd_address "${ETCD_IP}:2379" \
+  --shared_memory_size_mb 20480
+```
+停止 worker：
+```bash
+dscli stop --worker_address "${WORKER_IP}:31501"
+```
+
+### 4. 环境变量
+
+```bash
+export PYTHONHASHSEED=0
+export DS_WORKER_ADDR="${WORKER_IP}:31501"
+# 可选（默认 0）
+export DS_ENABLE_EXCLUSIVE_CONNECTION=0
+# 远端 H2D（R2HD）开关
+export DS_ENABLE_REMOTE_H2D=0
+```
+
+### 5. 验证
+
+```bash
+python examples/yuanrong_datasystem_smoke.py \
+  --expect-device npu \
+  --device-id 0 \
+  --worker-addr "${WORKER_IP}:31501"
+```
+
+### 6. 示例运行
+
+```bash
+python examples/yuanrong_backend_example.py \
+  --model /workspace/ckpt/movielens_1m/800_truncated_new/converted \
+  --input-json ./examples/prefix_cache_benchmark.sample_input.json \
+  --expect-device npu \
+  --max-uih-len 128 \
+  --max-candidates 256 \
+  --max-cases 2 \
+  --lookup-rpc-port 1
+```
+更多帮助，参见：https://pages.openeuler.openatom.cn/openyuanrong-datasystem/docs/zh-cn/latest/index.html
+
 ## 推荐执行顺序
 
 下面的命令按推荐顺序排列。建议先跑统一测试入口，再跑 examples，最后再跑带权重路径。

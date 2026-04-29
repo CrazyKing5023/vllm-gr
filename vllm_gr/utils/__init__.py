@@ -17,6 +17,7 @@ from vllm_gr.utils.npu_adapter import (
     is_cuda_device,
     is_npu_available,
     is_npu_device,
+    release_accelerator_memory,
     reset_device_adapter,
 )
 from vllm_gr.utils.hstu_runtime import (
@@ -52,6 +53,7 @@ __all__ = [
     "is_npu_device",
     "move_hstu_sparse_inputs_to_device",
     "move_hstu_sparse_outputs_to_device",
+    "release_accelerator_memory",
     "reset_device_adapter",
     "resolve_hstu_dense_device",
     "resolve_hstu_embedding_device",
