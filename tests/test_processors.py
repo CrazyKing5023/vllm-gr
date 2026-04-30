@@ -36,47 +36,82 @@ _SKIP_REASON = (
 _INT32_MAX = (1 << 31) - 1
 
 
+def _make_adapter(
+    *,
+    uih_feature_names=None,
+    candidate_feature_names=None,
+    context_feature_to_max_length=None,
+    context_feature_to_min_uih_length=None,
+    merge_uih_candidate_feature_mapping=None,
+    uih_post_id_feature_name="item_id",
+    candidate_primary_id_feature_name=None,
+    task_names=None,
+    max_seq_len=512,
+    max_candidates=1000,
+):
+    """Build an HSTUModelAdapter with the given feature config."""
+    from vllm_gr.adapters.hstu.adapter import HSTUModelAdapter
+
+    if uih_feature_names is None:
+        uih_feature_names = ["item_id"]
+    if candidate_feature_names is None:
+        candidate_feature_names = ["item_candidate_id"]
+    if merge_uih_candidate_feature_mapping is None:
+        merge_uih_candidate_feature_mapping = [
+            [uih_feature_names[0], candidate_feature_names[0]],
+        ]
+    if context_feature_to_max_length is None:
+        context_feature_to_max_length = {}
+    if context_feature_to_min_uih_length is None:
+        context_feature_to_min_uih_length = {}
+    if task_names is None:
+        task_names = ["is_click"]
+
+    hf_config_kwargs = dict(
+        hstu_uih_feature_names=uih_feature_names,
+        user_embedding_feature_names=uih_feature_names,
+        hstu_candidate_feature_names=candidate_feature_names,
+        item_embedding_feature_names=candidate_feature_names,
+        uih_post_id_feature_name=uih_post_id_feature_name,
+        merge_uih_candidate_feature_mapping=merge_uih_candidate_feature_mapping,
+        task_names=task_names,
+        contextual_feature_to_max_length=context_feature_to_max_length,
+        contextual_feature_to_min_uih_length=context_feature_to_min_uih_length,
+    )
+    if candidate_primary_id_feature_name is not None:
+        hf_config_kwargs["candidate_primary_id_feature_name"] = candidate_primary_id_feature_name
+
+    vllm_config = types.SimpleNamespace(
+        model_config=types.SimpleNamespace(
+            hf_config=types.SimpleNamespace(**hf_config_kwargs),
+        ),
+    )
+    gr_config = types.SimpleNamespace(
+        max_seq_len=max_seq_len,
+        max_candidates=max_candidates,
+    )
+    return HSTUModelAdapter(vllm_config, gr_config)
+
+
+def _make_processor_with_adapter(**adapter_kwargs):
+    """Build a GRInputProcessor wired to an HSTUModelAdapter."""
+    from vllm_gr.engine.gr_input_processor import GRInputProcessor
+
+    adapter = _make_adapter(**adapter_kwargs)
+    processor = GRInputProcessor.__new__(GRInputProcessor)
+    processor._adapter = adapter
+    processor._validate_lora = lambda _lora_request: None
+    return processor
+
+
 # ── Feature Extraction ────────────────────────────────────────────
 
 
 @unittest.skipUnless(_HAS_VLLM_RUNTIME, _SKIP_REASON)
 class TestExtractFeatures(unittest.TestCase):
 
-    @staticmethod
-    def _make_processor_with_context_layout():
-        from vllm_gr.engine.gr_input_processor import GRInputProcessor
-
-        processor = GRInputProcessor.__new__(GRInputProcessor)
-        processor.max_seq_len = 512
-        processor.max_candidates = 8
-        processor.uih_feature_names = ["item_id", "timestamp"]
-        processor.full_uih_feature_names = ["viewer_id", "item_id", "timestamp"]
-        processor.context_feature_names = ["viewer_id"]
-        processor.candidate_feature_names = ["item_candidate_id", "item_query_time"]
-        processor.primary_id_feature_name = "item_id"
-        processor._validate_lora = lambda _lora_request: None
-        processor._extract_features = GRInputProcessor._extract_features
-        processor._extract_context_features = (
-            GRInputProcessor._extract_context_features
-        )
-        processor.attach_schema_fingerprint = (
-            GRInputProcessor.attach_schema_fingerprint
-        )
-        processor.validate_feature_group = GRInputProcessor.validate_feature_group
-        processor.validate_context_group = GRInputProcessor.validate_context_group
-        processor.vllm_config = types.SimpleNamespace(
-            model_config=types.SimpleNamespace(
-                hf_config=types.SimpleNamespace(
-                    model_type="hstu",
-                    contextual_feature_to_max_length={"viewer_id": 2},
-                    contextual_feature_to_min_uih_length={"viewer_id": 2},
-                )
-            )
-        )
-        return processor
-
     def test_extract_multi_key_features(self):
-        from vllm_gr.engine.gr_input_processor import GRInputProcessor
+        from vllm_gr.gr_schema import extract_features
 
         records = [
             {"item_id": 1, "timestamp": 1000, "rating": 4},
@@ -84,9 +119,10 @@ class TestExtractFeatures(unittest.TestCase):
             {"item_id": 3, "timestamp": 3000, "rating": 3},
         ]
 
-        keys, values, lengths = GRInputProcessor._extract_features(
+        keys, values, lengths = extract_features(
             records=records,
             feature_names=["item_id", "timestamp", "rating"],
+            group_name="features",
         )
 
         self.assertEqual(len(keys), 3)
@@ -96,17 +132,18 @@ class TestExtractFeatures(unittest.TestCase):
             self.assertEqual(length, 3)
 
     def test_extract_missing_key_rejected(self):
-        from vllm_gr.engine.gr_input_processor import GRInputProcessor
+        from vllm_gr.gr_schema import extract_features
 
         records = [{"item_id": 1}, {"item_id": 2}]
         with self.assertRaisesRegex(ValueError, "do not match configured schema"):
-            GRInputProcessor._extract_features(
+            extract_features(
                 records=records,
                 feature_names=["item_id", "nonexistent_key"],
+                group_name="features",
             )
 
     def test_extract_missing_value_rejected(self):
-        from vllm_gr.engine.gr_input_processor import GRInputProcessor
+        from vllm_gr.gr_schema import extract_features
 
         records = [
             {"item_id": 1, "rating": 5},
@@ -114,33 +151,20 @@ class TestExtractFeatures(unittest.TestCase):
         ]
 
         with self.assertRaisesRegex(ValueError, "do not match configured schema"):
-            GRInputProcessor._extract_features(
+            extract_features(
                 records=records,
                 feature_names=["item_id", "rating"],
+                group_name="features",
             )
 
     def test_process_gr_prompt_preserves_all_candidates(self):
         from vllm.pooling_params import PoolingParams
-        from vllm_gr.engine.gr_input_processor import GRInputProcessor
 
-        processor = GRInputProcessor.__new__(GRInputProcessor)
-        processor.max_seq_len = 512
-        processor.max_candidates = 1
-        processor.uih_feature_names = ["item_id"]
-        processor.full_uih_feature_names = ["item_id"]
-        processor.context_feature_names = []
-        processor.candidate_feature_names = ["item_candidate_id"]
-        processor.primary_id_feature_name = "item_id"
-        processor._validate_lora = lambda _lora_request: None
-        processor._extract_features = GRInputProcessor._extract_features
-        processor._extract_context_features = (
-            GRInputProcessor._extract_context_features
+        processor = _make_processor_with_adapter(
+            uih_feature_names=["item_id"],
+            candidate_feature_names=["item_candidate_id"],
+            max_candidates=1,
         )
-        processor.attach_schema_fingerprint = (
-            GRInputProcessor.attach_schema_fingerprint
-        )
-        processor.validate_feature_group = GRInputProcessor.validate_feature_group
-        processor.validate_context_group = GRInputProcessor.validate_context_group
 
         request = processor._process_gr_prompt(
             request_id="req-no-truncation",
@@ -164,31 +188,17 @@ class TestExtractFeatures(unittest.TestCase):
 
     def test_process_gr_prompt_separates_contextual_features_from_history(self):
         from vllm.pooling_params import PoolingParams
-        from vllm_gr.engine.gr_input_processor import GRInputProcessor
 
-        processor = GRInputProcessor.__new__(GRInputProcessor)
-        processor.max_seq_len = 512
-        processor.max_candidates = 4
-        processor.uih_feature_names = ["uih_post_id", "uih_owner_id"]
-        processor.full_uih_feature_names = [
-            "viewer_id",
-            "uih_post_id",
-            "uih_owner_id",
-            "dummy_contexual",
-        ]
-        processor.context_feature_names = ["viewer_id", "dummy_contexual"]
-        processor.candidate_feature_names = ["item_post_id"]
-        processor.primary_id_feature_name = "uih_post_id"
-        processor._validate_lora = lambda _lora_request: None
-        processor._extract_features = GRInputProcessor._extract_features
-        processor._extract_context_features = (
-            GRInputProcessor._extract_context_features
+        processor = _make_processor_with_adapter(
+            uih_feature_names=["uih_post_id", "uih_owner_id"],
+            candidate_feature_names=["item_post_id"],
+            context_feature_to_max_length={"viewer_id": 2, "dummy_contexual": 2},
+            context_feature_to_min_uih_length={"viewer_id": 2, "dummy_contexual": 2},
+            merge_uih_candidate_feature_mapping=[
+                ["uih_post_id", "item_post_id"],
+            ],
+            uih_post_id_feature_name="uih_post_id",
         )
-        processor.attach_schema_fingerprint = (
-            GRInputProcessor.attach_schema_fingerprint
-        )
-        processor.validate_feature_group = GRInputProcessor.validate_feature_group
-        processor.validate_context_group = GRInputProcessor.validate_context_group
 
         request = processor._process_gr_prompt(
             request_id="req-contextual-split",
@@ -217,7 +227,7 @@ class TestExtractFeatures(unittest.TestCase):
         )
         self.assertEqual(
             request.gr_features.full_uih_keys,
-            ["viewer_id", "uih_post_id", "uih_owner_id", "dummy_contexual"],
+            ["viewer_id", "dummy_contexual", "uih_post_id", "uih_owner_id"],
         )
         self.assertEqual(request.gr_features.uih_values_per_key, [[11, 12], [101, 102]])
         self.assertEqual(request.gr_features.ctx_values_per_key, [[7], [1]])
@@ -225,7 +235,13 @@ class TestExtractFeatures(unittest.TestCase):
     def test_process_gr_prompt_builds_stable_prompt_identity(self):
         from vllm.pooling_params import PoolingParams
 
-        processor = self._make_processor_with_context_layout()
+        processor = _make_processor_with_adapter(
+            uih_feature_names=["item_id", "timestamp"],
+            candidate_feature_names=["item_candidate_id", "item_query_time"],
+            context_feature_to_max_length={"viewer_id": 2},
+            context_feature_to_min_uih_length={"viewer_id": 2},
+        )
+
         prompt = {
             "user_id": "u-cache",
             "user_history": [
@@ -265,7 +281,13 @@ class TestExtractFeatures(unittest.TestCase):
     def test_process_gr_prompt_prompt_identity_changes_with_context_and_candidates(self):
         from vllm.pooling_params import PoolingParams
 
-        processor = self._make_processor_with_context_layout()
+        processor = _make_processor_with_adapter(
+            uih_feature_names=["item_id", "timestamp"],
+            candidate_feature_names=["item_candidate_id", "item_query_time"],
+            context_feature_to_max_length={"viewer_id": 2},
+            context_feature_to_min_uih_length={"viewer_id": 2},
+        )
+
         base_prompt = {
             "user_id": "u-diff",
             "user_history": [
@@ -327,7 +349,8 @@ class TestExtractFeatures(unittest.TestCase):
 @unittest.skipUnless(_HAS_VLLM_RUNTIME, _SKIP_REASON)
 class TestGRRequestState(unittest.TestCase):
 
-    def _make_state(self, user_id="user_123", candidates=None,
+    @staticmethod
+    def _make_state(user_id="user_123", candidates=None,
                     primary_id_key="item_candidate_id"):
         from vllm_gr.engine.gr_output_processor import GRRequestState
 
@@ -340,6 +363,7 @@ class TestGRRequestState(unittest.TestCase):
                 {"item_candidate_id": 50},
             ]
 
+        adapter = _make_adapter()
         return GRRequestState(
             request_id="test-001",
             external_req_id="test-001",
@@ -358,9 +382,14 @@ class TestGRRequestState(unittest.TestCase):
             log_stats=False,
             stream_interval=1,
             is_gr_request=True,
-            gr_user_id=user_id,
-            gr_original_candidates=candidates,
-            gr_primary_id_key=primary_id_key,
+            gr_request_meta={
+                "user_id": user_id,
+                "original_candidates": candidates,
+                "primary_id_key": primary_id_key,
+                "task_names": [],
+                "primary_task": "",
+                "_adapter": adapter,
+            },
         )
 
     def test_make_gr_output_basic(self):
@@ -450,6 +479,8 @@ class TestMultiTaskOutput(unittest.TestCase):
             {"item_candidate_id": 30},
         ]
 
+        adapter = _make_adapter(task_names=task_names)
+
         return GRRequestState(
             request_id="mt-001",
             external_req_id="mt-001",
@@ -468,11 +499,14 @@ class TestMultiTaskOutput(unittest.TestCase):
             log_stats=False,
             stream_interval=1,
             is_gr_request=True,
-            gr_user_id="user_mt",
-            gr_original_candidates=candidates,
-            gr_primary_id_key="item_candidate_id",
-            gr_task_names=task_names,
-            gr_primary_task=primary_task,
+            gr_request_meta={
+                "user_id": "user_mt",
+                "original_candidates": candidates,
+                "primary_id_key": "item_candidate_id",
+                "task_names": task_names,
+                "primary_task": primary_task,
+                "_adapter": adapter,
+            },
         )
 
     def test_primary_task_selection(self):

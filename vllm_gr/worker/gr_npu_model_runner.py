@@ -11,11 +11,22 @@ from vllm.distributed.kv_transfer import (
 )
 from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
 
+from vllm_gr.adapters.hstu.adapter import HSTUModelAdapter
+from vllm_gr.config.gr_config import GRConfig
 from vllm_gr.worker.gr_runner_mixin import GRFeatureRunnerMixin
 
 
 class GRNPUModelRunner(GRFeatureRunnerMixin, NPUModelRunner):
     """NPU model runner that injects GR features into HSTU inputs."""
+
+    def __init__(self, vllm_config, device, gr_config=None):
+        gr_config = gr_config or GRConfig()
+        adapter = HSTUModelAdapter(vllm_config, gr_config)
+        super().__init__(
+            vllm_config=vllm_config,
+            device=device,
+            adapter=adapter,
+        )
 
     def _use_hstu_generic_kv_cache_init(self) -> bool:
         model = getattr(self, "model", None)

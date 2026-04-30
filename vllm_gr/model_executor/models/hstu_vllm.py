@@ -21,12 +21,28 @@ Runtime topology:
 """
 
 from functools import partial
+import importlib
 import inspect
+import types
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 import torch
 import torch.nn as nn
 from vllm.logger import init_logger
+
+try:
+    import vllm as _vllm_pkg
+
+    if not hasattr(_vllm_pkg, "forward_context"):
+        try:
+            _vllm_pkg.forward_context = importlib.import_module("vllm.forward_context")
+        except Exception:
+            _vllm_pkg.forward_context = types.SimpleNamespace(
+                is_forward_context_available=lambda: False,
+                get_forward_context=lambda: None,
+            )
+except Exception:
+    pass
 
 from vllm_gr.utils import (
     move_hstu_sparse_inputs_to_device,

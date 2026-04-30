@@ -27,45 +27,14 @@ class GRAsyncLLM(AsyncLLM):
     gr_config: GRConfig
 
     def _replace_processors(self) -> None:
-        hf_config = self.vllm_config.model_config.hf_config
-        cfg = self.gr_config
+        from vllm_gr.adapters.hstu.adapter import HSTUModelAdapter
 
-        uih_feature_names = (
-            hf_config.hstu_uih_feature_names or hf_config.user_embedding_feature_names
-        )
-        candidate_feature_names = (
-            hf_config.hstu_candidate_feature_names
-            or hf_config.item_embedding_feature_names
-        )
-        configured_context_feature_names = list(
-            dict.fromkeys(
-                list(getattr(hf_config, "contextual_feature_to_max_length", {}).keys())
-                + list(
-                    getattr(hf_config, "contextual_feature_to_min_uih_length", {}).keys()
-                )
-            )
-        )
-        context_feature_names = [
-            key for key in uih_feature_names if key in set(configured_context_feature_names)
-        ]
-        primary_id_feature_name = hf_config.uih_post_id_feature_name
-        candidate_primary_id_key = self._resolve_candidate_primary_id_key(
-            hf_config=hf_config,
-            candidate_feature_names=candidate_feature_names,
-        )
-        task_names = list(hf_config.task_names)
-        primary_task = task_names[0] if task_names else ""
+        adapter = HSTUModelAdapter(self.vllm_config, self.gr_config)
 
         self.input_processor = GRInputProcessor(
             vllm_config=self.vllm_config,
             tokenizer=self.tokenizer,
-            max_seq_len=cfg.max_seq_len,
-            max_candidates=cfg.max_candidates,
-            uih_feature_names=uih_feature_names,
-            candidate_feature_names=candidate_feature_names,
-            primary_id_feature_name=primary_id_feature_name,
-            full_uih_feature_names=uih_feature_names,
-            context_feature_names=context_feature_names,
+            adapter=adapter,
         )
 
         stream_interval = self.vllm_config.scheduler_config.stream_interval
@@ -73,9 +42,7 @@ class GRAsyncLLM(AsyncLLM):
             tokenizer=self.tokenizer,
             log_stats=self.log_stats,
             stream_interval=stream_interval,
-            task_names=task_names,
-            primary_task=primary_task,
-            primary_id_key=candidate_primary_id_key,
+            adapter=adapter,
         )
 
     def _restart_output_handler_with_gr_processors(self) -> None:
@@ -92,33 +59,6 @@ class GRAsyncLLM(AsyncLLM):
 
         self._run_output_handler()
 
-    @staticmethod
-    def _resolve_candidate_primary_id_key(
-        *,
-        hf_config,
-        candidate_feature_names: list[str],
-    ) -> str:
-        explicit_candidate_id_key = str(
-            getattr(hf_config, "candidate_primary_id_feature_name", "") or ""
-        )
-        if explicit_candidate_id_key:
-            return explicit_candidate_id_key
-
-        merge_mapping = list(
-            getattr(hf_config, "merge_uih_candidate_feature_mapping", []) or []
-        )
-        primary_uih_id_key = getattr(hf_config, "uih_post_id_feature_name", "")
-        for uih_key, candidate_key in merge_mapping:
-            if uih_key == primary_uih_id_key:
-                return candidate_key
-
-        raise ValueError(
-            "Unable to resolve candidate primary id feature. Configure "
-            "`candidate_primary_id_feature_name` explicitly or provide a "
-            "`merge_uih_candidate_feature_mapping` entry that maps "
-            f"{primary_uih_id_key!r} to one of {candidate_feature_names!r}."
-        )
-
     @classmethod
     def from_vllm_config(
         cls,
@@ -134,6 +74,7 @@ class GRAsyncLLM(AsyncLLM):
         client_count: int = 1,
         client_index: int = 0,
     ) -> "GRAsyncLLM":
+        vllm_config.gr_config = gr_config
         base = AsyncLLM.from_vllm_config(
             vllm_config=vllm_config,
             start_engine_loop=start_engine_loop,
@@ -195,4 +136,3 @@ class GRAsyncLLM(AsyncLLM):
 
 class GRAsyncLLMEngine(GRAsyncLLM):
     """Alias class to align with AsyncLLMEngine naming."""
-

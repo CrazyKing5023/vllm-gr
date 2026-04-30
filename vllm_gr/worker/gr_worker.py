@@ -17,6 +17,7 @@ import gc
 
 from vllm.logger import init_logger
 from vllm.v1.worker.gpu_worker import Worker as GPUWorker
+from vllm_gr.config.gr_config import GRConfig
 from vllm_gr.utils.npu_adapter import release_accelerator_memory
 
 logger = init_logger(__name__)
@@ -34,7 +35,9 @@ class GRWorker(GPUWorker):
         re_apply_patches()
 
         from vllm_gr.worker.gr_model_runner import GRModelRunner
-        self.model_runner = GRModelRunner(self.vllm_config, self.device)
+
+        gr_config = getattr(self.vllm_config, 'gr_config', None) or GRConfig()
+        self.model_runner = GRModelRunner(self.vllm_config, self.device, gr_config=gr_config)
 
         logger.info("GRWorker: using GRModelRunner on device %s", self.device)
 

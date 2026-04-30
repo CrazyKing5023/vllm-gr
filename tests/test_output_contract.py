@@ -836,12 +836,13 @@ class TestOutputContract(unittest.TestCase):
             _restore_modules(saved)
 
     def test_candidate_primary_id_resolution_requires_explicit_contract(self):
-        engine_path = ROOT / "vllm_gr" / "engine" / "gr_engine.py"
+        adapter_path = ROOT / "vllm_gr" / "adapters" / "hstu" / "adapter.py"
 
         with _fake_gr_engine_runtime():
-            module = _load_module("gr_engine_contract_test_module", engine_path)
+            module = _load_module("adapter_contract_test_module", adapter_path)
 
-        resolver = module.GRLLMEngine._resolve_candidate_primary_id_key
+        # The resolver now lives on HSTUModelAdapter._resolve_candidate_primary_id_key_from_config
+        resolver = module.HSTUModelAdapter._resolve_candidate_primary_id_key_from_config
 
         explicit_config = types.SimpleNamespace(
             candidate_primary_id_feature_name="explicit_item_id",
@@ -850,8 +851,8 @@ class TestOutputContract(unittest.TestCase):
         )
         self.assertEqual(
             resolver(
-                hf_config=explicit_config,
-                candidate_feature_names=["explicit_item_id", "category_id"],
+                explicit_config,
+                ["explicit_item_id", "category_id"],
             ),
             "explicit_item_id",
         )
@@ -865,8 +866,8 @@ class TestOutputContract(unittest.TestCase):
         )
         self.assertEqual(
             resolver(
-                hf_config=mapped_config,
-                candidate_feature_names=["item_candidate_id", "category_id"],
+                mapped_config,
+                ["item_candidate_id", "category_id"],
             ),
             "item_candidate_id",
         )
@@ -878,8 +879,8 @@ class TestOutputContract(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "Unable to resolve candidate primary id"):
             resolver(
-                hf_config=missing_contract_config,
-                candidate_feature_names=["item_candidate_id", "category_id"],
+                missing_contract_config,
+                ["item_candidate_id", "category_id"],
             )
 
     def test_gr_engine_shutdown_delegates_to_engine_core(self):

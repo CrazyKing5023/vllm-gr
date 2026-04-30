@@ -361,7 +361,7 @@ def smoke_harness(initial_device_type: str = "cuda"):
     class BaseGRRunner:
         runner_name = "base"
 
-        def __init__(self, vllm_config, device):
+        def __init__(self, vllm_config, device, gr_config=None):
             self.vllm_config = vllm_config
             self.device = device
             self.model = HSTUForRecommendation(device.type)
@@ -430,6 +430,16 @@ def smoke_harness(initial_device_type: str = "cuda"):
     fake_hstu_module = types.ModuleType("vllm_gr.model_executor.models.hstu_vllm")
     fake_gr_model_runner = types.ModuleType("vllm_gr.worker.gr_model_runner")
     fake_gr_npu_model_runner = types.ModuleType("vllm_gr.worker.gr_npu_model_runner")
+    fake_torchrec = types.ModuleType("torchrec")
+    fake_torchrec_sparse = types.ModuleType("torchrec.sparse")
+    fake_torchrec_jagged = types.ModuleType("torchrec.sparse.jagged_tensor")
+    fake_v1_input_processor = types.ModuleType("vllm.v1.engine.input_processor")
+    fake_sampling_params = types.ModuleType("vllm.sampling_params")
+    fake_lora = types.ModuleType("vllm.lora")
+    fake_lora_request = types.ModuleType("vllm.lora.request")
+    fake_sequence = types.ModuleType("vllm.sequence")
+    fake_v1_outputs = types.ModuleType("vllm.v1.outputs")
+    fake_inputs = types.ModuleType("vllm.inputs")
 
     def re_apply_patches():
         state["patch_calls"] += 1
@@ -446,6 +456,39 @@ def smoke_harness(initial_device_type: str = "cuda"):
     fake_gr_output.GRRequestState = object
     fake_gr_model_runner.GRModelRunner = GRModelRunner
     fake_gr_npu_model_runner.GRNPUModelRunner = GRNPUModelRunner
+
+    # Mock torchrec.KeyedJaggedTensor for adapter imports
+    fake_torchrec_jagged.KeyedJaggedTensor = type("KeyedJaggedTensor", (), {})
+
+    class FakeInputProcessor:
+        pass
+
+    fake_v1_input_processor.InputProcessor = FakeInputProcessor
+
+    class FakeSamplingParams:
+        pass
+
+    fake_sampling_params.SamplingParams = FakeSamplingParams
+
+    class FakeLoRARequest:
+        pass
+
+    fake_lora_request.LoRARequest = FakeLoRARequest
+
+    class FakeIntermediateTensors:
+        pass
+
+    fake_sequence.IntermediateTensors = FakeIntermediateTensors
+
+    class FakeModelRunnerOutput:
+        pass
+
+    fake_v1_outputs.ModelRunnerOutput = FakeModelRunnerOutput
+
+    class FakePromptType:
+        pass
+
+    fake_inputs.PromptType = FakePromptType
 
     sys.modules.update({
         "vllm": fake_vllm,
@@ -488,6 +531,16 @@ def smoke_harness(initial_device_type: str = "cuda"):
         "vllm_gr.model_executor.models.hstu_vllm": fake_hstu_module,
         "vllm_gr.worker.gr_model_runner": fake_gr_model_runner,
         "vllm_gr.worker.gr_npu_model_runner": fake_gr_npu_model_runner,
+        "torchrec": fake_torchrec,
+        "torchrec.sparse": fake_torchrec_sparse,
+        "torchrec.sparse.jagged_tensor": fake_torchrec_jagged,
+        "vllm.v1.engine.input_processor": fake_v1_input_processor,
+        "vllm.sampling_params": fake_sampling_params,
+        "vllm.lora": fake_lora,
+        "vllm.lora.request": fake_lora_request,
+        "vllm.sequence": fake_sequence,
+        "vllm.v1.outputs": fake_v1_outputs,
+        "vllm.inputs": fake_inputs,
     })
 
     try:

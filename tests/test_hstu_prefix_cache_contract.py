@@ -48,35 +48,33 @@ class TestHSTUPrefixCacheContract(unittest.TestCase):
 
     @staticmethod
     def _make_processor():
+        from vllm_gr.adapters.hstu.adapter import HSTUModelAdapter
         from vllm_gr.engine.gr_input_processor import GRInputProcessor
 
-        processor = GRInputProcessor.__new__(GRInputProcessor)
-        processor.max_seq_len = 512
-        processor.max_candidates = 8
-        processor.uih_feature_names = ["item_id", "timestamp"]
-        processor.full_uih_feature_names = ["viewer_id", "item_id", "timestamp"]
-        processor.context_feature_names = ["viewer_id"]
-        processor.candidate_feature_names = ["item_candidate_id", "item_query_time"]
-        processor.primary_id_feature_name = "item_id"
-        processor._validate_lora = lambda _lora_request: None
-        processor._extract_features = GRInputProcessor._extract_features
-        processor._extract_context_features = (
-            GRInputProcessor._extract_context_features
-        )
-        processor.attach_schema_fingerprint = (
-            GRInputProcessor.attach_schema_fingerprint
-        )
-        processor.validate_feature_group = GRInputProcessor.validate_feature_group
-        processor.validate_context_group = GRInputProcessor.validate_context_group
-        processor.vllm_config = types.SimpleNamespace(
+        vllm_config = types.SimpleNamespace(
             model_config=types.SimpleNamespace(
                 hf_config=types.SimpleNamespace(
-                    model_type="hstu",
+                    hstu_uih_feature_names=["item_id", "timestamp"],
+                    user_embedding_feature_names=["item_id", "timestamp"],
+                    hstu_candidate_feature_names=["item_candidate_id", "item_query_time"],
+                    item_embedding_feature_names=["item_candidate_id", "item_query_time"],
+                    uih_post_id_feature_name="item_id",
+                    candidate_primary_id_feature_name="item_candidate_id",
+                    merge_uih_candidate_feature_mapping=[
+                        ["item_id", "item_candidate_id"],
+                    ],
+                    task_names=["is_click"],
                     contextual_feature_to_max_length={"viewer_id": 2},
                     contextual_feature_to_min_uih_length={"viewer_id": 0},
-                )
-            )
+                ),
+            ),
         )
+        gr_config = types.SimpleNamespace(max_seq_len=512, max_candidates=8)
+        adapter = HSTUModelAdapter(vllm_config, gr_config)
+
+        processor = GRInputProcessor.__new__(GRInputProcessor)
+        processor._adapter = adapter
+        processor._validate_lora = lambda _lora_request: None
         return processor
 
     @staticmethod

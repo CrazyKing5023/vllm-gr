@@ -6,7 +6,7 @@ GROutputProcessor — extends vLLM's OutputProcessor for recommendation output.
 
 Introduces GRRequestState (extending RequestState) to carry per-request GR
 metadata and override make_request_output() to convert raw pooling scores
-into candidate-score GRRequestOutput objects.
+into candidate-score GRRequestOutput objects via the injected adapter.
 """
 
 from typing import Any
@@ -24,28 +24,20 @@ from vllm.v1.engine.output_processor import (
 )
 from vllm.v1.engine.parallel_sampling import ParentRequest
 
-from vllm_gr.outputs import GRRequestOutput, RecommendedItem
+from vllm_gr.outputs import GRRequestOutput
 
 
 class GRRequestState(RequestState):
-    """RequestState extended with GR metadata (user_id, candidates, tasks)."""
+    """RequestState extended with GR metadata stored as a single dict."""
 
     def __init__(self, *args, **kwargs):
         is_gr_request = kwargs.pop("is_gr_request", False)
-        gr_user_id = kwargs.pop("gr_user_id", None)
-        gr_original_candidates = kwargs.pop("gr_original_candidates", None)
-        gr_task_names = kwargs.pop("gr_task_names", None)
-        gr_primary_task = kwargs.pop("gr_primary_task", "")
-        gr_primary_id_key = kwargs.pop("gr_primary_id_key", "item_id")
+        gr_request_meta = dict(kwargs.pop("gr_request_meta", {}) or {})
 
         super().__init__(*args, **kwargs)
 
         self.is_gr_request: bool = is_gr_request
-        self.gr_user_id: Any = gr_user_id
-        self.gr_original_candidates: list[dict] = gr_original_candidates or []
-        self.gr_task_names: list[str] = gr_task_names or []
-        self.gr_primary_task: str = gr_primary_task
-        self.gr_primary_id_key: str = gr_primary_id_key
+        self.gr_request_meta: dict = gr_request_meta or {}
 
     @classmethod
     def from_new_request(
@@ -58,16 +50,16 @@ class GRRequestState(RequestState):
         queue: RequestOutputCollector | None,
         log_stats: bool,
         stream_interval: int,
-        task_names: list[str] | None = None,
-        primary_task: str = "",
-        primary_id_key: str = "item_id",
+        adapter=None,
     ) -> "GRRequestState":
         from vllm.v1.engine.detokenizer import IncrementalDetokenizer
         from vllm.v1.engine.logprobs import LogprobsProcessor
 
         gr_features = getattr(request, "gr_features", None)
-        gr_user_id = gr_features.user_id if gr_features else None
-        gr_candidates = list(gr_features.original_candidates) if gr_features else []
+        gr_request_meta = {}
+        if gr_features is not None and adapter is not None:
+            gr_request_meta = adapter.extract_request_meta(gr_features)
+            gr_request_meta["request_id"] = request.external_req_id
 
         if sampling_params := request.sampling_params:
             if not sampling_params.detokenize:
@@ -113,11 +105,7 @@ class GRRequestState(RequestState):
             log_stats=log_stats,
             stream_interval=stream_interval,
             is_gr_request=gr_features is not None,
-            gr_user_id=gr_user_id,
-            gr_original_candidates=gr_candidates,
-            gr_primary_id_key=primary_id_key,
-            gr_task_names=task_names or [],
-            gr_primary_task=primary_task,
+            gr_request_meta=gr_request_meta,
         )
 
     def make_request_output(
@@ -129,7 +117,7 @@ class GRRequestState(RequestState):
         kv_transfer_params: dict[str, Any] | None = None,
         routed_experts: np.ndarray | None = None,
     ) -> RequestOutput | PoolingRequestOutput | GRRequestOutput | None:
-        """For GR requests, convert pooling scores to GRRequestOutput."""
+        """For GR requests, delegate to adapter.process_output."""
 
         if self.is_gr_request:
             return self._make_gr_output(pooling_output, finish_reason)
@@ -143,77 +131,12 @@ class GRRequestState(RequestState):
         pooling_output: torch.Tensor,
         finish_reason: FinishReason | None,
     ) -> GRRequestOutput:
-        """Build a GRRequestOutput in the original candidate order.
-
-        The HSTU pooling path provides task-major score tensors with shape
-        ``(num_tasks, num_candidates)``. The primary task score view becomes
-        the item score and all per-task rows are attached when task metadata is
-        available.
-        """
-
-        if not self.gr_original_candidates or pooling_output is None:
-            return GRRequestOutput(
-                request_id=self.external_req_id,
-                user_id=self.gr_user_id,
-                recommendations=[],
-                all_scores=pooling_output,
-                finished=finish_reason is not None,
-            )
-
-        candidates = self.gr_original_candidates
-        scores = pooling_output.float()
-
-        if scores.dim() != 2:
-            raise ValueError(
-                "GR pooling output must be 2D "
-                "(num_tasks, num_candidates): "
-                f"shape={tuple(scores.shape)}"
-            )
-
-        all_task_scores: dict[str, list[float]] | None = None
-
-        if self.gr_task_names:
-            if self.gr_primary_task and self.gr_primary_task in self.gr_task_names:
-                primary_idx = self.gr_task_names.index(self.gr_primary_task)
-            else:
-                primary_idx = 0
-            primary_scores = scores[primary_idx]
-            all_task_scores = {
-                name: scores[i].tolist()
-                for i, name in enumerate(self.gr_task_names)
-            }
-        else:
-            primary_scores = scores[0]
-
-        pid_key = self.gr_primary_id_key
-        recommendations = []
-        if len(candidates) != len(primary_scores):
-            raise ValueError(
-                "GR candidate/score count mismatch: "
-                f"candidates={len(candidates)}, scores={len(primary_scores)}"
-            )
-
-        for idx in range(len(candidates)):
-            candidate = candidates[idx]
-            item_task_scores = None
-            if all_task_scores is not None:
-                item_task_scores = {
-                    t: all_task_scores[t][idx] for t in all_task_scores
-                }
-            recommendations.append(RecommendedItem(
-                item_id=candidate.get(pid_key, idx),
-                score=float(primary_scores[idx]),
-                features=candidate,
-                task_scores=item_task_scores,
-            ))
-
-        return GRRequestOutput(
-            request_id=self.external_req_id,
-            user_id=self.gr_user_id,
-            recommendations=recommendations,
-            all_scores=pooling_output,
-            finished=finish_reason is not None,
-        )
+        """Build a GRRequestOutput via the adapter stored in meta."""
+        adapter = self.gr_request_meta.get("_adapter")
+        meta = dict(self.gr_request_meta)
+        meta["finish_reason"] = finish_reason
+        meta.pop("_adapter", None)
+        return adapter.process_output(pooling_output, meta)
 
 
 class GROutputProcessor(VLLMOutputProcessor):
@@ -230,18 +153,15 @@ class GROutputProcessor(VLLMOutputProcessor):
         tokenizer: TokenizerLike | None,
         log_stats: bool,
         stream_interval: int = 1,
-        task_names: list[str] | None = None,
-        primary_task: str = "",
-        primary_id_key: str = "item_id",
+        *,
+        adapter=None,
     ):
         super().__init__(
             tokenizer=tokenizer,
             log_stats=log_stats,
             stream_interval=stream_interval,
         )
-        self.task_names: list[str] = task_names or []
-        self.primary_task: str = primary_task
-        self.primary_id_key: str = primary_id_key
+        self._adapter = adapter
         self.request_states: dict[str, GRRequestState] = {}
         self.total_prefix_cache_requests: int = 0
         self.total_prefix_cache_queries: int = 0
@@ -275,10 +195,13 @@ class GROutputProcessor(VLLMOutputProcessor):
             queue=queue,
             log_stats=self.log_stats,
             stream_interval=self.stream_interval,
-            task_names=self.task_names,
-            primary_task=self.primary_task,
-            primary_id_key=self.primary_id_key,
+            adapter=self._adapter,
         )
+
+        # Inject adapter reference for output processing
+        if req_state.is_gr_request and self._adapter is not None:
+            req_state.gr_request_meta["_adapter"] = self._adapter
+
         if self._requests_drained.is_set():
             self._requests_drained.clear()
         self.request_states[request_id] = req_state
