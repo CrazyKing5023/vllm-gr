@@ -8,7 +8,7 @@ Output data types for generative recommendation.
 - GRRequestOutput: full recommendation response, extends PoolingRequestOutput
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -96,3 +96,72 @@ class GRRequestOutput(PoolingRequestOutput):
     @property
     def scores(self) -> list[float]:
         return [item.score for item in self.recommendations]
+
+
+# ------------------------------------------------------------------
+# Phase 2: Adapter-level output type hierarchy
+# ------------------------------------------------------------------
+
+class GRModelOutput:
+    """Base class for adapter-level model outputs.
+
+    Adapters produce GRModelOutput instances from ``process_output()``.
+    These are intermediate representations — the engine layer wraps them
+    into GRRequestOutput for API-level consumption.
+
+    IMPORTANT: GRRequestOutput (above) is the final API type and is NOT
+    a subclass of GRModelOutput.  The hierarchy is:
+
+        GRModelOutput (adapter internal)
+          +-- ScoringOutput  (candidate scoring)
+          +-- EmbeddingOutput (item embeddings)
+          +-- TextOutput      (generative text)
+
+        GRRequestOutput (API level, extends PoolingRequestOutput)
+          +-- Used by gr.py, async_gr_engine.py, serving.py
+
+    Design doc's ``request_id`` / ``user_id`` / ``output_type`` /
+    ``finished`` fields on GRModelOutput are deferred to a later
+    "output contract unification" stage.
+    """
+
+
+@dataclass
+class ScoringOutput(GRModelOutput):
+    """Output from a scoring model — ranked candidate items.
+
+    Produced by adapters that implement ``GRScoringModel`` (e.g. HSTU).
+    ``recommendations`` uses the same ``list[RecommendedItem]`` type as
+    ``GRRequestOutput.recommendations`` to facilitate future unification.
+    """
+
+    recommendations: list[RecommendedItem] = field(default_factory=list)
+    all_scores: torch.Tensor | None = None
+    request_meta: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class EmbeddingOutput(GRModelOutput):
+    """Output from an embedding model — item embeddings and similarities.
+
+    Reserved for future use (Phase 4+).  Produced by adapters that
+    implement ``GREmbeddingModel`` (e.g. SASRec embedding mode).
+    """
+
+    embeddings: torch.Tensor | None = None
+    item_ids: list[str | int] = field(default_factory=list)
+    similarities: list[float] = field(default_factory=list)
+    request_meta: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TextOutput(GRModelOutput):
+    """Output from a generative model — decoded text.
+
+    Reserved for future use (Phase 5+).  Produced by adapters that
+    support generative inference (e.g. P5).
+    """
+
+    text: str = ""
+    token_ids: list[int] = field(default_factory=list)
+    request_meta: dict[str, Any] = field(default_factory=dict)

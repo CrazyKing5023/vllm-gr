@@ -1,0 +1,69 @@
+# Copyright (c) vllm-GR Authors.
+# Licensed under the Apache License, Version 2.0
+
+"""Tests for inputs/base.py — GRPromptBase and GRParsedInput."""
+
+import unittest
+
+from vllm_gr.inputs.base import GRParsedInput, GRPromptBase
+
+
+class TestGRPromptBase(unittest.TestCase):
+    """GRPromptBase is a TypedDict with only user_id + model_type."""
+
+    def test_required_keys(self):
+        self.assertEqual(GRPromptBase.__required_keys__, frozenset({"user_id"}))
+
+    def test_optional_keys(self):
+        self.assertEqual(GRPromptBase.__optional_keys__, frozenset({"model_type"}))
+
+    def test_dict_instance(self):
+        prompt: GRPromptBase = {"user_id": 42}
+        self.assertIsInstance(prompt, dict)
+
+    def test_dict_with_model_type(self):
+        prompt: GRPromptBase = {"user_id": "u1", "model_type": "hstu"}
+        self.assertEqual(prompt["model_type"], "hstu")
+
+
+class TestGRParsedInput(unittest.TestCase):
+    """GRParsedInput is a dataclass with model-agnostic fields."""
+
+    def test_default_construction(self):
+        parsed = GRParsedInput()
+        self.assertEqual(parsed.user_id, "")
+        self.assertEqual(parsed.schema_fingerprint, "")
+        self.assertEqual(parsed.raw_features, {})
+        self.assertEqual(parsed.metadata, {})
+        self.assertEqual(parsed.original_prompt, {})
+
+    def test_construction_with_args(self):
+        parsed = GRParsedInput(
+            user_id="u1",
+            schema_fingerprint="fp",
+            raw_features={"x": 1},
+            metadata={"history_len": 5},
+            original_prompt={"user_id": "u1"},
+        )
+        self.assertEqual(parsed.user_id, "u1")
+        self.assertEqual(parsed.raw_features, {"x": 1})
+        self.assertEqual(parsed.metadata["history_len"], 5)
+
+    def test_independent_defaults(self):
+        """Ensure mutable defaults are not shared across instances."""
+        p1 = GRParsedInput()
+        p2 = GRParsedInput()
+        p1.raw_features["key"] = "val"
+        self.assertNotIn("key", p2.raw_features)
+
+    def test_import_from_package(self):
+        """Verify re-export through inputs/__init__.py."""
+        from vllm_gr.inputs import GRPromptBase as PB
+        from vllm_gr.inputs import GRParsedInput as PI
+
+        self.assertIs(PB, GRPromptBase)
+        self.assertIs(PI, GRParsedInput)
+
+
+if __name__ == "__main__":
+    unittest.main()

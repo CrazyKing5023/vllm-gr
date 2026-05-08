@@ -51,6 +51,20 @@ SUITE_DEFINITIONS: dict[str, dict[str, object]] = {
             "test_prefix_cache_benchmark_input.py",
             "test_yuanrong_monkey_patch.py",
             "test_yuanrong_backend.py",
+            # Phase 1 — adapter abstraction
+            "test_gr_model_adapter_interface.py",
+            "test_gr_capabilities.py",
+            "test_async_gr_engine.py",
+            "test_gr_config_pickle.py",
+            "test_batch_recommendation_contract.py",
+            "test_output_processor_adapter_e2e.py",
+            "test_hstu_adapter_contract.py",
+            # Phase 2 — type hierarchy
+            "test_inputs_base.py",
+            "test_hstu_prompt.py",
+            "test_outputs_phase2.py",
+            "test_outputs_hierarchy.py",
+            "test_reexport.py",
         ],
     },
     "gpu-smoke": {
