@@ -125,7 +125,27 @@ class TestGRRunnerCore(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        cls._saved_modules = {
+            name: sys.modules.get(name)
+            for name in (
+                "vllm",
+                "vllm.logger",
+                "vllm.sequence",
+                "vllm.v1.outputs",
+                "torchrec",
+                "torchrec.sparse",
+                "torchrec.sparse.jagged_tensor",
+            )
+        }
         cls.runner_module = _load_gr_runner_module()
+
+    @classmethod
+    def tearDownClass(cls):
+        for name, module in cls._saved_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
 
     def _make_runner(self, req_ids: list[str] | None = None):
         mixin_cls = self.runner_module.GRFeatureRunnerMixin
@@ -134,8 +154,78 @@ class TestGRRunnerCore(unittest.TestCase):
             pass
 
         runner = _Runner()
+        runner._adapter = self._make_adapter()
         runner.input_batch = SimpleNamespace(req_ids=req_ids or ["r1"])
         return runner
+
+    @staticmethod
+    def _make_adapter():
+        """Create a lightweight adapter that matches HSTUModelAdapter's API."""
+        from vllm_gr.adapters.hstu.kjt_builder import build_hstu_model_kwargs
+
+        class _FakeAdapter:
+            def decode_payload(self, payload):
+                from vllm_gr.gr_schema import (
+                    attach_schema_fingerprint,
+                    validate_context_group,
+                    validate_feature_group,
+                )
+                uih_keys = list(payload.uih_keys)
+                cand_keys = list(payload.cand_keys)
+                ctx_keys = list(payload.ctx_keys)
+                uih_keys, cand_keys, ctx_keys, schema_fingerprint = \
+                    attach_schema_fingerprint(
+                        uih_keys=uih_keys, cand_keys=cand_keys, ctx_keys=ctx_keys,
+                    )
+                validate_feature_group(
+                    "uih", uih_keys,
+                    list(payload.uih_values_per_key),
+                    list(payload.uih_lengths_per_key),
+                )
+                validate_feature_group(
+                    "cand", cand_keys,
+                    list(payload.cand_values_per_key),
+                    list(payload.cand_lengths_per_key),
+                )
+                validate_context_group(
+                    ctx_keys, list(payload.ctx_values_per_key),
+                )
+                full_uih_keys = list(
+                    getattr(payload, "full_uih_keys", []) or (uih_keys + ctx_keys)
+                )
+                return {
+                    "uih_keys": uih_keys,
+                    "uih_values_per_key": [
+                        torch.tensor(v, dtype=torch.int64)
+                        for v in payload.uih_values_per_key
+                    ],
+                    "uih_lengths_per_key": torch.tensor(
+                        payload.uih_lengths_per_key, dtype=torch.int64,
+                    ),
+                    "cand_keys": cand_keys,
+                    "cand_values_per_key": [
+                        torch.tensor(v, dtype=torch.int64)
+                        for v in payload.cand_values_per_key
+                    ],
+                    "cand_lengths_per_key": torch.tensor(
+                        payload.cand_lengths_per_key, dtype=torch.int64,
+                    ),
+                    "ctx_keys": ctx_keys,
+                    "ctx_values_per_key": [
+                        torch.tensor(v, dtype=torch.int64)
+                        for v in payload.ctx_values_per_key
+                    ],
+                    "full_uih_keys": full_uih_keys,
+                    "schema_fingerprint": schema_fingerprint,
+                }
+
+            def build_model_kwargs(self, batch_features, device):
+                return build_hstu_model_kwargs(batch_features, device)
+
+            def build_request_lengths(self, features):
+                return None
+
+        return _FakeAdapter()
 
     def test_build_kwargs_batches_features_by_key(self):
         runner = self._make_runner(req_ids=["r1", "r2"])
@@ -161,8 +251,8 @@ class TestGRRunnerCore(unittest.TestCase):
             ctx_values_per_key=[[99]],
         )
 
-        runner._gr_features_cache["r1"] = runner._decode_gr_features(payload1)
-        runner._gr_features_cache["r2"] = runner._decode_gr_features(payload2)
+        runner._gr_features_cache["r1"] = runner._adapter.decode_payload(payload1)
+        runner._gr_features_cache["r2"] = runner._adapter.decode_payload(payload2)
 
         model_kwargs = runner._build_gr_model_kwargs()
 
@@ -223,8 +313,8 @@ class TestGRRunnerCore(unittest.TestCase):
                 ctx_values_per_key=[[86], [1]],
             )
 
-            runner._gr_features_cache["r1"] = runner._decode_gr_features(payload1)
-            runner._gr_features_cache["r2"] = runner._decode_gr_features(payload2)
+            runner._gr_features_cache["r1"] = runner._adapter.decode_payload(payload1)
+            runner._gr_features_cache["r2"] = runner._adapter.decode_payload(payload2)
 
             with self.assertRaisesRegex(ValueError, "Mixed GR batch schema mismatch"):
                 runner._build_gr_model_kwargs()
@@ -243,7 +333,7 @@ class TestGRRunnerCore(unittest.TestCase):
             ctx_values_per_key=[],
         )
 
-        runner._gr_features_cache["r1"] = runner._decode_gr_features(payload)
+        runner._gr_features_cache["r1"] = runner._adapter.decode_payload(payload)
 
         model_kwargs = runner._build_gr_model_kwargs()
 
@@ -283,7 +373,7 @@ class TestGRRunnerCore(unittest.TestCase):
             ],
         )
 
-        runner._gr_features_cache["r1"] = runner._decode_gr_features(payload)
+        runner._gr_features_cache["r1"] = runner._adapter.decode_payload(payload)
 
         model_kwargs = runner._build_gr_model_kwargs()
 

@@ -7,6 +7,7 @@ import gc
 
 from vllm.logger import init_logger
 from vllm_ascend.worker.worker import NPUWorker
+from vllm_gr.config.gr_config import GRConfig
 from vllm_gr.utils.npu_adapter import release_accelerator_memory
 
 logger = init_logger(__name__)
@@ -23,7 +24,8 @@ class GRNPUWorker(NPUWorker):
 
         from vllm_gr.worker.gr_npu_model_runner import GRNPUModelRunner
 
-        self.model_runner = GRNPUModelRunner(self.vllm_config, self.device)
+        gr_config = getattr(self.vllm_config, 'gr_config', None) or GRConfig()
+        self.model_runner = GRNPUModelRunner(self.vllm_config, self.device, gr_config=gr_config)
         logger.info(
             "GRNPUWorker: using GRNPUModelRunner on device %s",
             self.device,

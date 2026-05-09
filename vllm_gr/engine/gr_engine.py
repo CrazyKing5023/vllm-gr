@@ -50,6 +50,8 @@ class GRLLMEngine(LLMEngine):
         gr_config: GRConfig | None = None,
     ) -> None:
         self.gr_config = gr_config or GRConfig()
+        # Attach gr_config to vllm_config so workers can access it
+        vllm_config.gr_config = self.gr_config
 
         super().__init__(
             vllm_config=vllm_config,
@@ -131,46 +133,17 @@ class GRLLMEngine(LLMEngine):
     def _replace_processors(self) -> None:
         """Replace default processors with GR-specific versions.
 
-        All feature names, primary_id, and task metadata are read directly
-        from the model's HSTUConfig (hf_config) -- the single source of truth.
+        Creates the HSTU model adapter and injects it into both input and
+        output processors so they delegate model-specific logic correctly.
         """
-        cfg = self.gr_config
-        hf_config = self.vllm_config.model_config.hf_config
+        from vllm_gr.adapters.hstu.adapter import HSTUModelAdapter
 
-        uih_feature_names = (
-            hf_config.hstu_uih_feature_names
-            or hf_config.user_embedding_feature_names
-        )
-        candidate_feature_names = (
-            hf_config.hstu_candidate_feature_names
-            or hf_config.item_embedding_feature_names
-        )
-        configured_context_feature_names = list(dict.fromkeys(
-            list(getattr(hf_config, "contextual_feature_to_max_length", {}).keys())
-            + list(getattr(hf_config, "contextual_feature_to_min_uih_length", {}).keys())
-        ))
-        context_feature_names = [
-            key for key in uih_feature_names
-            if key in set(configured_context_feature_names)
-        ]
-        primary_id_feature_name = hf_config.uih_post_id_feature_name
-        candidate_primary_id_key = self._resolve_candidate_primary_id_key(
-            hf_config=hf_config,
-            candidate_feature_names=candidate_feature_names,
-        )
-        task_names = list(hf_config.task_names)
-        primary_task = task_names[0] if task_names else ""
+        adapter = HSTUModelAdapter(self.vllm_config, self.gr_config)
 
         self.input_processor = GRInputProcessor(
             vllm_config=self.vllm_config,
             tokenizer=self.tokenizer,
-            max_seq_len=cfg.max_seq_len,
-            max_candidates=cfg.max_candidates,
-            uih_feature_names=uih_feature_names,
-            candidate_feature_names=candidate_feature_names,
-            primary_id_feature_name=primary_id_feature_name,
-            full_uih_feature_names=uih_feature_names,
-            context_feature_names=context_feature_names,
+            adapter=adapter,
         )
 
         stream_interval = self.vllm_config.scheduler_config.stream_interval
@@ -178,36 +151,7 @@ class GRLLMEngine(LLMEngine):
             tokenizer=self.tokenizer,
             log_stats=self.log_stats,
             stream_interval=stream_interval,
-            task_names=task_names,
-            primary_task=primary_task,
-            primary_id_key=candidate_primary_id_key,
-        )
-
-    @staticmethod
-    def _resolve_candidate_primary_id_key(
-        *,
-        hf_config,
-        candidate_feature_names: list[str],
-    ) -> str:
-        explicit_candidate_id_key = str(
-            getattr(hf_config, "candidate_primary_id_feature_name", "") or ""
-        )
-        if explicit_candidate_id_key:
-            return explicit_candidate_id_key
-
-        merge_mapping = list(
-            getattr(hf_config, "merge_uih_candidate_feature_mapping", []) or []
-        )
-        primary_uih_id_key = getattr(hf_config, "uih_post_id_feature_name", "")
-        for uih_key, candidate_key in merge_mapping:
-            if uih_key == primary_uih_id_key:
-                return candidate_key
-
-        raise ValueError(
-            "Unable to resolve candidate primary id feature. Configure "
-            "`candidate_primary_id_feature_name` explicitly or provide a "
-            "`merge_uih_candidate_feature_mapping` entry that maps "
-            f"{primary_uih_id_key!r} to one of {candidate_feature_names!r}."
+            adapter=adapter,
         )
 
     @classmethod

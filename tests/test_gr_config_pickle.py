@@ -1,0 +1,35 @@
+# Copyright (c) vllm-GR Authors.
+# Licensed under the Apache License, Version 2.0
+
+"""Tests for GRConfig pickle round-trip."""
+
+import pickle
+import unittest
+
+from vllm_gr.config.gr_config import GRConfig
+
+
+class TestGRConfigPickle(unittest.TestCase):
+
+    def test_pickle_round_trip_default(self):
+        cfg = GRConfig()
+        data = pickle.dumps(cfg)
+        restored = pickle.loads(data)
+        self.assertEqual(restored.max_seq_len, cfg.max_seq_len)
+        self.assertEqual(restored.max_candidates, cfg.max_candidates)
+
+    def test_pickle_round_trip_custom(self):
+        cfg = GRConfig(max_seq_len=1024, max_candidates=500)
+        data = pickle.dumps(cfg)
+        restored = pickle.loads(data)
+        self.assertEqual(restored.max_seq_len, 1024)
+        self.assertEqual(restored.max_candidates, 500)
+
+    def test_equality_after_pickle(self):
+        cfg = GRConfig(max_seq_len=256, max_candidates=200)
+        restored = pickle.loads(pickle.dumps(cfg))
+        self.assertEqual(cfg, restored)
+
+
+if __name__ == "__main__":
+    unittest.main()

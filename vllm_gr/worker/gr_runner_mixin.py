@@ -1,22 +1,21 @@
 # Copyright (c) vllm-GR Authors.
 # Licensed under the Apache License, Version 2.0
 
-"""Shared GR-specific model runner logic."""
+"""Shared GR-specific model runner logic.
+
+Delegates feature decoding and model-kwargs building to the injected adapter.
+HSTU model execution infrastructure (static forward context sync, KV cache
+spec fallback, attention builder preparation) remains here as it is tied to
+the HSTU model's execution lifecycle.
+"""
 
 from typing import Any, TYPE_CHECKING
 
 import numpy as np
 import torch
-from torchrec.sparse.jagged_tensor import KeyedJaggedTensor
 from vllm.logger import init_logger
 from vllm.sequence import IntermediateTensors
 from vllm.v1.outputs import ModelRunnerOutput
-
-from vllm_gr.gr_schema import (
-    attach_schema_fingerprint,
-    validate_context_group,
-    validate_feature_group,
-)
 
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
@@ -24,21 +23,16 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
-def _concat_1d_int_tensors(
-    tensor_parts: list[torch.Tensor],
-    *,
-    device: torch.device,
-) -> torch.Tensor:
-    if not tensor_parts:
-        return torch.empty(0, dtype=torch.int64, device=device)
-    return torch.cat(tensor_parts, dim=0)
-
-
 class GRFeatureRunnerMixin:
-    """Inject GR feature decode and KJT model-kwargs building into a runner."""
+    """Inject GR feature decode and model-kwargs building into a runner.
 
-    def __init__(self, *args, **kwargs):
+    The ``_adapter`` attribute must be set before ``_update_states`` is called.
+    """
+
+    def __init__(self, *args, adapter=None, **kwargs):
+        # adapter is consumed here; not passed to super()
         super().__init__(*args, **kwargs)
+        self._adapter = adapter
         self._gr_features_cache: dict[str, dict[str, Any]] = {}
         self._gr_feature_errors: dict[str, str] = {}
 
@@ -48,7 +42,7 @@ class GRFeatureRunnerMixin:
             gr_features = getattr(new_req_data, "gr_features", None)
             if gr_features is not None:
                 try:
-                    decoded = self._decode_gr_features(gr_features)
+                    decoded = self._adapter.decode_payload(gr_features)
                     self._gr_features_cache[req_id] = decoded
                     self._gr_feature_errors.pop(req_id, None)
                     logger.debug(
@@ -76,76 +70,6 @@ class GRFeatureRunnerMixin:
             self._gr_feature_errors.pop(req_id, None)
 
         super()._update_states(scheduler_output)
-
-    def _decode_gr_features(self, payload: Any) -> dict[str, Any]:
-        uih_keys = list(payload.uih_keys)
-        cand_keys = list(payload.cand_keys)
-        ctx_keys = list(payload.ctx_keys)
-        (
-            uih_keys,
-            cand_keys,
-            ctx_keys,
-            schema_fingerprint,
-        ) = attach_schema_fingerprint(
-            uih_keys=uih_keys,
-            cand_keys=cand_keys,
-            ctx_keys=ctx_keys,
-        )
-        validate_feature_group(
-            "uih",
-            uih_keys,
-            list(payload.uih_values_per_key),
-            list(payload.uih_lengths_per_key),
-        )
-        validate_feature_group(
-            "cand",
-            cand_keys,
-            list(payload.cand_values_per_key),
-            list(payload.cand_lengths_per_key),
-        )
-        validate_context_group(
-            ctx_keys,
-            list(payload.ctx_values_per_key),
-        )
-
-        full_uih_keys = list(getattr(payload, "full_uih_keys", []) or (uih_keys + ctx_keys))
-        combined_uih_keys = uih_keys + ctx_keys
-        if (
-            len(full_uih_keys) != len(combined_uih_keys)
-            or set(full_uih_keys) != set(combined_uih_keys)
-        ):
-            raise ValueError(
-                "GR payload full_uih_keys do not match decoded UIH/context keys: "
-                f"full_uih_keys={full_uih_keys!r}, combined_keys={combined_uih_keys!r}"
-            )
-
-        return {
-            "uih_keys": uih_keys,
-            "uih_values_per_key": [
-                torch.tensor(values, dtype=torch.int64)
-                for values in payload.uih_values_per_key
-            ],
-            "uih_lengths_per_key": torch.tensor(
-                payload.uih_lengths_per_key,
-                dtype=torch.int64,
-            ),
-            "cand_keys": cand_keys,
-            "cand_values_per_key": [
-                torch.tensor(values, dtype=torch.int64)
-                for values in payload.cand_values_per_key
-            ],
-            "cand_lengths_per_key": torch.tensor(
-                payload.cand_lengths_per_key,
-                dtype=torch.int64,
-            ),
-            "ctx_keys": ctx_keys,
-            "ctx_values_per_key": [
-                torch.tensor(values, dtype=torch.int64)
-                for values in payload.ctx_values_per_key
-            ],
-            "full_uih_keys": full_uih_keys,
-            "schema_fingerprint": schema_fingerprint,
-        }
 
     def _sync_hstu_static_forward_context(self) -> int:
         compilation_config = getattr(
@@ -180,47 +104,25 @@ class GRFeatureRunnerMixin:
             )
         return inserted
 
-    @staticmethod
-    def _extract_feature_length(lengths: torch.Tensor | None) -> int:
-        if lengths is None or lengths.numel() == 0:
-            return 0
-        return int(lengths.max().item())
-
-    def _build_hstu_request_lengths(
+    def _build_request_lengths(
         self,
     ) -> tuple[torch.Tensor, torch.Tensor, int] | None:
+        """Build request-length tensors for the current batch via adapter."""
         if not self._gr_features_cache:
-            return None
-
-        hf_config = getattr(getattr(self, "model_config", None), "hf_config", None)
-        if hf_config is None or not bool(getattr(hf_config, "enable_kv_cache", False)):
             return None
 
         batch_req_ids = list(getattr(self.input_batch, "req_ids", ()))
         if not batch_req_ids:
             return None
 
-        num_targets: list[int] = []
-        history_lengths: list[int] = []
+        features_list: list[dict[str, Any]] = []
         for req_id in batch_req_ids:
             features = self._gr_features_cache.get(req_id)
             if features is None:
                 return None
-            num_targets.append(
-                self._extract_feature_length(features.get("cand_lengths_per_key"))
-            )
-            history_lengths.append(
-                self._extract_feature_length(features.get("uih_lengths_per_key"))
-            )
+            features_list.append(features)
 
-        contextual_seq_len = int(
-            sum(getattr(hf_config, "contextual_feature_to_max_length", {}).values())
-        )
-        return (
-            torch.tensor(num_targets, dtype=torch.int32, device=self.device),
-            torch.tensor(history_lengths, dtype=torch.int32, device=self.device),
-            contextual_seq_len,
-        )
+        return self._adapter.build_request_lengths(features_list)
 
     def _prepare_hstu_attention_builders(self) -> None:
         from vllm_gr.attention.backends.hstu_attn import (
@@ -237,7 +139,7 @@ class GRFeatureRunnerMixin:
         if not hstu_builders:
             return
 
-        request_lengths = self._build_hstu_request_lengths()
+        request_lengths = self._build_request_lengths()
         for builder in hstu_builders:
             if request_lengths is None:
                 builder.clear_request_lengths()
@@ -350,115 +252,7 @@ class GRFeatureRunnerMixin:
         self._validate_batch_schema(gr_reqs)
 
         device = torch.device("cpu")
-        uih_keys: list[str] = gr_reqs[0][1]["uih_keys"]
-        cand_keys: list[str] = gr_reqs[0][1]["cand_keys"]
-        ctx_keys: list[str] = gr_reqs[0][1]["ctx_keys"]
-        full_uih_keys: list[str] = gr_reqs[0][1].get(
-            "full_uih_keys",
-            uih_keys + ctx_keys,
-        )
-        num_uih_keys = len(uih_keys)
-        num_cand_keys = len(cand_keys)
-        num_ctx_keys = len(ctx_keys)
-
-        uih_values_by_key: list[list[torch.Tensor]] = [
-            [] for _ in range(num_uih_keys)
-        ]
-        uih_lengths_by_key: list[list[int]] = [[] for _ in range(num_uih_keys)]
-        cand_values_by_key: list[list[torch.Tensor]] = [
-            [] for _ in range(num_cand_keys)
-        ]
-        cand_lengths_by_key: list[list[int]] = [[] for _ in range(num_cand_keys)]
-        ctx_values_by_key: list[list[torch.Tensor]] = [
-            [] for _ in range(num_ctx_keys)
-        ]
-
-        for _req_id, features in gr_reqs:
-            uih_lengths = features["uih_lengths_per_key"]
-            cand_lengths = features["cand_lengths_per_key"]
-
-            for key_idx in range(num_uih_keys):
-                values = features["uih_values_per_key"][key_idx].to(device)
-                uih_values_by_key[key_idx].append(values)
-                uih_lengths_by_key[key_idx].append(
-                    int(uih_lengths[key_idx].item())
-                )
-
-            for key_idx in range(num_cand_keys):
-                values = features["cand_values_per_key"][key_idx].to(device)
-                cand_values_by_key[key_idx].append(values)
-                cand_lengths_by_key[key_idx].append(
-                    int(cand_lengths[key_idx].item())
-                )
-
-            for key_idx in range(num_ctx_keys):
-                values = features["ctx_values_per_key"][key_idx].reshape(-1).to(device)
-                ctx_values_by_key[key_idx].append(values)
-
-        uih_key_to_idx = {key: idx for idx, key in enumerate(uih_keys)}
-        ctx_key_to_idx = {key: idx for idx, key in enumerate(ctx_keys)}
-        all_uih_value_parts: list[torch.Tensor] = []
-        all_uih_lengths: list[int] = []
-        batch_size = len(gr_reqs)
-
-        for key in full_uih_keys:
-            if key in uih_key_to_idx:
-                key_idx = uih_key_to_idx[key]
-                values_per_request = uih_values_by_key[key_idx]
-                if values_per_request:
-                    all_uih_value_parts.append(torch.cat(values_per_request, dim=0))
-                all_uih_lengths.extend(uih_lengths_by_key[key_idx])
-                continue
-
-            if key in ctx_key_to_idx:
-                key_idx = ctx_key_to_idx[key]
-                values_per_request = ctx_values_by_key[key_idx]
-                if values_per_request:
-                    all_uih_value_parts.append(torch.cat(values_per_request, dim=0))
-                all_uih_lengths.extend([1] * batch_size)
-                continue
-
-            raise ValueError(
-                "Full UIH schema contains unknown key not present in GR payload: "
-                f"{key!r}"
-            )
-
-        uih_values = _concat_1d_int_tensors(
-            all_uih_value_parts,
-            device=device,
-        )
-        uih_kjt = KeyedJaggedTensor.from_lengths_sync(
-            keys=full_uih_keys,
-            values=uih_values,
-            lengths=torch.tensor(all_uih_lengths, dtype=torch.int64, device=device),
-        )
-
-        cand_values = _concat_1d_int_tensors(
-            [
-                _concat_1d_int_tensors(values_per_key, device=device)
-                for values_per_key in cand_values_by_key
-            ],
-            device=device,
-        )
-        cand_lengths = torch.tensor(
-            [
-                length
-                for lengths_per_key in cand_lengths_by_key
-                for length in lengths_per_key
-            ],
-            dtype=torch.int64,
-            device=device,
-        )
-        cand_kjt = KeyedJaggedTensor.from_lengths_sync(
-            keys=cand_keys,
-            values=cand_values,
-            lengths=cand_lengths,
-        )
-
-        return {
-            "uih_features": uih_kjt,
-            "candidates_features": cand_kjt,
-        }
+        return self._adapter.build_model_kwargs(gr_reqs, device)
 
     def _pool(
         self,

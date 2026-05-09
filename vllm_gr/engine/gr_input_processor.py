@@ -4,8 +4,9 @@
 """
 GRInputProcessor — extends vLLM's InputProcessor to handle GRPrompt.
 
-Overrides process_inputs() to require GRPrompt inputs and convert them into a
-GREngineCoreRequest carrying a serialized GRFeaturesPayload.
+Delegates feature extraction, validation, payload construction, and
+prefix-cache building to a ``GRModelAdapter`` instance, making the
+processor model-family-agnostic.
 """
 
 from typing import Any
@@ -23,19 +24,9 @@ from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import SamplingParams
 from vllm.tokenizers import TokenizerLike
 
-from vllm_gr.inputs.hstu_prompt_identity import (
-    build_hstu_cache_salt,
-    build_hstu_prompt_token_ids,
-)
-from vllm_gr.gr_schema import (
-    attach_schema_fingerprint as _attach_schema_fingerprint,
-    extract_context_features as _extract_context_features_helper,
-    extract_features as _extract_features_helper,
-    validate_context_group as _validate_context_group,
-    validate_feature_group as _validate_feature_group,
-)
+from vllm_gr.adapters.capabilities import GRPrefixCacheSupport
 from vllm_gr.inputs.data import GRPrompt, is_gr_prompt
-from vllm_gr.engine import GRFeaturesPayload, GREngineCoreRequest
+from vllm_gr.engine import GREngineCoreRequest
 
 logger = logging.getLogger("vllm_gr.input_processor")
 
@@ -43,9 +34,9 @@ logger = logging.getLogger("vllm_gr.input_processor")
 class GRInputProcessor(InputProcessor):
     """Input processor for the GR-only engine contract.
 
-    For GRPrompt inputs, extracts user interaction history and candidate
-    features, builds a GRFeaturesPayload, and wraps it in a
-    GREngineCoreRequest.
+    For GRPrompt inputs, delegates all feature extraction, validation,
+    payload construction, and prefix-cache token building to the injected
+    ``adapter``.  The processor itself is model-family-agnostic.
     """
 
     def __init__(
@@ -53,39 +44,11 @@ class GRInputProcessor(InputProcessor):
         vllm_config: VllmConfig,
         tokenizer: TokenizerLike | None,
         mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
-        max_seq_len: int = 512,
-        max_candidates: int = 1000,
-        uih_feature_names: list[str] | None = None,
-        candidate_feature_names: list[str] | None = None,
-        primary_id_feature_name: str | None = None,
-        full_uih_feature_names: list[str] | None = None,
-        context_feature_names: list[str] | None = None,
+        *,
+        adapter=None,
     ):
         super().__init__(vllm_config, tokenizer, mm_registry)
-        self.max_seq_len = max_seq_len
-        self.max_candidates = max_candidates
-        self.full_uih_feature_names = list(
-            full_uih_feature_names or uih_feature_names or ["item_id"]
-        )
-        self.context_feature_names = list(context_feature_names or [])
-        unexpected_context_features = [
-            key for key in self.context_feature_names
-            if key not in self.full_uih_feature_names
-        ]
-        if unexpected_context_features:
-            raise ValueError(
-                "Context feature names must be a subset of full UIH schema; "
-                f"unexpected {unexpected_context_features!r}"
-            )
-        context_feature_name_set = set(self.context_feature_names)
-        self.uih_feature_names = [
-            key for key in self.full_uih_feature_names
-            if key not in context_feature_name_set
-        ]
-        self.candidate_feature_names = (
-            candidate_feature_names or ["item_candidate_id"]
-        )
-        self.primary_id_feature_name = primary_id_feature_name or "item_id"
+        self._adapter = adapter
 
     def process_inputs(
         self,
@@ -116,36 +79,6 @@ class GRInputProcessor(InputProcessor):
             data_parallel_rank=data_parallel_rank,
         )
 
-    def _get_hstu_config(self) -> Any | None:
-        vllm_config = getattr(self, "vllm_config", None)
-        hf_config = getattr(vllm_config, "model_config", None)
-        if hf_config is not None:
-            hf_config = getattr(hf_config, "hf_config", None)
-        if hf_config is None:
-            hf_config = getattr(vllm_config, "hf_config", None)
-        return hf_config
-
-    def _get_contextual_feature_to_max_length(self) -> dict[str, int]:
-        hf_config = self._get_hstu_config()
-        raw_mapping = getattr(hf_config, "contextual_feature_to_max_length", {}) or {}
-        return {str(key): int(value) for key, value in raw_mapping.items()}
-
-    def _get_contextual_feature_to_min_uih_length(self) -> dict[str, int]:
-        hf_config = self._get_hstu_config()
-        raw_mapping = getattr(
-            hf_config,
-            "contextual_feature_to_min_uih_length",
-            {},
-        ) or {}
-        return {str(key): int(value) for key, value in raw_mapping.items()}
-
-    def _get_model_type(self) -> str:
-        hf_config = self._get_hstu_config()
-        model_type = getattr(hf_config, "model_type", None)
-        if isinstance(model_type, str) and model_type:
-            return model_type
-        return "hstu"
-
     def _process_gr_prompt(
         self,
         request_id: str,
@@ -157,14 +90,9 @@ class GRInputProcessor(InputProcessor):
         priority: int = 0,
         data_parallel_rank: int | None = None,
     ) -> GREngineCoreRequest:
-        """
-        Process a GRPrompt into a GREngineCoreRequest with full feature payload.
+        adapter = self._adapter
 
-        Reuses parent validation where applicable, then builds GR-specific
-        request with GRFeaturesPayload.
-        """
         self._validate_lora(lora_request)
-
         if arrival_time is None:
             arrival_time = time.time()
 
@@ -174,99 +102,22 @@ class GRInputProcessor(InputProcessor):
                 f"got {type(params).__name__}"
             )
 
-        user_id = str(prompt.get("user_id", ""))
-        user_history = prompt.get("user_history", [])
-        candidates = prompt.get("candidates", [])
-        recent_history = user_history[-self.max_seq_len:]
+        # Step 1: Parse and validate
+        adapter.validate_prompt(prompt)
+        parsed = adapter.parse_prompt(prompt)
 
-        uih_keys, uih_values_per_key, uih_lengths_per_key = (
-            self._extract_features(
-                recent_history,
-                self.uih_feature_names,
-                group_name="uih",
-            )
-        )
-        cand_keys, cand_values_per_key, cand_lengths_per_key = (
-            self._extract_features(
-                candidates,
-                self.candidate_feature_names,
-                group_name="cand",
-            )
-        )
+        # Step 2: Build payload
+        gr_features = adapter.build_payload(parsed)
 
-        context = prompt.get("context") or {}
-        ctx_keys, ctx_values_per_key = self._extract_context_features(
-            context,
-            feature_names=self.context_feature_names,
-        )
+        # Step 3: Build prefix-cache token IDs and salt (if supported)
+        prompt_token_ids = None
+        cache_salt = None
+        if isinstance(adapter, GRPrefixCacheSupport):
+            prompt_token_ids = adapter.build_prompt_token_ids(parsed)
+            cache_salt = adapter.build_cache_salt(parsed)
 
-        (
-            uih_keys,
-            cand_keys,
-            ctx_keys,
-            schema_fingerprint,
-        ) = self.attach_schema_fingerprint(
-            uih_keys=uih_keys,
-            cand_keys=cand_keys,
-            ctx_keys=ctx_keys,
-        )
-        self.validate_feature_group(
-            "uih",
-            uih_keys,
-            uih_values_per_key,
-            uih_lengths_per_key,
-        )
-        self.validate_feature_group(
-            "cand",
-            cand_keys,
-            cand_values_per_key,
-            cand_lengths_per_key,
-        )
-        self.validate_context_group(ctx_keys, ctx_values_per_key)
-
-        gr_features = GRFeaturesPayload(
-            uih_keys=uih_keys,
-            uih_values_per_key=uih_values_per_key,
-            uih_lengths_per_key=uih_lengths_per_key,
-            cand_keys=cand_keys,
-            cand_values_per_key=cand_values_per_key,
-            cand_lengths_per_key=cand_lengths_per_key,
-            ctx_keys=ctx_keys,
-            ctx_values_per_key=ctx_values_per_key,
-            full_uih_keys=list(self.full_uih_feature_names),
-            user_id=user_id,
-            original_candidates=[dict(c) for c in candidates],
-        )
-
-        contextual_feature_to_max_length = (
-            self._get_contextual_feature_to_max_length()
-        )
-        contextual_feature_to_min_uih_length = (
-            self._get_contextual_feature_to_min_uih_length()
-        )
-        prompt_token_ids = self._build_prompt_token_ids(
-            uih_keys=uih_keys,
-            uih_values_per_key=uih_values_per_key,
-            cand_keys=cand_keys,
-            cand_values_per_key=cand_values_per_key,
-            ctx_keys=ctx_keys,
-            ctx_values_per_key=ctx_values_per_key,
-            history_len=len(recent_history),
-            num_candidates=len(candidates),
-            contextual_feature_to_max_length=contextual_feature_to_max_length,
-            contextual_feature_to_min_uih_length=(
-                contextual_feature_to_min_uih_length
-            ),
-        )
-        cache_salt = build_hstu_cache_salt(
-            schema_fingerprint=schema_fingerprint,
-            contextual_feature_to_max_length=contextual_feature_to_max_length,
-            contextual_feature_to_min_uih_length=(
-                contextual_feature_to_min_uih_length
-            ),
-            primary_id_feature_name=self.primary_id_feature_name,
-            model_type=self._get_model_type(),
-        )
+        if prompt_token_ids is None:
+            prompt_token_ids = [0]
 
         request = GREngineCoreRequest(
             request_id=request_id,
@@ -285,102 +136,11 @@ class GRInputProcessor(InputProcessor):
         )
 
         logger.debug(
-            "Processed GR request %s: uih_keys=%s, uih_len=%d, "
-            "cand_keys=%s, cand_len=%d, schema=%s",
-            request_id, uih_keys, len(recent_history),
-            cand_keys, len(candidates),
-            schema_fingerprint,
+            "Processed GR request %s: uih_keys=%s, history_len=%d, "
+            "cand_keys=%s, num_candidates=%d, schema=%s",
+            request_id, parsed.get("uih_keys"), parsed.get("history_len"),
+            parsed.get("cand_keys"), parsed.get("num_candidates"),
+            parsed.get("schema_fingerprint"),
         )
 
         return request
-
-    def _build_prompt_token_ids(
-        self,
-        uih_keys: list[str],
-        uih_values_per_key: list[list[int]],
-        cand_keys: list[str],
-        cand_values_per_key: list[list[int]],
-        ctx_keys: list[str],
-        ctx_values_per_key: list[list[int]],
-        history_len: int,
-        num_candidates: int,
-        contextual_feature_to_max_length: dict[str, int] | None = None,
-        contextual_feature_to_min_uih_length: dict[str, int] | None = None,
-    ) -> list[int]:
-        """Build stable synthetic token ids for HSTU prefix-cache hashing."""
-        return build_hstu_prompt_token_ids(
-            uih_keys=uih_keys,
-            uih_values_per_key=uih_values_per_key,
-            cand_keys=cand_keys,
-            cand_values_per_key=cand_values_per_key,
-            ctx_keys=ctx_keys,
-            ctx_values_per_key=ctx_values_per_key,
-            history_len=history_len,
-            num_candidates=num_candidates,
-            contextual_feature_to_max_length=contextual_feature_to_max_length,
-            contextual_feature_to_min_uih_length=(
-                contextual_feature_to_min_uih_length
-            ),
-        )
-
-    @staticmethod
-    def attach_schema_fingerprint(
-        *,
-        uih_keys: list[str],
-        cand_keys: list[str],
-        ctx_keys: list[str],
-    ) -> tuple[list[str], list[str], list[str], str]:
-        """Attach a stable request-schema fingerprint for logging/debugging."""
-        return _attach_schema_fingerprint(
-            uih_keys=uih_keys,
-            cand_keys=cand_keys,
-            ctx_keys=ctx_keys,
-        )
-
-    @staticmethod
-    def validate_feature_group(
-        group_name: str,
-        keys: list[str],
-        values_per_key: list[list[int]],
-        lengths_per_key: list[int],
-    ) -> None:
-        """Ensure a serialized feature group is internally consistent."""
-        _validate_feature_group(
-            group_name=group_name,
-            keys=keys,
-            values_per_key=values_per_key,
-            lengths_per_key=lengths_per_key,
-        )
-
-    @staticmethod
-    def validate_context_group(
-        ctx_keys: list[str],
-        ctx_values_per_key: list[list[int]],
-    ) -> None:
-        """Context features are per-request scalars and must stay 1:1."""
-        _validate_context_group(
-            ctx_keys=ctx_keys,
-            ctx_values_per_key=ctx_values_per_key,
-        )
-
-    @staticmethod
-    def _extract_context_features(
-        context: Mapping[str, Any],
-        feature_names: list[str] | None = None,
-    ) -> tuple[list[str], list[list[int]]]:
-        return _extract_context_features_helper(
-            context,
-            feature_names=feature_names,
-        )
-
-    @staticmethod
-    def _extract_features(
-        records: list[dict[str, Any]],
-        feature_names: list[str],
-        group_name: str = "features",
-    ) -> tuple[list[str], list[list[int]], list[int]]:
-        return _extract_features_helper(
-            records=records,
-            feature_names=feature_names,
-            group_name=group_name,
-        )
