@@ -18,7 +18,8 @@ class TestGRModelAdapterInterface(unittest.TestCase):
             payload_type = dict
 
             def parse_prompt(self, prompt):
-                return {}
+                from vllm_gr.inputs.base import GRParsedInput
+                return GRParsedInput()
 
             def build_payload(self, parsed):
                 return {}
@@ -63,11 +64,15 @@ class TestGRModelAdapterInterface(unittest.TestCase):
 
     def test_build_prompt_token_ids_default_returns_none(self):
         adapter = self._make_adapter()
-        self.assertIsNone(adapter.build_prompt_token_ids({}))
+        from vllm_gr.inputs.base import GRParsedInput
+        parsed = GRParsedInput()
+        self.assertIsNone(adapter.build_prompt_token_ids(parsed))
 
     def test_build_cache_salt_default_returns_none(self):
         adapter = self._make_adapter()
-        self.assertIsNone(adapter.build_cache_salt({}))
+        from vllm_gr.inputs.base import GRParsedInput
+        parsed = GRParsedInput()
+        self.assertIsNone(adapter.build_cache_salt(parsed))
 
     def test_extract_request_meta_default_returns_empty_dict(self):
         adapter = self._make_adapter()

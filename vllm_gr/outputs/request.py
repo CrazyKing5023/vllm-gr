@@ -2,7 +2,7 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-Output data types for generative recommendation.
+Request-level output types for generative recommendation.
 
 - RecommendedItem: a single candidate with score metadata
 - GRRequestOutput: full recommendation response, extends PoolingRequestOutput

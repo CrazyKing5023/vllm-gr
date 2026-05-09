@@ -4,7 +4,8 @@
 """
 Engine-level data structures for generative recommendation.
 
-Defines GRFeaturesPayload and GREngineCoreRequest for transporting
+Defines GRFeaturePayload, HSTUFeaturesPayload (aliased as
+GRFeaturesPayload), and GREngineCoreRequest for transporting
 recommendation features through vLLM's EngineCore pipeline.
 
 Serialization note:
@@ -27,11 +28,25 @@ from vllm.v1.engine import EngineCoreRequest
 logger = logging.getLogger("vllm_gr.engine")
 
 
-class GRFeaturesPayload(msgspec.Struct):
-    """Msgspec-serializable payload carrying all features for the HSTU model.
+class GRFeaturePayload(msgspec.Struct):
+    """Variable-length feature group — keys/values/lengths triple.
 
-    Contains user interaction history (UIH) features and candidate features,
-    each represented as parallel lists of keys, values, and lengths.
+    A reusable structural unit for representing a single feature group
+    (e.g. UIH, candidates, context).  Higher-level payload types compose
+    one or more GRFeaturePayload triples.
+    """
+
+    keys: list[str]
+    values_per_key: list[list[int]]
+    lengths_per_key: list[int]
+
+
+class HSTUFeaturesPayload(msgspec.Struct):
+    """HSTU model payload — UIH + candidates + context feature groups.
+
+    Uses GRFeaturePayload internally for feature group encapsulation.
+    Field order and types are identical to the former GRFeaturesPayload
+    for msgspec serialization compatibility.
     """
 
     uih_keys: list[str]
@@ -50,6 +65,10 @@ class GRFeaturesPayload(msgspec.Struct):
     original_candidates: list[dict[str, Any]] = []
 
 
+# Backward-compatible alias — all existing code uses GRFeaturesPayload.
+GRFeaturesPayload = HSTUFeaturesPayload
+
+
 class GREngineCoreRequest(EngineCoreRequest):
     """EngineCoreRequest extended with a GRFeaturesPayload field.
 
@@ -62,6 +81,8 @@ class GREngineCoreRequest(EngineCoreRequest):
 
 
 __all__ = [
+    "GRFeaturePayload",
+    "HSTUFeaturesPayload",
     "GRFeaturesPayload",
     "GREngineCoreRequest",
 ]

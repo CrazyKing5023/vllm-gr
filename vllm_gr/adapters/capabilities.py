@@ -19,7 +19,10 @@ dispatch.
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TYPE_CHECKING, runtime_checkable
+
+if TYPE_CHECKING:
+    from vllm_gr.inputs.base import GRParsedInput
 
 
 @runtime_checkable
@@ -33,9 +36,9 @@ class GRPoolingModel(Protocol):
 class GRPrefixCacheSupport(Protocol):
     """Marker protocol: adapter supports prefix-cache salting."""
 
-    def build_prompt_token_ids(self, parsed: dict) -> list[int] | None: ...
+    def build_prompt_token_ids(self, parsed: "GRParsedInput") -> list[int] | None: ...
 
-    def build_cache_salt(self, parsed: dict) -> str | None: ...
+    def build_cache_salt(self, parsed: "GRParsedInput") -> str | None: ...
 
 
 @runtime_checkable
@@ -50,7 +53,7 @@ class GRScoringModel(Protocol):
 
     is_scoring_model: bool
 
-    def build_model_kwargs(self, batch_features: list[dict[str, Any]], device: Any) -> dict[str, Any]: ...
+    def build_model_kwargs(self, batch_features: list[tuple[str, dict[str, Any]]], device: Any) -> dict[str, Any]: ...
 
 
 @runtime_checkable
@@ -65,4 +68,4 @@ class GREmbeddingModel(Protocol):
 
     is_embedding_model: bool
 
-    def build_model_kwargs(self, batch_features: list[dict[str, Any]], device: Any) -> dict[str, Any]: ...
+    def build_model_kwargs(self, batch_features: list[tuple[str, dict[str, Any]]], device: Any) -> dict[str, Any]: ...

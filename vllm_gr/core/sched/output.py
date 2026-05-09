@@ -20,6 +20,11 @@ class GRNewRequestData(NewRequestData):
 
     gr_features: GRFeaturesPayload | None = None
 
+    @property
+    def gr_payload(self):
+        """Alias for gr_features — adapter-level generic name."""
+        return self.gr_features
+
     @classmethod
     def from_request(
         cls,

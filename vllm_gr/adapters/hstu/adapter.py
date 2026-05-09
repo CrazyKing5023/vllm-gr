@@ -130,8 +130,14 @@ class HSTUModelAdapter(GRModelAdapter, GRPoolingModel, GRScoringModel, GRPrefixC
     # Core methods
     # ------------------------------------------------------------------
 
-    def parse_prompt(self, prompt: dict) -> dict:
-        """Extract and validate UIH / candidate / context features."""
+    def parse_prompt(self, prompt: dict) -> "GRParsedInput":
+        """Extract and validate UIH / candidate / context features.
+
+        Returns a GRParsedInput instance with feature data in
+        ``raw_features`` and metadata in ``metadata``.
+        """
+        from vllm_gr.inputs.base import GRParsedInput
+
         user_id = str(prompt.get("user_id", ""))
         user_history = prompt.get("user_history", [])
         candidates = prompt.get("candidates", [])
@@ -163,39 +169,48 @@ class HSTUModelAdapter(GRModelAdapter, GRPoolingModel, GRScoringModel, GRPrefixC
             ctx_values_per_key=ctx_values_per_key,
         )
 
-        return {
-            "user_id": user_id,
-            "uih_keys": uih_keys,
-            "uih_values_per_key": uih_values_per_key,
-            "uih_lengths_per_key": uih_lengths_per_key,
-            "cand_keys": cand_keys,
-            "cand_values_per_key": cand_values_per_key,
-            "cand_lengths_per_key": cand_lengths_per_key,
-            "ctx_keys": ctx_keys,
-            "ctx_values_per_key": ctx_values_per_key,
-            "full_uih_keys": list(self.full_uih_feature_names),
-            "schema_fingerprint": schema_fingerprint,
-            "history_len": len(recent_history),
-            "num_candidates": len(candidates),
-            "original_candidates": [dict(c) for c in candidates],
-        }
+        return GRParsedInput(
+            user_id=user_id,
+            schema_fingerprint=schema_fingerprint,
+            raw_features={
+                "uih_keys": uih_keys,
+                "uih_values_per_key": uih_values_per_key,
+                "uih_lengths_per_key": uih_lengths_per_key,
+                "cand_keys": cand_keys,
+                "cand_values_per_key": cand_values_per_key,
+                "cand_lengths_per_key": cand_lengths_per_key,
+                "ctx_keys": ctx_keys,
+                "ctx_values_per_key": ctx_values_per_key,
+                "full_uih_keys": list(self.full_uih_feature_names),
+            },
+            metadata={
+                "history_len": len(recent_history),
+                "num_candidates": len(candidates),
+            },
+            original_prompt=prompt,
+        )
 
-    def build_payload(self, parsed: dict) -> Any:
+    def build_payload(self, parsed: "GRParsedInput") -> Any:
         """Build ``GRFeaturesPayload`` from parsed features."""
         from vllm_gr.engine import GRFeaturesPayload
 
+        rf = parsed.raw_features
+        original_candidates = [
+            dict(c) for c in parsed.original_prompt.get("candidates", [])
+        ]
+
         return GRFeaturesPayload(
-            uih_keys=parsed["uih_keys"],
-            uih_values_per_key=parsed["uih_values_per_key"],
-            uih_lengths_per_key=parsed["uih_lengths_per_key"],
-            cand_keys=parsed["cand_keys"],
-            cand_values_per_key=parsed["cand_values_per_key"],
-            cand_lengths_per_key=parsed["cand_lengths_per_key"],
-            ctx_keys=parsed["ctx_keys"],
-            ctx_values_per_key=parsed["ctx_values_per_key"],
-            full_uih_keys=parsed["full_uih_keys"],
-            user_id=parsed["user_id"],
-            original_candidates=parsed["original_candidates"],
+            uih_keys=rf["uih_keys"],
+            uih_values_per_key=rf["uih_values_per_key"],
+            uih_lengths_per_key=rf["uih_lengths_per_key"],
+            cand_keys=rf["cand_keys"],
+            cand_values_per_key=rf["cand_values_per_key"],
+            cand_lengths_per_key=rf["cand_lengths_per_key"],
+            ctx_keys=rf["ctx_keys"],
+            ctx_values_per_key=rf["ctx_values_per_key"],
+            full_uih_keys=rf["full_uih_keys"],
+            user_id=parsed.user_id,
+            original_candidates=original_candidates,
         )
 
     def decode_payload(self, payload: Any) -> dict[str, Any]:
@@ -258,7 +273,11 @@ class HSTUModelAdapter(GRModelAdapter, GRPoolingModel, GRScoringModel, GRPrefixC
             "schema_fingerprint": schema_fingerprint,
         }
 
-    def build_model_kwargs(self, batch_features: list[dict[str, Any]], device) -> dict[str, Any]:
+    def build_model_kwargs(
+        self,
+        batch_features: list[tuple[str, dict[str, Any]]],
+        device,
+    ) -> dict[str, Any]:
         """Build KJT model kwargs for HSTU forward pass."""
         from vllm_gr.adapters.hstu.kjt_builder import build_hstu_model_kwargs
 
@@ -375,7 +394,7 @@ class HSTUModelAdapter(GRModelAdapter, GRPoolingModel, GRScoringModel, GRPrefixC
             contextual_seq_len,
         )
 
-    def build_prompt_token_ids(self, parsed: dict) -> list[int] | None:
+    def build_prompt_token_ids(self, parsed: "GRParsedInput") -> list[int] | None:
         """Build stable synthetic token IDs for HSTU prefix-cache hashing."""
         hf = self._hf_config
         contextual_feature_to_max_length = {
@@ -386,20 +405,21 @@ class HSTUModelAdapter(GRModelAdapter, GRPoolingModel, GRScoringModel, GRPrefixC
             str(k): int(v)
             for k, v in (getattr(hf, "contextual_feature_to_min_uih_length", {}) or {}).items()
         }
+        rf = parsed.raw_features
         return build_hstu_prompt_token_ids(
-            uih_keys=parsed["uih_keys"],
-            uih_values_per_key=parsed["uih_values_per_key"],
-            cand_keys=parsed["cand_keys"],
-            cand_values_per_key=parsed["cand_values_per_key"],
-            ctx_keys=parsed["ctx_keys"],
-            ctx_values_per_key=parsed["ctx_values_per_key"],
-            history_len=parsed["history_len"],
-            num_candidates=parsed["num_candidates"],
+            uih_keys=rf["uih_keys"],
+            uih_values_per_key=rf["uih_values_per_key"],
+            cand_keys=rf["cand_keys"],
+            cand_values_per_key=rf["cand_values_per_key"],
+            ctx_keys=rf["ctx_keys"],
+            ctx_values_per_key=rf["ctx_values_per_key"],
+            history_len=parsed.metadata["history_len"],
+            num_candidates=parsed.metadata["num_candidates"],
             contextual_feature_to_max_length=contextual_feature_to_max_length,
             contextual_feature_to_min_uih_length=contextual_feature_to_min_uih_length,
         )
 
-    def build_cache_salt(self, parsed: dict) -> str | None:
+    def build_cache_salt(self, parsed: "GRParsedInput") -> str | None:
         """Build cache-salt string for HSTU prefix-cache identity."""
         hf = self._hf_config
         contextual_feature_to_max_length = {
@@ -412,7 +432,7 @@ class HSTUModelAdapter(GRModelAdapter, GRPoolingModel, GRScoringModel, GRPrefixC
         }
         model_type = getattr(hf, "model_type", None) or "hstu"
         return build_hstu_cache_salt(
-            schema_fingerprint=parsed["schema_fingerprint"],
+            schema_fingerprint=parsed.schema_fingerprint,
             contextual_feature_to_max_length=contextual_feature_to_max_length,
             contextual_feature_to_min_uih_length=contextual_feature_to_min_uih_length,
             primary_id_feature_name=self.primary_id_feature_name,

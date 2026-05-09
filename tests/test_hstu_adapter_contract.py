@@ -58,13 +58,16 @@ class TestHSTUAdapterContract(unittest.TestCase):
             "candidates": [{"item_candidate_id": 10}, {"item_candidate_id": 20}],
         }
         parsed = self.adapter.parse_prompt(prompt)
-        self.assertEqual(parsed["user_id"], "u1")
-        self.assertEqual(parsed["uih_keys"], ["item_id"])
-        self.assertEqual(parsed["cand_keys"], ["item_candidate_id"])
-        self.assertEqual(parsed["history_len"], 2)
-        self.assertEqual(parsed["num_candidates"], 2)
-        self.assertIn("schema_fingerprint", parsed)
-        self.assertIn("original_candidates", parsed)
+        # parse_prompt now returns GRParsedInput
+        from vllm_gr.inputs.base import GRParsedInput
+        self.assertIsInstance(parsed, GRParsedInput)
+        self.assertEqual(parsed.user_id, "u1")
+        self.assertEqual(parsed.raw_features["uih_keys"], ["item_id"])
+        self.assertEqual(parsed.raw_features["cand_keys"], ["item_candidate_id"])
+        self.assertEqual(parsed.metadata["history_len"], 2)
+        self.assertEqual(parsed.metadata["num_candidates"], 2)
+        self.assertTrue(len(parsed.schema_fingerprint) > 0, "schema_fingerprint must be non-empty")
+        self.assertIn("candidates", parsed.original_prompt)
 
     def test_parse_prompt_treats_context_features_as_separate_from_history(self):
         """Configured context keys should not be required inside each history row."""
@@ -112,10 +115,10 @@ class TestHSTUAdapterContract(unittest.TestCase):
         }
         parsed = adapter.parse_prompt(prompt)
 
-        self.assertEqual(parsed["uih_keys"], ["item_id", "action_timestamp"])
-        self.assertEqual(parsed["ctx_keys"], ["user_id", "sex", "age_group"])
+        self.assertEqual(parsed.raw_features["uih_keys"], ["item_id", "action_timestamp"])
+        self.assertEqual(parsed.raw_features["ctx_keys"], ["user_id", "sex", "age_group"])
         self.assertEqual(
-            parsed["full_uih_keys"],
+            parsed.raw_features["full_uih_keys"],
             ["user_id", "sex", "age_group", "item_id", "action_timestamp"],
         )
 
