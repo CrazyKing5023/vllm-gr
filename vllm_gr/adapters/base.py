@@ -11,7 +11,7 @@ provide:
 - ``build_payload``     — serialize features into a msgspec-safe payload
 - ``decode_payload``    — deserialize payload back into feature tensors
 - ``build_model_kwargs``— build model-specific kwargs (e.g. KJT for HSTU)
-- ``process_output``    — convert raw pooling output into GRRequestOutput
+- ``process_output``    — convert raw pooling output into GRRequestOutput (directly, not via GRModelOutput)
 
 Optional methods provide prefix-cache support, validation, and metadata
 extraction.  The default implementations are no-ops so adapters only
@@ -25,6 +25,7 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
     from vllm_gr.config.gr_config import GRConfig
+    from vllm_gr.inputs.base import GRParsedInput
 
 
 class GRModelAdapter:
@@ -49,15 +50,15 @@ class GRModelAdapter:
     # Core methods (subclasses must implement)
     # ------------------------------------------------------------------
 
-    def parse_prompt(self, prompt: dict) -> dict:
+    def parse_prompt(self, prompt: dict) -> "GRParsedInput":
         """Extract feature data from a GRPrompt dict.
 
-        Returns an intermediate ``parsed`` dict consumed by
-        ``build_payload`` and the optional helpers.
+        Returns a GRParsedInput instance whose ``raw_features`` dict
+        is consumed by ``build_payload`` and the optional helpers.
         """
         raise NotImplementedError
 
-    def build_payload(self, parsed: dict) -> Any:
+    def build_payload(self, parsed: "GRParsedInput") -> Any:
         """Build a msgspec-serializable payload from parsed features."""
         raise NotImplementedError
 
@@ -74,7 +75,12 @@ class GRModelAdapter:
         raise NotImplementedError
 
     def process_output(self, raw_output: Any, request_meta: dict) -> Any:
-        """Convert raw pooling output into a GRRequestOutput."""
+        """Convert raw pooling output into a GRRequestOutput.
+
+        Currently returns GRRequestOutput directly.  In a future
+        "output contract unification" stage, adapters will return
+        GRModelOutput subclasses and the engine will wrap them.
+        """
         raise NotImplementedError
 
     # ------------------------------------------------------------------
@@ -90,14 +96,14 @@ class GRModelAdapter:
         ``None`` if the model does not use request-length metadata."""
         return None
 
-    def build_prompt_token_ids(self, parsed: dict) -> list[int] | None:
+    def build_prompt_token_ids(self, parsed: "GRParsedInput") -> list[int] | None:
         """Build synthetic prompt token IDs for prefix-cache hashing.
 
         Return ``None`` to use a default single-token placeholder.
         """
         return None
 
-    def build_cache_salt(self, parsed: dict) -> str | None:
+    def build_cache_salt(self, parsed: "GRParsedInput") -> str | None:
         """Build a cache-salt string for prefix-cache identity.
 
         Return ``None`` to skip prefix-cache salting.

@@ -138,9 +138,12 @@ class GRInputProcessor(InputProcessor):
         logger.debug(
             "Processed GR request %s: uih_keys=%s, history_len=%d, "
             "cand_keys=%s, num_candidates=%d, schema=%s",
-            request_id, parsed.get("uih_keys"), parsed.get("history_len"),
-            parsed.get("cand_keys"), parsed.get("num_candidates"),
-            parsed.get("schema_fingerprint"),
+            request_id,
+            parsed.raw_features.get("uih_keys"),
+            parsed.metadata.get("history_len"),
+            parsed.raw_features.get("cand_keys"),
+            parsed.metadata.get("num_candidates"),
+            parsed.schema_fingerprint,
         )
 
         return request

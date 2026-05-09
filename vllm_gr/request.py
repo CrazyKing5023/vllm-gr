@@ -31,6 +31,11 @@ class GRRequest(Request):
         super().__init__(*args, **kwargs)
         self.gr_features: Optional[GRFeaturesPayload] = gr_features
 
+    @property
+    def gr_payload(self):
+        """Alias for gr_features — adapter-level generic name."""
+        return self.gr_features
+
     @classmethod
     def from_engine_core_request(
         cls,
