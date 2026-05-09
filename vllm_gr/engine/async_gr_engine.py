@@ -27,9 +27,10 @@ class GRAsyncLLM(AsyncLLM):
     gr_config: GRConfig
 
     def _replace_processors(self) -> None:
-        from vllm_gr.adapters.hstu.adapter import HSTUModelAdapter
+        from vllm_gr.adapters.registry import create_adapter, resolve_model_type
 
-        adapter = HSTUModelAdapter(self.vllm_config, self.gr_config)
+        model_type = resolve_model_type(self.vllm_config)
+        adapter = create_adapter(model_type, self.vllm_config, self.gr_config)
 
         self.input_processor = GRInputProcessor(
             vllm_config=self.vllm_config,

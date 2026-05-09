@@ -133,12 +133,16 @@ class GRLLMEngine(LLMEngine):
     def _replace_processors(self) -> None:
         """Replace default processors with GR-specific versions.
 
-        Creates the HSTU model adapter and injects it into both input and
-        output processors so they delegate model-specific logic correctly.
+        Looks up the adapter class from the registry and injects it into both
+        input and output processors so they delegate model-specific logic
+        correctly.
         """
-        from vllm_gr.adapters.hstu.adapter import HSTUModelAdapter
+        from vllm_gr.adapters.registry import create_adapter, resolve_model_type
 
-        adapter = HSTUModelAdapter(self.vllm_config, self.gr_config)
+        model_type = resolve_model_type(self.vllm_config)
+        adapter = create_adapter(model_type, self.vllm_config, self.gr_config)
+
+        logger.info("Created adapter for model_type=%s: %s", model_type, type(adapter).__name__)
 
         self.input_processor = GRInputProcessor(
             vllm_config=self.vllm_config,

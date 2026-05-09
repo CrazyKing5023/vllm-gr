@@ -44,6 +44,54 @@ def register_gr_model_architectures() -> bool:
     return register_fn()
 
 
+def _register_adapter_families() -> None:
+    """Discover and register all adapter families.
+
+    Scans ``vllm_gr.adapters`` for sub-packages.  Each sub-package
+    (e.g. ``hstu/``) should have:
+
+    - ``__init__.py`` calling ``register_family()`` (Layer 1, pure Python)
+    - ``adapter.py`` calling ``register_adapter_class()`` (Layer 2, heavy)
+
+    Adding a new model family requires only creating the adapter package
+    directory under ``vllm_gr/adapters/`` — no changes to this function.
+    """
+    from pathlib import Path
+
+    from vllm_gr.adapters.registry import get_registered_families
+
+    adapters_dir = Path(__file__).resolve().parent / "adapters"
+    registered = get_registered_families()
+
+    for entry in sorted(adapters_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+        if entry.name.startswith("_") or entry.name == "__pycache__":
+            continue
+        if not (entry / "__init__.py").exists():
+            continue
+        family = entry.name
+        if family in registered:
+            continue
+        try:
+            # Layer 1: register_family() in __init__.py (pure Python)
+            import_module(f"vllm_gr.adapters.{family}")
+            # Layer 2: register_adapter_class() in adapter.py (heavy)
+            import_module(f"vllm_gr.adapters.{family}.adapter")
+        except ModuleNotFoundError as exc:
+            # Only suppress if the adapter package itself is missing.
+            # If a transitive dependency is missing, exc.name will
+            # point to that dependency — let it propagate.
+            adapter_module = f"vllm_gr.adapters.{family}.adapter"
+            if exc.name in (f"vllm_gr.adapters.{family}", adapter_module):
+                logger.debug(
+                    "Adapter package vllm_gr.adapters.%s not found, skipping",
+                    family,
+                )
+            else:
+                raise
+
+
 def initialize_runtime() -> dict[str, int | bool]:
     """Initialize the current process for vllm-GR runtime usage.
 
@@ -56,6 +104,8 @@ def initialize_runtime() -> dict[str, int | bool]:
     patch_count = re_apply_patches()
     config_registered = register_gr_configs()
     models_registered = register_gr_model_architectures()
+
+    _register_adapter_families()
 
     state = {
         "patch_count": patch_count,
