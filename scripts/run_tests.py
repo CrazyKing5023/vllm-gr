@@ -65,6 +65,8 @@ SUITE_DEFINITIONS: dict[str, dict[str, object]] = {
             "test_outputs_phase2.py",
             "test_outputs_hierarchy.py",
             "test_reexport.py",
+            # Phase 3 — adapter registry
+            "test_registry.py",
         ],
     },
     "gpu-smoke": {

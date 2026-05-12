@@ -239,14 +239,82 @@ class TestGRPrompt(unittest.TestCase):
         }
         self.assertTrue(is_gr_prompt(prompt))
 
+    def test_is_gr_prompt_accepts_registered_model_type_without_hstu_shape(self):
+        from vllm_gr.inputs.data import is_gr_prompt
+
+        prompt = {
+            "user_id": "user_abc",
+            "model_type": "hstu",
+        }
+        self.assertTrue(is_gr_prompt(prompt))
+
+    def test_is_gr_prompt_rejects_unknown_model_type_without_legacy_shape(self):
+        from vllm_gr.inputs.data import is_gr_prompt
+
+        prompt = {
+            "user_id": "user_abc",
+            "model_type": "nonexistent_family_xyz",
+        }
+        self.assertFalse(is_gr_prompt(prompt))
+
     def test_is_gr_prompt_false_cases(self):
         from vllm_gr.inputs.data import is_gr_prompt
 
         self.assertFalse(is_gr_prompt("not a dict"))
         self.assertFalse(is_gr_prompt(None))
-        self.assertFalse(is_gr_prompt({"user_id": 1}))
-        self.assertFalse(is_gr_prompt({"user_id": 1, "user_history": []}))
         self.assertFalse(is_gr_prompt({}))
+        self.assertFalse(is_gr_prompt({"user_history": []}))
+        self.assertFalse(is_gr_prompt({"candidates": []}))
+
+    def test_is_gr_prompt_user_id_only_accepted(self):
+        """Without model_type, user_id alone is sufficient.
+
+        Field validation (user_history, candidates, etc.) is deferred
+        to the adapter's validate_prompt(), keeping is_gr_prompt()
+        model-family-agnostic.
+        """
+        from vllm_gr.inputs.data import is_gr_prompt
+
+        self.assertTrue(is_gr_prompt({"user_id": 1}))
+        self.assertTrue(is_gr_prompt({"user_id": 1, "user_history": []}))
+
+    def test_is_gr_prompt_rejects_invalid_model_type(self):
+        """When model_type is present but invalid, reject outright.
+
+        An explicit model_type means the caller wants registry-based
+        matching.  A bad value (empty, whitespace, non-string) should
+        not silently fall through to the generic path.
+        """
+        from vllm_gr.inputs.data import is_gr_prompt
+
+        self.assertFalse(is_gr_prompt({"user_id": 1, "model_type": ""}))
+        self.assertFalse(is_gr_prompt({"user_id": 1, "model_type": "   "}))
+        self.assertFalse(is_gr_prompt({"user_id": 1, "model_type": 123}))
+
+    def test_ensure_registered_model_family_propagates_broken_import(self):
+        """A broken adapter dependency must propagate, not be silently
+        swallowed as 'unregistered family'."""
+        from vllm_gr.inputs.data import _ensure_registered_model_family
+        from unittest import mock
+
+        exc = ModuleNotFoundError("torchrec")
+        exc.name = "torchrec"
+        with mock.patch("importlib.import_module", side_effect=exc):
+            # torchrec is NOT the target module, so this should re-raise
+            with self.assertRaises(ModuleNotFoundError):
+                _ensure_registered_model_family("broken_dep_adapter")
+
+    def test_ensure_registered_model_family_silences_missing_adapter(self):
+        """When the adapter package itself is missing, no error is raised."""
+        from vllm_gr.inputs.data import _ensure_registered_model_family
+        from unittest import mock
+
+        target = "vllm_gr.adapters.nonexistent_pkg_xyz"
+        exc = ModuleNotFoundError(target)
+        exc.name = target
+        with mock.patch("importlib.import_module", side_effect=exc):
+            # Should NOT raise — the adapter package simply doesn't exist
+            _ensure_registered_model_family("nonexistent_pkg_xyz")
 
 
 @unittest.skipUnless(_HAS_VLLM_RUNTIME, _SKIP_REASON)

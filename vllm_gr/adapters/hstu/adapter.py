@@ -42,14 +42,14 @@ class HSTUModelAdapter(GRModelAdapter, GRPoolingModel, GRScoringModel, GRPrefixC
     """
 
     model_type: str = "hstu"
-    payload_type: type = None  # set in __init__ to avoid circular import
+    payload_type: type = None  # set in __init__ from registry
     is_scoring_model: bool = True
 
     def __init__(self, vllm_config, gr_config):
         super().__init__(vllm_config, gr_config)
-        # Import here to avoid circular import at class-definition time.
-        from vllm_gr.engine import GRFeaturesPayload
-        self.payload_type = GRFeaturesPayload
+        # Resolve payload type via registry (lazily imported, avoids circular import).
+        from vllm_gr.adapters.registry import get_payload_type
+        self.payload_type = get_payload_type("hstu")
 
         self._resolve_feature_config()
 
@@ -448,3 +448,9 @@ class HSTUModelAdapter(GRModelAdapter, GRPoolingModel, GRScoringModel, GRPrefixC
             "primary_task": self.primary_task,
             "primary_id_key": self.candidate_primary_id_key,
         }
+
+
+# ── Layer-2 registration (heavy: torch/torchrec now loaded) ──────
+from vllm_gr.adapters.registry import register_adapter_class
+
+register_adapter_class("hstu", HSTUModelAdapter)

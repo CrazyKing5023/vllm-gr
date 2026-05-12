@@ -21,11 +21,6 @@ import logging
 from vllm.engine.arg_utils import AsyncEngineArgs, EngineArgs
 from vllm.platforms import current_platform
 
-from vllm_gr.config.hstu_config import (
-    get_hstu_contextual_seq_len,
-    get_hstu_full_sequence_len,
-)
-
 logger = logging.getLogger(__name__)
 
 
@@ -88,20 +83,16 @@ class GRCommonEngineArgsMixin:
         """Return True when the active vLLM platform is Ascend/NPU."""
         return current_platform.device_type == "npu"
 
-    def _select_hstu_worker_cls(self) -> str:
-        """Choose the HSTU GR worker implementation for the active platform."""
-        if self._is_ascend_platform():
-            return "vllm_gr.worker.gr_npu_worker.GRNPUWorker"
-        return "vllm_gr.worker.gr_worker.GRWorker"
-
     def _select_worker_cls_for_model_family(
         self,
         model_family: Optional[str],
     ) -> Optional[str]:
         """Choose a worker only when the model family defines one."""
-        if model_family == "hstu":
-            return self._select_hstu_worker_cls()
-        return None
+        from vllm_gr.adapters.registry import get_worker_cls_path
+
+        if model_family is None:
+            return None
+        return get_worker_cls_path(model_family, is_npu=self._is_ascend_platform())
 
     def _has_model_weights(self) -> bool:
         """Check if the model path contains HuggingFace-style weight files."""
@@ -180,107 +171,39 @@ class GRCommonEngineArgsMixin:
         return None
 
     def _apply_model_family_defaults(self) -> None:
-        """Apply runtime defaults only for known GR model families."""
-        if self.model_family != "hstu":
+        """Apply runtime defaults for known GR model families via registry."""
+        from vllm_gr.adapters.registry import apply_family_defaults
+
+        if self.model_family is not None:
+            # Ensure the family is registered (Layer 1, pure Python).
+            # The adapter packages register themselves on import.
+            self._ensure_family_registered(self.model_family)
+
+        apply_family_defaults(self.model_family, self)
+
+    @staticmethod
+    def _ensure_family_registered(model_family: str) -> None:
+        """Trigger Layer 1 registration for the given family if not already done.
+
+        Uses dynamic discovery: imports ``vllm_gr.adapters.<model_family>``
+        which triggers ``register_family()`` in that package's ``__init__.py``.
+        No hardcoded family list — new models only need to create the adapter
+        package directory with a ``register_family()`` call.
+        """
+        from vllm_gr.adapters.registry import get_registered_families
+
+        if model_family in get_registered_families():
             return
 
-        self.trust_remote_code = True
-        required_max_model_len = self._get_hstu_runtime_max_model_len()
-        if self.max_model_len is None:
-            self.max_model_len = required_max_model_len
-        elif self.max_model_len < required_max_model_len:
-            raise ValueError(
-                "For HSTU, max_model_len must cover the scheduler-visible full "
-                "sequence: contextual prefix + UIH/history + candidates. "
-                f"Got max_model_len={self.max_model_len}, but the current "
-                f"runtime settings require at least {required_max_model_len} "
-                f"(max_seq_len={self.max_seq_len}, "
-                f"max_candidates={self.max_candidates})."
-            )
-        self.skip_tokenizer_init = True
-        self.runner = "pooling"
-        self.enforce_eager = True
-        # HSTU currently exposes a single full-attention KV cache spec.
-        # Hybrid KV cache coordination is for mixed attention-group models and
-        # provides no benefit here; forcing it off also avoids NPU runtimes
-        # incorrectly routing single-group HSTU models through the hybrid path.
-        self.disable_hybrid_kv_cache_manager = True
-        self._ensure_hstu_model_max_length_override(required_max_model_len)
-
-        worker_cls = self._select_worker_cls_for_model_family(self.model_family)
-        if worker_cls is not None:
-            self.worker_cls = worker_cls
-
-        if self.dtype == "auto":
-            self.dtype = "bfloat16"
-
-        if self.tensor_parallel_size > 1:
-            logger.warning(
-                "HSTU models use full model replication (data parallel), "
-                "not tensor sharding. Each worker loads the full model. "
-                "tensor_parallel_size=%d creates %d full replicas.",
-                self.tensor_parallel_size,
-                self.tensor_parallel_size,
-            )
-
-        if self.model and os.path.isdir(self.model) and not self._has_model_weights():
-            if self.allow_missing_weights or self.load_format == "dummy":
-                self.load_format = "dummy"
-                logger.info(
-                    "No model weights found in local model directory %r; "
-                    "using dummy loader because allow_missing_weights=True",
-                    self.model,
-                )
-                return
-
-            raise FileNotFoundError(
-                "No model weight files found in local model directory "
-                f"{self.model!r}. Expected one of *.safetensors, *.bin, *.pt, *.pth. "
-                "If this is an intentional demo/random-init run, pass "
-                "allow_missing_weights=True explicitly."
-            )
-
-    def _resolve_hstu_contextual_seq_len(self) -> int:
-        if isinstance(self.hf_overrides, dict):
-            contextual_seq_len = get_hstu_contextual_seq_len(self.hf_overrides)
-            if contextual_seq_len > 0:
-                return contextual_seq_len
-
-        local_config = self._read_local_config_dict()
-        if local_config is not None:
-            return get_hstu_contextual_seq_len(local_config)
-        return 0
-
-    def _get_hstu_runtime_max_model_len(self) -> int:
-        return get_hstu_full_sequence_len(
-            max_seq_len=self.max_seq_len,
-            max_candidates=self.max_candidates,
-            contextual_seq_len=self._resolve_hstu_contextual_seq_len(),
-        )
-
-    def _ensure_hstu_model_max_length_override(self, max_model_len: int) -> None:
-        if isinstance(self.hf_overrides, dict):
-            current_value = self.hf_overrides.get("model_max_length")
-            if current_value is None or int(current_value) < max_model_len:
-                self.hf_overrides["model_max_length"] = max_model_len
-            return
-
-        if self.hf_overrides is None:
-            self.hf_overrides = {"model_max_length": max_model_len}
-            return
-
-        if callable(self.hf_overrides):
-            original_overrides = self.hf_overrides
-
-            def _wrapped_hf_overrides(config):
-                updated = original_overrides(config)
-                target = updated if updated is not None else config
-                current_value = getattr(target, "model_max_length", None)
-                if current_value is None or int(current_value) < max_model_len:
-                    setattr(target, "model_max_length", max_model_len)
-                return updated
-
-            self.hf_overrides = _wrapped_hf_overrides
+        import importlib
+        target = f"vllm_gr.adapters.{model_family}"
+        try:
+            importlib.import_module(target)
+        except ModuleNotFoundError as exc:
+            if exc.name == target:
+                pass  # adapter package not installed — family stays unregistered
+            else:
+                raise
 
     def _apply_dataset_overrides(self) -> None:
         """Merge dataset-specific overrides into ``hf_overrides`` (in-memory).
