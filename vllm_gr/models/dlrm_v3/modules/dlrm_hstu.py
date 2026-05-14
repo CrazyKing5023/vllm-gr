@@ -343,7 +343,10 @@ class DlrmHSTU(HammerModule):
         seq_embeddings = {
             k: SequenceEmbedding(
                 lengths=seq_embeddings_dict[k].lengths(),
-                embedding=seq_embeddings_dict[k].values(),
+                embedding=self._pad_embedding_to_runtime_dim(
+                    feature_name=k,
+                    embedding=seq_embeddings_dict[k].values(),
+                ),
             )
             for k in self._hstu_configs.user_embedding_feature_names
             + self._hstu_configs.item_embedding_feature_names
@@ -357,6 +360,36 @@ class DlrmHSTU(HammerModule):
             max_num_candidates,
             num_candidates,
         )
+
+    def _pad_embedding_to_runtime_dim(
+        self,
+        *,
+        feature_name: str,
+        embedding: torch.Tensor,
+    ) -> torch.Tensor:
+        target_dim = int(self._hstu_configs.hstu_embedding_table_dim)
+        if embedding.ndim == 0:
+            raise ValueError(
+                f"Embedding tensor for feature={feature_name!r} must have rank >= 1"
+            )
+
+        current_dim = int(embedding.shape[-1])
+        if current_dim == target_dim:
+            return embedding
+        if current_dim > target_dim:
+            raise ValueError(
+                "Embedding tensor dimension exceeds runtime expectation: "
+                f"feature={feature_name!r}, current_dim={current_dim}, "
+                f"target_dim={target_dim}"
+            )
+
+        pad_width = target_dim - current_dim
+        padding = torch.zeros(
+            (*embedding.shape[:-1], pad_width),
+            dtype=embedding.dtype,
+            device=embedding.device,
+        )
+        return torch.cat((embedding, padding), dim=-1)
 
     # =========================================================================
     # _construct_payload: add contextual + additional embeddings to payload

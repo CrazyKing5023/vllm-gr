@@ -25,6 +25,7 @@ For a lightweight demo without real weights, use simple_inference.py instead.
 """
 
 import argparse
+import glob
 import os
 import sys
 import logging
@@ -46,7 +47,7 @@ def check_model_dir(model_path: str) -> dict:
         "path": model_path,
         "has_config": False,
         "has_weights": False,
-        "weight_file": None,
+        "weight_files": [],
     }
 
     if not os.path.isdir(model_path):
@@ -56,13 +57,18 @@ def check_model_dir(model_path: str) -> dict:
         os.path.join(model_path, "config.json")
     )
 
-    for pattern in ["model.safetensors", "pytorch_model.bin", "model.pt"]:
-        weight_path = os.path.join(model_path, pattern)
-        if os.path.exists(weight_path):
-            info["has_weights"] = True
-            info["weight_file"] = pattern
-            info["weight_size_mb"] = os.path.getsize(weight_path) / (1024 * 1024)
-            break
+    weight_files = []
+    for pattern in ["*.safetensors", "*.bin", "*.pt", "*.pth"]:
+        weight_files.extend(glob.glob(os.path.join(model_path, pattern)))
+
+    if weight_files:
+        weight_files = sorted(os.path.basename(path) for path in weight_files)
+        info["has_weights"] = True
+        info["weight_files"] = weight_files
+        info["weight_size_mb"] = sum(
+            os.path.getsize(os.path.join(model_path, filename))
+            for filename in weight_files
+        ) / (1024 * 1024)
 
     return info
 
@@ -79,7 +85,7 @@ def run_inference(model_path: str, expected_device: str | None = None):
     print(f"\n  Model path:   {info['path']}")
     print(f"  config.json:  {'found' if info['has_config'] else 'MISSING'}")
     if info["has_weights"]:
-        print(f"  Weights:      {info['weight_file']} "
+        print(f"  Weights:      {', '.join(info['weight_files'])} "
               f"({info['weight_size_mb']:.1f} MB)")
     else:
         raise FileNotFoundError(
@@ -192,7 +198,7 @@ def main():
     parser.add_argument(
         "--model", type=str, required=True,
         help="Path to converted model directory "
-             "(with config.json + model.safetensors)",
+             "(with config.json + converted weight files)",
     )
     add_runtime_args(parser, include_model=False)
     args = parser.parse_args()

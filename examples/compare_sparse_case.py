@@ -384,21 +384,48 @@ def _build_sparse_kjts(
 
 
 def _find_weight_file(model_dir: str) -> str:
-    for name in ("model.safetensors", "model.pt", "pytorch_model.bin"):
+    for name in (
+        "model.safetensors",
+        "dense.safetensors",
+        "model.pt",
+        "dense.pt",
+        "pytorch_model.bin",
+    ):
         path = os.path.join(model_dir, name)
         if os.path.isfile(path):
             return path
-    raise FileNotFoundError(f"No converted weight file found in: {model_dir}")
+    raise FileNotFoundError(f"No converted dense weight file found in: {model_dir}")
 
 
 def _load_converted_weight_dict(model_dir: str) -> dict[str, torch.Tensor]:
     weight_path = _find_weight_file(model_dir)
+    embedding_path = None
+    if weight_path.endswith("dense.safetensors"):
+        candidate_path = os.path.join(model_dir, "embedding.safetensors")
+        if os.path.isfile(candidate_path):
+            embedding_path = candidate_path
+    elif weight_path.endswith("dense.pt"):
+        candidate_path = os.path.join(model_dir, "embedding.pt")
+        if os.path.isfile(candidate_path):
+            embedding_path = candidate_path
+
     if weight_path.endswith(".safetensors"):
         from safetensors.torch import load_file
 
-        return load_file(weight_path)
+        state = load_file(weight_path)
+        if embedding_path is not None:
+            state.update(load_file(embedding_path))
+        return state
 
     state = torch.load(weight_path, map_location="cpu", weights_only=False)
+    if embedding_path is not None:
+        embedding_state = torch.load(
+            embedding_path,
+            map_location="cpu",
+            weights_only=False,
+        )
+        if isinstance(state, dict) and isinstance(embedding_state, dict):
+            state.update(embedding_state)
     if isinstance(state, dict):
         return state
     raise ValueError(f"Unsupported weight file payload: {weight_path}")
