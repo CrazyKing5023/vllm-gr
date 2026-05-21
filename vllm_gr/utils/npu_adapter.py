@@ -6,11 +6,16 @@
 from __future__ import annotations
 
 import logging
+import os
+import sysconfig
 from typing import Optional
 
 import torch
+from vllm_gr.logger import init_logger
 
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
+
+_MXREC_OPS_LOADED = False
 
 
 class DeviceType:
@@ -41,6 +46,53 @@ def is_npu_available() -> bool:
         return torch.npu.is_available()
     except (ImportError, AttributeError):
         return False
+
+
+def load_mxrec_ops() -> bool:
+    """Load RecSDK mxrec custom ops using the same total library as RecSDK tests."""
+    global _MXREC_OPS_LOADED
+    if _MXREC_OPS_LOADED:
+        return True
+    if not is_npu_available():
+        logger.warning("mxrec ops not loaded: NPU not available")
+        return False
+
+    try:
+        torch.npu.config.allow_internal_format = False
+    except AttributeError:
+        logger.warning("mxrec ops preload skipped: torch.npu.config.allow_internal_format unavailable")
+
+    candidate_paths = []
+    env_path = os.getenv("LIB_FBGEMM_NPU_API_SO_PATH")
+    if env_path:
+        candidate_paths.append(env_path)
+    purelib = sysconfig.get_path("purelib")
+    if purelib:
+        candidate_paths.append(os.path.join(purelib, "libfbgemm_npu_api.so"))
+
+    seen_paths: set[str] = set()
+    for lib_path in candidate_paths:
+        if not lib_path or lib_path in seen_paths:
+            continue
+        seen_paths.add(lib_path)
+        if not os.path.exists(lib_path):
+            continue
+        try:
+            torch.ops.load_library(lib_path)
+            torch.ops.mxrec.hstu_jagged
+            _MXREC_OPS_LOADED = True
+            logger.warning("mxrec ops loaded from %s", lib_path)
+            return True
+        except (RuntimeError, AttributeError, OSError) as e:
+            logger.warning("failed to load mxrec ops from %s: %s", lib_path, e)
+
+    logger.warning("mxrec ops not loaded: no usable libfbgemm_npu_api.so found")
+    return False
+
+
+def preload_mxrec_ops_for_hstu() -> bool:
+    """Explicit early preload hook for HSTU entrypoints."""
+    return load_mxrec_ops()
 
 
 def is_cuda_available() -> bool:

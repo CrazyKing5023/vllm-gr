@@ -9,7 +9,6 @@ Generative recommendation model based on HSTU (Hierarchical Sequential Transduce
 Supports multi-task prediction and user-item interaction modeling.
 """
 
-import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
@@ -19,6 +18,7 @@ from torchrec.modules.embedding_configs import EmbeddingConfig
 from torchrec.modules.embedding_modules import EmbeddingCollection
 from torchrec.sparse.jagged_tensor import KeyedJaggedTensor
 
+from vllm_gr.logger import init_logger
 from vllm_gr.models.dlrm_v3.common import (
     HammerModule,
     fx_infer_max_len,
@@ -43,7 +43,7 @@ from vllm_gr.ops.layer_norm import LayerNorm, SwishLayerNorm
 from vllm_gr.utils import ReliableOps
 
 
-logger: logging.Logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 
 
 def _cumsum(lengths: torch.Tensor) -> torch.Tensor:

@@ -12,22 +12,23 @@ processors) and drives the engine loop to collect GRRequestOutput results.
 from typing import Optional, Union, Sequence, List
 import gc
 import time
-import logging
 
 from tqdm.auto import tqdm
 
 from vllm.entrypoints.llm import LLM
+from vllm_gr.logger import init_logger
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils.counter import Counter
 from vllm.pooling_params import PoolingParams
 
 from vllm_gr.inputs.data import GRPrompt, is_gr_prompt
+from vllm_gr.config.gr_config import GRConfig
 from vllm_gr.outputs import GRRequestOutput
 from vllm_gr.engine.arg_utils import GREngineArgs
 from vllm_gr.engine.gr_engine import GRLLMEngine
 from vllm_gr.utils.npu_adapter import release_accelerator_memory
 
-logger = logging.getLogger("vllm_gr.entrypoints")
+logger = init_logger(__name__)
 
 
 class GRLLM(LLM):
@@ -45,13 +46,27 @@ class GRLLM(LLM):
         max_candidates: int = 1000,
         tensor_parallel_size: int = 1,
         gpu_memory_utilization: float = 0.9,
+        gr_config: Optional[GRConfig] = None,
         **kwargs,
     ):
+        hstu_runtime_policy = {
+            "enable_npu_fused_prefill": kwargs.pop("enable_npu_fused_prefill", None),
+            "force_hammer_npu": kwargs.pop("force_hammer_npu", None),
+        }
+        resolved_gr_config = gr_config or GRConfig(
+            max_seq_len=max_seq_len,
+            max_candidates=max_candidates,
+        )
+        for policy_name, policy_value in hstu_runtime_policy.items():
+            if policy_value is not None and hasattr(resolved_gr_config, policy_name):
+                setattr(resolved_gr_config, policy_name, policy_value)
         engine_args = GREngineArgs(
             model=model,
             model_family=model_family,
-            max_seq_len=max_seq_len,
-            max_candidates=max_candidates,
+            max_seq_len=resolved_gr_config.max_seq_len,
+            max_candidates=resolved_gr_config.max_candidates,
+            enable_npu_fused_prefill=getattr(resolved_gr_config, "enable_npu_fused_prefill", None),
+            force_hammer_npu=getattr(resolved_gr_config, "force_hammer_npu", None),
             tensor_parallel_size=tensor_parallel_size,
             gpu_memory_utilization=gpu_memory_utilization,
             **kwargs,
@@ -65,8 +80,9 @@ class GRLLM(LLM):
 
         self.model = model
         self.model_family = engine_args.model_family
-        self.max_seq_len = max_seq_len
-        self.max_candidates = max_candidates
+        self.max_seq_len = resolved_gr_config.max_seq_len
+        self.max_candidates = resolved_gr_config.max_candidates
+        self.gr_config = resolved_gr_config
         self.request_counter = Counter()
         self.default_sampling_params = None
         self.supported_tasks = ("recommendation",)
@@ -75,7 +91,7 @@ class GRLLM(LLM):
         logger.info(
             "GRLLM initialized: model=%s, model_family=%s, max_seq_len=%d, "
             "max_candidates=%d",
-            model, model_family, max_seq_len, max_candidates,
+            model, model_family, self.max_seq_len, self.max_candidates,
         )
 
     def recommend(

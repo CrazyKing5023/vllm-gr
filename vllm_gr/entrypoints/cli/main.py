@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import importlib.metadata
 
-from vllm.logger import init_logger
+from vllm_gr.logger import init_logger
 
 logger = init_logger(__name__)
 

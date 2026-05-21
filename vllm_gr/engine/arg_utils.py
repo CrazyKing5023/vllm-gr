@@ -54,6 +54,10 @@ class GRCommonEngineArgsMixin:
     # GR-specific: Sequence configuration
     max_seq_len: int = 512
     max_candidates: int = 1000
+
+    # GR-specific: HSTU NPU fused runtime policy
+    enable_npu_fused_prefill: Optional[bool] = None
+    force_hammer_npu: Optional[bool] = None
     
     # GR-specific: Dataset identifier (drives config overrides)
     dataset: Optional[str] = None
@@ -267,6 +271,8 @@ class GREngineArgs(GRCommonEngineArgsMixin, EngineArgs):
 
     max_seq_len: int = 512
     max_candidates: int = 1000
+    enable_npu_fused_prefill: Optional[bool] = None
+    force_hammer_npu: Optional[bool] = None
     dataset: Optional[str] = None
     model_family: Optional[str] = None
     allow_missing_weights: bool = False
@@ -292,6 +298,8 @@ class GRAsyncEngineArgs(GRCommonEngineArgsMixin, AsyncEngineArgs):
 
     max_seq_len: int = 512
     max_candidates: int = 1000
+    enable_npu_fused_prefill: Optional[bool] = None
+    force_hammer_npu: Optional[bool] = None
     dataset: Optional[str] = None
     model_family: Optional[str] = None
     allow_missing_weights: bool = False

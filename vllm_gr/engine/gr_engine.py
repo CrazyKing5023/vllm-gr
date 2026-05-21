@@ -175,6 +175,12 @@ class GRLLMEngine(LLMEngine):
             max_seq_len=engine_args.max_seq_len,
             max_candidates=engine_args.max_candidates,
         )
+        for policy_name in (
+            "enable_npu_fused_prefill",
+            "force_hammer_npu",
+        ):
+            if hasattr(gr_config, policy_name):
+                setattr(gr_config, policy_name, getattr(engine_args, policy_name))
 
         return cls(
             vllm_config=vllm_config,
