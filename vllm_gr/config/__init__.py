@@ -9,10 +9,12 @@ Provides:
 - GRConfig: Typed runtime / serving configuration dataclass
 """
 
+from vllm_gr.config.fuxi_config import FuXiConfig
 from vllm_gr.config.hstu_config import HSTUConfig
 from vllm_gr.config.gr_config import GRConfig
 
 __all__ = [
     "HSTUConfig",
+    "FuXiConfig",
     "GRConfig",
 ]

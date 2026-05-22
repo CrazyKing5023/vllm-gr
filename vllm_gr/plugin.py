@@ -23,11 +23,24 @@ logger = logging.getLogger("vllm_gr.plugin")
 
 def register_gr_configs() -> bool:
     """Register all GR config integrations with the active runtime."""
-    from vllm_gr.config.hstu_vllm_registration import (
-        ensure_hstu_config_registered,
-    )
+    hstu_ok = True
+    fuxi_ok = True
 
-    return ensure_hstu_config_registered()
+    try:
+        from vllm_gr.config.hstu_vllm_registration import ensure_hstu_config_registered
+
+        hstu_ok = ensure_hstu_config_registered()
+    except ModuleNotFoundError:
+        logger.debug("Skipping HSTU config registration in stubbed runtime")
+
+    try:
+        from vllm_gr.config.fuxi_vllm_registration import ensure_fuxi_config_registered
+
+        fuxi_ok = ensure_fuxi_config_registered()
+    except ModuleNotFoundError:
+        logger.debug("Skipping FuXi config registration in stubbed runtime")
+
+    return hstu_ok and fuxi_ok
 
 
 def register_gr_model_architectures() -> bool:

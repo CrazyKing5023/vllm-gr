@@ -49,6 +49,7 @@ except ImportError:
 # suffix follows the vLLM convention for pooling-runner models.
 _GR_MODEL_ARCHITECTURES: Dict[str, Tuple[str, str]] = {
     "HSTUEmbeddingModel": ("hstu_vllm", "HSTUForRecommendation"),
+    "FuXiEmbeddingModel": ("fuxi_vllm", "FuXiForRecommendation"),
 }
 
 # ============================================================================

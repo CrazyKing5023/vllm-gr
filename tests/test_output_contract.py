@@ -361,7 +361,6 @@ def _fake_gr_input_processor_runtime():
     fake_tokenizers.TokenizerLike = object
     fake_v1_engine.EngineCoreRequest = object
     fake_input_processor.InputProcessor = _InputProcessor
-    fake_gr_engine.GRFeaturesPayload = object
     fake_gr_engine.GREngineCoreRequest = object
 
     sys.modules.update(

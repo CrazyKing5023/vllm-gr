@@ -24,6 +24,7 @@ from vllm.v1.engine.output_processor import (
 )
 from vllm.v1.engine.parallel_sampling import ParentRequest
 
+from vllm_gr.engine.gr_features_codec import decode_gr_features_payload
 from vllm_gr.outputs import GRRequestOutput
 
 
@@ -58,7 +59,8 @@ class GRRequestState(RequestState):
         gr_features = getattr(request, "gr_features", None)
         gr_request_meta = {}
         if gr_features is not None and adapter is not None:
-            gr_request_meta = adapter.extract_request_meta(gr_features)
+            payload = decode_gr_features_payload(gr_features, adapter.payload_type)
+            gr_request_meta = adapter.extract_request_meta(payload)
             gr_request_meta["request_id"] = request.external_req_id
 
         if sampling_params := request.sampling_params:

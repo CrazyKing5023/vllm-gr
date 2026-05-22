@@ -122,8 +122,8 @@ class TestHSTUAdapterContract(unittest.TestCase):
             ["user_id", "sex", "age_group", "item_id", "action_timestamp"],
         )
 
-    def test_build_payload_returns_gr_features_payload(self):
-        from vllm_gr.engine import GRFeaturesPayload
+    def test_build_payload_returns_hstu_features_payload(self):
+        from vllm_gr.adapters.hstu.payload import HSTUFeaturesPayload
 
         parsed = self.adapter.parse_prompt({
             "user_id": "u1",
@@ -131,7 +131,7 @@ class TestHSTUAdapterContract(unittest.TestCase):
             "candidates": [{"item_candidate_id": 10}],
         })
         payload = self.adapter.build_payload(parsed)
-        self.assertIsInstance(payload, GRFeaturesPayload)
+        self.assertIsInstance(payload, HSTUFeaturesPayload)
         self.assertEqual(payload.user_id, "u1")
 
     def test_decode_payload_round_trip(self):

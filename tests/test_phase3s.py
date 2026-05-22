@@ -9,8 +9,8 @@ import textwrap
 import unittest
 
 
-class TestHSTUFeaturesPayloadAlias(unittest.TestCase):
-    """Verify GRFeaturesPayload is an alias for HSTUFeaturesPayload."""
+class TestHSTUFeaturesPayloadSerialization(unittest.TestCase):
+    """Verify HSTUFeaturesPayload serialization round-trip."""
 
     def _run_subprocess(self, script: str) -> None:
         result = subprocess.run(
@@ -24,45 +24,19 @@ class TestHSTUFeaturesPayloadAlias(unittest.TestCase):
             f"Subprocess failed:\nstdout: {result.stdout}\nstderr: {result.stderr}",
         )
 
-    def test_alias_is_same_object(self):
-        self._run_subprocess(textwrap.dedent("""\
-            import sys
-            from unittest.mock import MagicMock, patch
-            stub = MagicMock()
-            with patch.dict(sys.modules, {"vllm": stub, "vllm.v1": stub.v1, "vllm.v1.engine": stub.v1.engine}):
-                from vllm_gr.engine import GRFeaturesPayload, HSTUFeaturesPayload
-                assert GRFeaturesPayload is HSTUFeaturesPayload
-        """))
-
-    def test_instance_check_works(self):
-        self._run_subprocess(textwrap.dedent("""\
-            import sys
-            from unittest.mock import MagicMock, patch
-            stub = MagicMock()
-            with patch.dict(sys.modules, {"vllm": stub, "vllm.v1": stub.v1, "vllm.v1.engine": stub.v1.engine}):
-                from vllm_gr.engine import GRFeaturesPayload, HSTUFeaturesPayload
-                p = GRFeaturesPayload(
-                    uih_keys=["a"], uih_values_per_key=[[1]], uih_lengths_per_key=[1],
-                    cand_keys=["b"], cand_values_per_key=[[2]], cand_lengths_per_key=[1],
-                )
-                assert isinstance(p, HSTUFeaturesPayload)
-                assert isinstance(p, GRFeaturesPayload)
-        """))
-
     def test_serialization_round_trip(self):
-        """HSTUFeaturesPayload must serialize/deserialize identically to old GRFeaturesPayload."""
+        """HSTUFeaturesPayload must serialize/deserialize correctly."""
         self._run_subprocess(textwrap.dedent("""\
             import sys
             import msgspec
             from unittest.mock import MagicMock, patch
             stub = MagicMock()
             with patch.dict(sys.modules, {"vllm": stub, "vllm.v1": stub.v1, "vllm.v1.engine": stub.v1.engine}):
-                from vllm_gr.engine import GRFeaturesPayload, HSTUFeaturesPayload
+                from vllm_gr.adapters.hstu.payload import HSTUFeaturesPayload
 
                 enc = msgspec.msgpack.Encoder()
-                dec = msgspec.msgpack.Decoder()
 
-                original = GRFeaturesPayload(
+                original = HSTUFeaturesPayload(
                     uih_keys=["a", "b"],
                     uih_values_per_key=[[1, 2], [3, 4]],
                     uih_lengths_per_key=[2, 2],
@@ -76,53 +50,16 @@ class TestHSTUFeaturesPayloadAlias(unittest.TestCase):
                     original_candidates=[{"id": 10}],
                 )
 
-                # Encode with GRFeaturesPayload
                 encoded = enc.encode(original)
 
-                # Decode with HSTUFeaturesPayload
                 dec_hstu = msgspec.msgpack.Decoder(HSTUFeaturesPayload)
                 decoded = dec_hstu.decode(encoded)
                 assert decoded.uih_keys == ["a", "b"]
                 assert decoded.user_id == "u1"
                 assert decoded.original_candidates == [{"id": 10}]
 
-                # Decode with GRFeaturesPayload (alias)
-                dec_gr = msgspec.msgpack.Decoder(GRFeaturesPayload)
-                decoded2 = dec_gr.decode(encoded)
-                assert decoded2.uih_keys == ["a", "b"]
-
-                # Byte-level compatibility: re-encoding must be identical
                 encoded2 = enc.encode(decoded)
                 assert encoded == encoded2
-        """))
-
-
-class TestGRFeaturePayloadStruct(unittest.TestCase):
-    """Verify GRFeaturePayload struct."""
-
-    def _run_subprocess(self, script: str) -> None:
-        result = subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        self.assertEqual(
-            result.returncode, 0,
-            f"Subprocess failed:\nstdout: {result.stdout}\nstderr: {result.stderr}",
-        )
-
-    def test_creation(self):
-        self._run_subprocess(textwrap.dedent("""\
-            import sys
-            from unittest.mock import MagicMock, patch
-            stub = MagicMock()
-            with patch.dict(sys.modules, {"vllm": stub, "vllm.v1": stub.v1, "vllm.v1.engine": stub.v1.engine}):
-                from vllm_gr.engine import GRFeaturePayload
-                fp = GRFeaturePayload(keys=["a", "b"], values_per_key=[[1], [2]], lengths_per_key=[1, 1])
-                assert fp.keys == ["a", "b"]
-                assert fp.values_per_key == [[1], [2]]
-                assert fp.lengths_per_key == [1, 1]
         """))
 
 

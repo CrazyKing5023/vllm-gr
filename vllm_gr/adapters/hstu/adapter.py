@@ -191,15 +191,15 @@ class HSTUModelAdapter(GRModelAdapter, GRPoolingModel, GRScoringModel, GRPrefixC
         )
 
     def build_payload(self, parsed: "GRParsedInput") -> Any:
-        """Build ``GRFeaturesPayload`` from parsed features."""
-        from vllm_gr.engine import GRFeaturesPayload
+        """Build ``HSTUFeaturesPayload`` from parsed features."""
+        from vllm_gr.adapters.hstu.payload import HSTUFeaturesPayload
 
         rf = parsed.raw_features
         original_candidates = [
             dict(c) for c in parsed.original_prompt.get("candidates", [])
         ]
 
-        return GRFeaturesPayload(
+        return HSTUFeaturesPayload(
             uih_keys=rf["uih_keys"],
             uih_values_per_key=rf["uih_values_per_key"],
             uih_lengths_per_key=rf["uih_lengths_per_key"],
@@ -214,7 +214,7 @@ class HSTUModelAdapter(GRModelAdapter, GRPoolingModel, GRScoringModel, GRPrefixC
         )
 
     def decode_payload(self, payload: Any) -> dict[str, Any]:
-        """Decode ``GRFeaturesPayload`` into per-feature tensors."""
+        """Decode ``HSTUFeaturesPayload`` into per-feature tensors."""
         uih_keys = list(payload.uih_keys)
         cand_keys = list(payload.cand_keys)
         ctx_keys = list(payload.ctx_keys)
@@ -440,7 +440,7 @@ class HSTUModelAdapter(GRModelAdapter, GRPoolingModel, GRScoringModel, GRPrefixC
         )
 
     def extract_request_meta(self, payload: Any) -> dict:
-        """Extract metadata from a GRFeaturesPayload for output processing."""
+        """Extract metadata from a HSTUFeaturesPayload for output processing."""
         return {
             "user_id": getattr(payload, "user_id", None),
             "original_candidates": list(getattr(payload, "original_candidates", [])),

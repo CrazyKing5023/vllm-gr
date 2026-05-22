@@ -121,6 +121,7 @@ class TestRunTestsScript(unittest.TestCase):
             recorded_calls,
             [
                 ("simple_inference.py", ["--expect-device", "npu"]),
+                ("fuxi_simple_inference.py", ["--expect-device", "npu"]),
                 (
                     "dataset_inference.py",
                     ["--expect-device", "npu", "debug"],

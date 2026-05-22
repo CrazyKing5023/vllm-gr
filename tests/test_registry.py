@@ -291,14 +291,14 @@ class TestHSTURegistrationExtended:
         info = get_family_info("hstu")
         assert info is not None
         assert info["payload_type"] is not None
-        assert "GRFeaturesPayload" in info["payload_type"]
+        assert "HSTUFeaturesPayload" in info["payload_type"]
 
     def test_hstu_get_payload_type_returns_class(self):
-        """get_payload_type('hstu') should resolve to GRFeaturesPayload."""
+        """get_payload_type('hstu') should resolve to HSTUFeaturesPayload."""
         try:
-            from vllm_gr.engine import GRFeaturesPayload  # noqa: F401
+            from vllm_gr.adapters.hstu.payload import HSTUFeaturesPayload  # noqa: F401
         except Exception:
-            pytest.skip("requires full vLLM runtime (GRFeaturesPayload import)")
+            pytest.skip("requires full vLLM runtime (HSTUFeaturesPayload import)")
         from vllm_gr.adapters.registry import _reset, get_payload_type
 
         _reset()
@@ -307,8 +307,8 @@ class TestHSTURegistrationExtended:
         importlib.reload(vllm_gr.adapters.hstu)
 
         pt = get_payload_type("hstu")
-        from vllm_gr.engine import GRFeaturesPayload
-        assert pt is GRFeaturesPayload
+        from vllm_gr.adapters.hstu.payload import HSTUFeaturesPayload
+        assert pt is HSTUFeaturesPayload
 
     def test_dynamic_family_discovery_in_arg_utils(self):
         """_ensure_family_registered should use dynamic import, not a

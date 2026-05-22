@@ -11,7 +11,7 @@ from collections.abc import Callable
 
 from vllm.v1.request import Request
 
-from vllm_gr.engine import GRFeaturesPayload, GREngineCoreRequest
+from vllm_gr.engine import GREngineCoreRequest
 
 
 class GRRequest(Request):
@@ -24,12 +24,12 @@ class GRRequest(Request):
 
     def __init__(
         self,
-        gr_features: Optional[GRFeaturesPayload] = None,
+        gr_features: Optional[bytes] = None,
         *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        self.gr_features: Optional[GRFeaturesPayload] = gr_features
+        self.gr_features: Optional[bytes] = gr_features
 
     @property
     def gr_payload(self):

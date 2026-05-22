@@ -37,7 +37,6 @@ _COMPAT_EXPORTS: dict[str, tuple[str, str, bool]] = {
     ),
     "GRRequest": ("vllm_gr.request", "GRRequest", True),
     "is_gr_request": ("vllm_gr.request", "is_gr_request", True),
-    "GRFeaturesPayload": ("vllm_gr.engine", "GRFeaturesPayload", True),
     "GREngineCoreRequest": ("vllm_gr.engine", "GREngineCoreRequest", True),
     "GRNewRequestData": ("vllm_gr.core.sched.output", "GRNewRequestData", True),
     "GRInputProcessor": (
