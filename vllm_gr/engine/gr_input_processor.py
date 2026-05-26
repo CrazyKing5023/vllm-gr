@@ -106,8 +106,11 @@ class GRInputProcessor(InputProcessor):
         adapter.validate_prompt(prompt)
         parsed = adapter.parse_prompt(prompt)
 
-        # Step 2: Build payload
-        gr_features = adapter.build_payload(parsed)
+        # Step 2: Build payload and encode for cross-process transport
+        from vllm_gr.engine.gr_features_codec import encode_gr_features_payload
+
+        payload = adapter.build_payload(parsed)
+        gr_features = encode_gr_features_payload(payload)
 
         # Step 3: Build prefix-cache token IDs and salt (if supported)
         prompt_token_ids = None

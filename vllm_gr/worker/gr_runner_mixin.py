@@ -14,6 +14,8 @@ from typing import Any, TYPE_CHECKING
 import numpy as np
 import torch
 from vllm_gr.logger import init_logger
+
+from vllm_gr.engine.gr_features_codec import decode_gr_features_payload
 from vllm.sequence import IntermediateTensors
 from vllm.v1.outputs import ModelRunnerOutput
 
@@ -95,7 +97,11 @@ class GRFeatureRunnerMixin:
             gr_features = getattr(new_req_data, "gr_features", None)
             if gr_features is not None:
                 try:
-                    decoded = self._adapter.decode_payload(gr_features)
+                    payload = decode_gr_features_payload(
+                        gr_features,
+                        self._adapter.payload_type,
+                    )
+                    decoded = self._adapter.decode_payload(payload)
                     self._gr_features_cache[req_id] = decoded
                     self._gr_feature_errors.pop(req_id, None)
                     logger.debug(
@@ -415,14 +421,31 @@ class GRFeatureRunnerMixin:
     ) -> None:
         """Fail fast when mixed GR requests carry different schemas."""
         base_req_id, base_features = gr_reqs[0]
-        expected = str(base_features["schema_fingerprint"])
+        expected = str(base_features.get("schema_fingerprint", ""))
+        if not expected:
+            return
+
+        if "uih_keys" not in base_features:
+            mismatches: list[str] = []
+            for req_id, features in gr_reqs[1:]:
+                actual = str(features.get("schema_fingerprint", ""))
+                if actual != expected:
+                    mismatches.append(f"{req_id}={actual}")
+            if mismatches:
+                mismatch_text = ", ".join(mismatches)
+                raise ValueError(
+                    "Mixed GR batch schema mismatch: "
+                    f"expected {base_req_id}={expected}; got {mismatch_text}"
+                )
+            return
+
         expected_full_uih_keys = list(
             base_features.get(
                 "full_uih_keys",
                 base_features["uih_keys"] + base_features["ctx_keys"],
             )
         )
-        mismatches: list[str] = []
+        mismatches = []
 
         for req_id, features in gr_reqs[1:]:
             actual = str(features["schema_fingerprint"])

@@ -93,6 +93,13 @@ def _make_adapter(
     return HSTUModelAdapter(vllm_config, gr_config)
 
 
+def _decode_request_payload(request):
+    from vllm_gr.adapters.hstu.payload import HSTUFeaturesPayload
+    from vllm_gr.engine.gr_features_codec import decode_gr_features_payload
+
+    return decode_gr_features_payload(request.gr_features, HSTUFeaturesPayload)
+
+
 def _make_processor_with_adapter(**adapter_kwargs):
     """Build a GRInputProcessor wired to an HSTUModelAdapter."""
     from vllm_gr.engine.gr_input_processor import GRInputProcessor
@@ -180,11 +187,12 @@ class TestExtractFeatures(unittest.TestCase):
             params=PoolingParams(task="embed"),
         )
 
+        payload = _decode_request_payload(request)
         self.assertEqual(
-            request.gr_features.cand_values_per_key,
+            payload.cand_values_per_key,
             [[10, 20, 30]],
         )
-        self.assertEqual(len(request.gr_features.original_candidates), 3)
+        self.assertEqual(len(payload.original_candidates), 3)
 
     def test_process_gr_prompt_separates_contextual_features_from_history(self):
         from vllm.pooling_params import PoolingParams
@@ -217,20 +225,21 @@ class TestExtractFeatures(unittest.TestCase):
             params=PoolingParams(task="embed"),
         )
 
+        payload = _decode_request_payload(request)
         self.assertEqual(
-            request.gr_features.uih_keys,
+            payload.uih_keys,
             ["uih_post_id", "uih_owner_id"],
         )
         self.assertEqual(
-            request.gr_features.ctx_keys,
+            payload.ctx_keys,
             ["viewer_id", "dummy_contexual"],
         )
         self.assertEqual(
-            request.gr_features.full_uih_keys,
+            payload.full_uih_keys,
             ["viewer_id", "dummy_contexual", "uih_post_id", "uih_owner_id"],
         )
-        self.assertEqual(request.gr_features.uih_values_per_key, [[11, 12], [101, 102]])
-        self.assertEqual(request.gr_features.ctx_values_per_key, [[7], [1]])
+        self.assertEqual(payload.uih_values_per_key, [[11, 12], [101, 102]])
+        self.assertEqual(payload.ctx_values_per_key, [[7], [1]])
 
     def test_process_gr_prompt_builds_stable_prompt_identity(self):
         from vllm.pooling_params import PoolingParams
@@ -544,18 +553,18 @@ class TestMultiTaskOutput(unittest.TestCase):
         self.assertAlmostEqual(first.task_scores["is_click"], 0.9, places=4)
 
 
-# ── GRFeaturesPayload ────────────────────────────────────────────
+# ── HSTUFeaturesPayload ──────────────────────────────────────────
 
 
 @unittest.skipUnless(_HAS_VLLM_RUNTIME, _SKIP_REASON)
-class TestGRFeaturesPayload(unittest.TestCase):
+class TestHSTUFeaturesPayload(unittest.TestCase):
 
     def test_creation_and_serialization(self):
         """Payload round-trips through msgspec."""
         import msgspec
-        from vllm_gr.engine import GRFeaturesPayload
+        from vllm_gr.adapters.hstu.payload import HSTUFeaturesPayload
 
-        payload = GRFeaturesPayload(
+        payload = HSTUFeaturesPayload(
             uih_keys=["item_id", "timestamp"],
             uih_values_per_key=[[1, 2, 3], [1000, 2000, 3000]],
             uih_lengths_per_key=[3, 3],
@@ -569,7 +578,7 @@ class TestGRFeaturesPayload(unittest.TestCase):
         self.assertEqual(payload.user_id, "user_123")
 
         data = msgspec.msgpack.encode(payload)
-        decoded = msgspec.msgpack.decode(data, type=GRFeaturesPayload)
+        decoded = msgspec.msgpack.decode(data, type=HSTUFeaturesPayload)
         self.assertEqual(decoded.uih_keys, ["item_id", "timestamp"])
         self.assertEqual(decoded.user_id, "user_123")
 

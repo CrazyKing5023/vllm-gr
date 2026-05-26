@@ -11,14 +11,13 @@ from dataclasses import dataclass
 from vllm.v1.core.sched.output import NewRequestData
 from vllm.v1.request import Request
 
-from vllm_gr.engine import GRFeaturesPayload
 
 
 @dataclass
 class GRNewRequestData(NewRequestData):
     """NewRequestData with an additional gr_features field."""
 
-    gr_features: GRFeaturesPayload | None = None
+    gr_features: bytes | None = None
 
     @property
     def gr_payload(self):

@@ -59,6 +59,7 @@ SUITE_DEFINITIONS: dict[str, dict[str, object]] = {
             "test_batch_recommendation_contract.py",
             "test_output_processor_adapter_e2e.py",
             "test_hstu_adapter_contract.py",
+            "test_fuxi_adapter_contract.py",
             # Phase 2 — type hierarchy
             "test_inputs_base.py",
             "test_hstu_prompt.py",
@@ -286,6 +287,7 @@ def run_examples(
         example_runtime_args.extend(["--expect-device", expected_device])
 
     results.append(run_example("simple_inference.py", example_runtime_args))
+    results.append(run_example("fuxi_simple_inference.py", example_runtime_args))
 
     if datasets:
         for ds in datasets:

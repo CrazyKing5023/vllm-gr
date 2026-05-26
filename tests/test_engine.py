@@ -336,10 +336,14 @@ class TestGRRequest(unittest.TestCase):
 
     def test_with_features(self):
         from vllm_gr.request import GRRequest, is_gr_request
-        from vllm_gr.engine import GRFeaturesPayload
+        from vllm_gr.adapters.hstu.payload import HSTUFeaturesPayload
+        from vllm_gr.engine.gr_features_codec import (
+            decode_gr_features_payload,
+            encode_gr_features_payload,
+        )
         from vllm.pooling_params import PoolingParams
 
-        payload = GRFeaturesPayload(
+        payload = HSTUFeaturesPayload(
             uih_keys=["item_id"],
             uih_values_per_key=[[1, 2, 3]],
             uih_lengths_per_key=[3],
@@ -349,7 +353,7 @@ class TestGRRequest(unittest.TestCase):
             user_id="user_123",
         )
         request = GRRequest(
-            gr_features=payload,
+            gr_features=encode_gr_features_payload(payload),
             request_id="req2",
             prompt_token_ids=[1, 2, 3],
             sampling_params=None,
@@ -357,7 +361,8 @@ class TestGRRequest(unittest.TestCase):
             eos_token_id=None,
         )
         self.assertTrue(is_gr_request(request))
-        self.assertEqual(request.gr_features.user_id, "user_123")
+        decoded = decode_gr_features_payload(request.gr_features, HSTUFeaturesPayload)
+        self.assertEqual(decoded.user_id, "user_123")
 
     def test_is_gr_request_false_for_non_request(self):
         from vllm_gr.request import is_gr_request

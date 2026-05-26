@@ -48,7 +48,7 @@ def register_family(
         Layer 1 registration never triggers heavy imports.
     payload_type:
         Dotted path to the payload class (e.g.
-        ``"vllm_gr.engine:GRFeaturesPayload"``).  Stored as a string
+        ``"vllm_gr.adapters.hstu.payload:HSTUFeaturesPayload"``).  Stored as a string
         and resolved lazily by ``get_payload_type()``.
     """
     _FAMILY_ENTRIES[model_type] = {

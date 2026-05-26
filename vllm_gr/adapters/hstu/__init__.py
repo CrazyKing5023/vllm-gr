@@ -15,5 +15,5 @@ register_family(
     gpu_worker="vllm_gr.worker.gr_worker.GRWorker",
     npu_worker="vllm_gr.worker.gr_npu_worker.GRNPUWorker",
     defaults_fn="vllm_gr.adapters.hstu._defaults:apply_hstu_defaults",
-    payload_type="vllm_gr.engine:GRFeaturesPayload",
+    payload_type="vllm_gr.adapters.hstu.payload:HSTUFeaturesPayload",
 )
