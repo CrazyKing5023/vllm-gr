@@ -13,7 +13,7 @@ from typing import Any, TYPE_CHECKING
 
 import numpy as np
 import torch
-from vllm.logger import init_logger
+from vllm_gr.logger import init_logger
 from vllm.sequence import IntermediateTensors
 from vllm.v1.outputs import ModelRunnerOutput
 
@@ -35,6 +35,59 @@ class GRFeatureRunnerMixin:
         self._adapter = adapter
         self._gr_features_cache: dict[str, dict[str, Any]] = {}
         self._gr_feature_errors: dict[str, str] = {}
+
+    def _apply_hstu_runtime_policy(self) -> None:
+        gr_config = getattr(getattr(self, "vllm_config", None), "gr_config", None)
+        if gr_config is None:
+            return
+
+        from vllm_gr.ops.hstu_attention import configure_hstu_npu_fused_dispatch
+        from vllm_gr.utils.npu_adapter import is_npu_device
+
+        device = getattr(self, "device", None)
+        is_npu_runtime = bool(device is not None and is_npu_device(device))
+
+        fused_prefill = (
+            is_npu_runtime
+            if gr_config.enable_npu_fused_prefill is None
+            else bool(gr_config.enable_npu_fused_prefill)
+        )
+        force_hammer_npu = (
+            is_npu_runtime
+            if gr_config.force_hammer_npu is None
+            else bool(gr_config.force_hammer_npu)
+        )
+
+        configure_hstu_npu_fused_dispatch(
+            prefill_enabled=fused_prefill,
+        )
+
+        logger.info(
+            "Applied HSTU runtime policy: is_npu_runtime=%s prefill=%s force_hammer_npu=%s",
+            is_npu_runtime,
+            fused_prefill,
+            force_hammer_npu,
+        )
+
+        if not force_hammer_npu:
+            return
+
+        from vllm_gr.models.dlrm_v3.common import HammerKernel, HammerModule
+
+        model = getattr(self, "model", None)
+        if model is None:
+            return
+
+        changed = 0
+        for module in model.modules():
+            if isinstance(module, HammerModule):
+                module.set_hammer_kernel(HammerKernel.NPU)
+                changed += 1
+
+        logger.info(
+            "Forced HammerKernel.NPU on %d HammerModule instance(s)",
+            changed,
+        )
 
     def _update_states(self, scheduler_output: "SchedulerOutput") -> None:
         for new_req_data in scheduler_output.scheduled_new_reqs:

@@ -4,12 +4,12 @@
 
 """HSTU Transducer module."""
 
-import logging
 from typing import Any, Dict, Optional, Tuple
 
 import torch
 from torch.profiler import record_function
 
+from vllm_gr.logger import init_logger
 from vllm_gr.models.dlrm_v3.common import HammerModule
 from vllm_gr.models.dlrm_v3.modules.positional_encoder import HSTUPositionalEncoder
 from vllm_gr.models.dlrm_v3.modules.postprocessors import L2NormPostprocessor, OutputPostprocessor
@@ -19,7 +19,7 @@ from vllm_gr.ops.jagged_tensors import concat_2D_jagged, split_2D_jagged
 from vllm_gr.utils import ReliableOps
 
 
-logger: logging.Logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 
 
 def complete_cumsum(lengths: torch.Tensor) -> torch.Tensor:

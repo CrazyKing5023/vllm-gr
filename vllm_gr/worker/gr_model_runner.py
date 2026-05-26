@@ -22,3 +22,8 @@ class GRModelRunner(GRFeatureRunnerMixin, GPUModelRunner):
             device=device,
             adapter=adapter,
         )
+
+    def load_model(self, *args, **kwargs):
+        result = super().load_model(*args, **kwargs)
+        self._apply_hstu_runtime_policy()
+        return result

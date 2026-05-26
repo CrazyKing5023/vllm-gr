@@ -18,6 +18,7 @@ which is the single source of truth.
 """
 
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -33,3 +34,9 @@ class GRConfig:
 
     max_candidates: int = 1000
     """Runtime per-request candidate limit (can be <= model max_num_candidates)."""
+
+    enable_npu_fused_prefill: Optional[bool] = None
+    """Enable HSTU mxrec fused prefill/full-prefix attention path. ``None`` means platform default."""
+
+    force_hammer_npu: Optional[bool] = None
+    """Force all discovered HSTU HammerModule instances to use HammerKernel.NPU. ``None`` means platform default."""

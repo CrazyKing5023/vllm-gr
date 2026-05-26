@@ -10,7 +10,6 @@ parity is out of scope for the inference-only recommendation runtime.
 """
 
 import abc
-import logging
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -18,10 +17,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from vllm_gr.logger import init_logger
 from vllm_gr.config.multitask_types import MultitaskTaskType
 from vllm_gr.models.dlrm_v3.common import HammerModule
 
-logger: logging.Logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 
 @dataclass
 class TaskConfig:

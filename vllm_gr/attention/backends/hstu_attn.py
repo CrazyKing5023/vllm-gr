@@ -24,6 +24,7 @@ from vllm.v1.attention.backend import (
 from vllm.v1.kv_cache_interface import FullAttentionSpec
 
 from vllm_gr.config.hstu_config import get_hstu_contextual_seq_len
+from vllm_gr.models.dlrm_v3.common import HammerKernel
 from vllm_gr.ops.hstu_attention import delta_hstu_mha, hstu_mha
 
 
@@ -73,8 +74,6 @@ def _resolve_hstu_attention_mode(
             f"{attn_mode}, got query={query.shape[0]} key={key.shape[0]}."
         )
     return attn_mode, token_positions[attn_mode]
-
-
 @dataclass
 class HSTUAttentionMetadata(AttentionMetadata):
     """HSTU-specific metadata layered on top of vLLM common attention metadata."""
@@ -453,6 +452,11 @@ class HSTUAttentionImpl(AttentionImpl[HSTUAttentionMetadata]):
         # but the underlying attention kernels are still invoked with
         # contextual_seq_len=0 in the regular full-forward implementation.
         contextual_seq_len = 0
+        runtime_kernel = (
+            HammerKernel.NPU
+            if query.device.type == "npu"
+            else HammerKernel.PYTORCH
+        )
 
         if mode == "delta":
             if total_delta_tokens == 0:
@@ -476,6 +480,7 @@ class HSTUAttentionImpl(AttentionImpl[HSTUAttentionMetadata]):
                 seq_offsets=seq_offsets,
                 num_targets=attn_metadata.num_targets,
                 contextual_seq_len=contextual_seq_len,
+                kernel=runtime_kernel,
             )
             if output is not None:
                 output[:delta_output.shape[0]].copy_(delta_output)
@@ -504,6 +509,7 @@ class HSTUAttentionImpl(AttentionImpl[HSTUAttentionMetadata]):
                 causal=True,
                 num_targets=torch.zeros_like(attn_metadata.num_targets),
                 contextual_seq_len=contextual_seq_len,
+                kernel=runtime_kernel,
             )
             if output is not None:
                 output[:prefix_output.shape[0]].copy_(prefix_output)
@@ -525,6 +531,7 @@ class HSTUAttentionImpl(AttentionImpl[HSTUAttentionMetadata]):
             causal=True,
             num_targets=attn_metadata.num_targets,
             contextual_seq_len=contextual_seq_len,
+            kernel=runtime_kernel,
         )
         if output is not None:
             output[:full_output.shape[0]].copy_(full_output)

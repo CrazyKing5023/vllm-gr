@@ -15,7 +15,7 @@ vLLM modules loaded after the initial plugin execution.
 
 import gc
 
-from vllm.logger import init_logger
+from vllm_gr.logger import init_logger
 from vllm.v1.worker.gpu_worker import Worker as GPUWorker
 from vllm_gr.config.gr_config import GRConfig
 from vllm_gr.utils.npu_adapter import release_accelerator_memory

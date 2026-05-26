@@ -39,6 +39,7 @@ class GRNPUModelRunner(GRFeatureRunnerMixin, NPUModelRunner):
 
     def load_model(self, *args, **kwargs):
         result = super().load_model(*args, **kwargs)
+        self._apply_hstu_runtime_policy()
         self._sync_hstu_static_forward_context()
         return result
 

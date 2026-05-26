@@ -13,16 +13,18 @@ import json
 import math
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
-
-import torch
 
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from vllm_gr.config.gr_config import GRConfig
+from vllm_gr.logger import init_logger
 
 DATASET_NAME = "movielens-1m"
+logger = init_logger(__name__)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -261,13 +263,17 @@ def main() -> int:
     )
     from vllm_gr import GRLLM
 
-    llm = GRLLM(
-        model=args.model,
+    gr_config = GRConfig(
         max_seq_len=args.max_seq_len,
         max_candidates=args.max_candidates,
     )
+    llm = GRLLM(
+        model=args.model,
+        gr_config=gr_config,
+    )
 
     result_cases: list[dict[str, Any]] = []
+    infer_start = time.perf_counter()
     try:
         total_cases = len(input_cases)
         for idx, case in enumerate(input_cases, start=1):
@@ -289,10 +295,17 @@ def main() -> int:
                 }
             )
             if idx % 20 == 0 or idx == total_cases:
-                print(f"progress: {idx}/{total_cases}")
+                logger.info("[acc_test] progress: %d/%d", idx, total_cases)
     except Exception as exc:
-        print(exc)
+        logger.exception("[acc_test] inference failed: %s", exc)
     finally:
+        infer_seconds = time.perf_counter() - infer_start
+        logger.info(
+            "[acc_test] inference_seconds=%.6f cases=%d avg_case_seconds=%.6f",
+            infer_seconds,
+            len(result_cases),
+            infer_seconds / len(result_cases) if result_cases else 0.0,
+        )
         llm.shutdown()
 
     pred_payload = _build_output_payload(input_payload, result_cases)
@@ -303,12 +316,12 @@ def main() -> int:
         json.dumps(pred_payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    print(f"Wrote predictions: {output_path}")
+    logger.info("[acc_test] wrote predictions: %s", output_path)
 
     if args.gt_json:
         gt_payload = _load_json(args.gt_json)
         mre, count = _mean_relative_error(pred_payload, gt_payload, eps=1e-8)
-        print(f"mean_relative_error={mre:.10f} count={count}")
+        logger.info("[acc_test] mean_relative_error=%.10f count=%d", mre, count)
 
     return 0
 

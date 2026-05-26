@@ -28,7 +28,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 import torch
 import torch.nn as nn
-from vllm.logger import init_logger
+from vllm_gr.logger import init_logger
 
 try:
     import vllm as _vllm_pkg

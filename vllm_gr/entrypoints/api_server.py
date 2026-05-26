@@ -13,7 +13,7 @@ from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.launcher import serve_http
 from vllm.entrypoints.openai import api_server as openai_api_server
-from vllm.logger import init_logger
+from vllm_gr.logger import init_logger
 from vllm.reasoning import ReasoningParserManager
 from vllm.tool_parsers import ToolParserManager
 from vllm.usage.usage_lib import UsageContext
@@ -108,6 +108,12 @@ async def build_async_gr_engine_client_from_engine_args(
         max_seq_len=engine_args.max_seq_len,
         max_candidates=engine_args.max_candidates,
     )
+    for policy_name in (
+        "enable_npu_fused_prefill",
+        "force_hammer_npu",
+    ):
+        if hasattr(gr_config, policy_name):
+            setattr(gr_config, policy_name, getattr(engine_args, policy_name))
 
     if disable_frontend_multiprocessing:
         logger.warning("V1 is enabled, but got --disable-frontend-multiprocessing.")
