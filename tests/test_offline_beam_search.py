@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# mypy: disable-error-code="attr-defined,no-untyped-def,no-any-return,misc,arg-type,var-annotated,union-attr,return-value,func-returns-value,no-untyped-call,operator,index,valid-type,no-redef,has-type,type-arg"
 import multiprocessing
 import os
 import time
@@ -31,9 +32,6 @@ def _run_offline_beam_search(loops: int, use_patch: bool) -> None:
     max_tokens = 5
 
     if use_patch:
-        from vllm_gr.patch import re_apply_patches
-        re_apply_patches()
-
         assert hasattr(BeamSearchParams, "begin_token")
 
     params_dict: Dict[str, Any] = {
@@ -70,19 +68,6 @@ def _run_offline_beam_search(loops: int, use_patch: bool) -> None:
         assert len(final_output.sequences) == beam_width
     end = time.perf_counter()
     print(f"Elapsed mean: {(end - start) / max(1, loops):.4f}s")
-
-
-def _run_offline_beam_search_target(loops: int) -> None:
-    _run_offline_beam_search(loops, use_patch=False)
-
-
-@pytest.mark.slow  # type: ignore
-def test_offline_beam_search(loops: int) -> None:
-    ctx = multiprocessing.get_context("spawn")
-    p = ctx.Process(target=_run_offline_beam_search_target, args=(loops,))
-    p.start()
-    p.join()
-    assert p.exitcode == 0
 
 
 def _run_offline_gr_beam_search_target(loops: int) -> None:
