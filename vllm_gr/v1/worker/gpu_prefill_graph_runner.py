@@ -16,7 +16,7 @@ from vllm_gr.v1.worker.cudagraph_capture import is_recoverable_capture_error
 from vllm_gr.v1.worker.prefill_graph_common import (
     ENV_ENABLE_PREFILL_GRAPH,
     ENV_PREFILL_GRAPH_BUCKETS,
-    PREFILL_GRAPH_CAPTURE_NUM_REQS,
+    SUPPORTED_NUM_REQS,
     BasePrefillGraphRunner,
     get_kv_capture_bound,
     get_max_context_len,
@@ -119,7 +119,9 @@ class GPUPrefillGraphRunner(BasePrefillGraphRunner):
             scheduler_config = getattr(
                 getattr(runner, "vllm_config", None), "scheduler_config", None
             )
-        configured_num_reqs = get_prefill_graph_capture_num_reqs()
+        configured_num_reqs = get_prefill_graph_capture_num_reqs(
+            getattr(runner, "vllm_config", None)
+        )
         max_num_seqs = int(getattr(scheduler_config, "max_num_seqs", configured_num_reqs[-1]))
         custom_total_buckets = os.getenv(ENV_PREFILL_GRAPH_BUCKETS) is not None
         max_context_len = get_max_context_len(runner)
@@ -270,7 +272,7 @@ class GPUPrefillGraphRunner(BasePrefillGraphRunner):
                             or bt_shape[1] > buf.block_table_buf.shape[1]
                         ):
                             buf.block_table_buf = torch.zeros(
-                                (PREFILL_GRAPH_CAPTURE_NUM_REQS[-1], bt_shape[1]),
+                                (SUPPORTED_NUM_REQS[-1], bt_shape[1]),
                                 dtype=meta.block_table.dtype,
                                 device=runner.device,
                             )
