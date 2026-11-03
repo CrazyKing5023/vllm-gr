@@ -342,10 +342,11 @@ def _explicit_gr_attention_backend(
 def _apply_npu_default_block_size(config) -> None:
     """Use an Ascend-compatible default without overriding user intent.
 
-    vLLM 0.22 resolves an unspecified block size to 16 before the Ascend
-    platform hook runs. vLLM-Ascend 0.22.1rc1 keeps that value when both
-    chunked prefill and prefix caching are disabled, although its standard
-    attention backends require a kernel block size of 128.
+    vLLM-Ascend 0.30 sets the block size to 128 itself when prefix caching or
+    chunked prefill is enabled, but leaves the platform default in place
+    otherwise, while the beam attention backends require the 128 kernel
+    geometry. This rule closes that gap; it was validated on the 0.30.0rc2
+    runtime.
     """
     try:
         from vllm.platforms import current_platform
@@ -672,9 +673,8 @@ def create_engine_config(self, usage_context=None, headless=False):
         or canonical_input is not None
         or retired_input_present
     ):
-        # vLLM 0.22 config classes are Pydantic dataclasses with extra fields
-        # forbidden. Keep GR-only values in VllmConfig.additional_config so
-        # that they also survive process serialization.
+        # vLLM config classes forbid undeclared fields. Keep GR-only values in
+        # VllmConfig.additional_config so they survive process serialization.
         if canonical_source:
             write_canonical_gr_config(config, effective_gr_config)
         else:
@@ -690,11 +690,38 @@ def create_engine_config(self, usage_context=None, headless=False):
         from vllm_gr.v1.engine.beam_search_v1 import validate_gr_execution_config
 
         validate_gr_execution_config(config)
+        compilation = getattr(config, "compilation_config", None)
+        if (
+            _is_cuda_platform()
+            and not getattr(config, "use_v2_model_runner", False)
+            and compilation is not None
+            and compilation.backend == "inductor"
+        ):
+            # Inductor can benchmark an extra, halved reduction block on each
+            # AOT load. Q/K norm rounding then changes across independent
+            # engines, including Beam candidate order and scores. Keep the
+            # compiled reduction geometry; record this in the native config
+            # so the AOT cache key includes it. Explicit overrides still win.
+            compilation.inductor_compile_config.setdefault("dynamic_scale_rblock", False)
+
+    # On Ascend, vllm-ascend wraps EngineCoreProc.run_engine_core and validates
+    # additional_config (pydantic extra="forbid") in the spawned EngineCore
+    # process *before* the vllm-gr plugin loads. Install the GR-key sanitizer
+    # here -- after origin_create_engine_config and every general plugin, and
+    # before EngineCoreClient spawns the process -- so it is the outermost
+    # entrypoint and filters GR keys during vllm-ascend's init_ascend_config.
+    if _is_npu_platform():
+        from vllm.v1.engine.core import EngineCoreProc
+
+        from vllm_gr.v1.ascend_compat import apply_engine_core_config_sanitizer
+
+        apply_engine_core_config_sanitizer(EngineCoreProc)
+
     return config
 
 
 def patch_add_cli_args() -> None:
-    EngineArgs.add_cli_args = add_cli_args
+    EngineArgs.add_cli_args = staticmethod(add_cli_args)
     EngineArgs.create_engine_config = create_engine_config
     EngineArgs.from_cli_args = classmethod(from_cli_args)
     EngineArgs.__init__ = _init_engine_args
