@@ -93,6 +93,20 @@ only the parent-score PR. The YAML override itself is not branch-aware; branch
 selection is enforced by the workflow before policy resolution. Legacy workflows
 without these selectors retain the old accuracy floors.
 
+The resolver detects the target branch from CI metadata: Jenkins
+`CHANGE_TARGET` or GitHub `GITHUB_BASE_REF`; GitHub push and manual branch
+runs use `GITHUB_REF_NAME`. For physical `Ascend910_9362` on `main` or
+`decode_graph`, it selects the existing logical profile and reports the
+physical board ID. Conflicting or absent target metadata retains the physical
+profile and default accuracy floors. PR source branches are not target branches.
+
+An independent Jenkins pipeline must expose its actual PR target branch to the
+resolver process and use a base revision containing this resolver. Until that
+is deployed, its existing base resolver can only select these floors if the
+pipeline maps the physical ID to `decode_graph_Ascend910_9362` for the intended
+target branches. Updating this repository does not update that external
+pipeline automatically.
+
 ## Rollout order
 
 CI continues fetching the policy YAML and resolver from the PR target's
