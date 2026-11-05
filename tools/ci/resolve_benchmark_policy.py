@@ -8,9 +8,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
-import sys
-from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, TextIO, cast
@@ -361,16 +358,7 @@ def resolve_policy(policy: dict[str, Any], device: str, board_id: str) -> dict[s
         raise PolicyError(f"device must be gpu or npu, got {device!r}")
     validated = _validate_policy(policy)
     thresholds = deepcopy(validated["thresholds"])
-    boards = validated["device_overrides"].get(device, {}).get("boards", {})
-    policy_board = board_id
-    if (
-        device == "npu"
-        and board_id == "Ascend910_9362"
-        and detect_target_branch(os.environ) in {"main", "decode_graph"}
-        and "decode_graph_Ascend910_9362" in boards
-    ):
-        policy_board = "decode_graph_Ascend910_9362"
-    board_override = boards.get(policy_board)
+    board_override = validated["device_overrides"].get(device, {}).get("boards", {}).get(board_id)
     if board_override:
         for group, override_values in board_override["thresholds"].items():
             thresholds[group].update(override_values)
@@ -469,19 +457,6 @@ def write_summary(values: dict[str, str], source_ref: str, bootstrap: bool, stre
     stream.writelines(f"| {label} | `{value}` |\n" for label, value in rows)
 
 
-def detect_target_branch(environ: Mapping[str, str]) -> str:
-    """Identify a target branch from CI metadata, returning empty if uncertain."""
-    candidates = [environ.get("CHANGE_TARGET", ""), environ.get("GITHUB_BASE_REF", "")]
-    if (
-        environ.get("GITHUB_EVENT_NAME") in {"push", "workflow_dispatch"}
-        and environ.get("GITHUB_REF_TYPE") == "branch"
-        and not environ.get("CHANGE_ID")
-    ):
-        candidates.append(environ.get("GITHUB_REF_NAME", ""))
-    branches = {branch for branch in candidates if branch}
-    return next(iter(branches)) if len(branches) == 1 else ""
-
-
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
@@ -516,9 +491,6 @@ def main() -> int:
     if missing:
         raise PolicyError("resolution requires " + ", ".join(missing))
 
-    branch = detect_target_branch(os.environ)
-    if args.device == "npu" and args.board_id == "Ascend910_9362":
-        print(f"Benchmark target branch: {branch!r} (empty means unknown)", file=sys.stderr)
     values = resolve_policy(policy, args.device, args.board_id)
     if args.bootstrap_strict:
         values["PANGU1B_POLICY_SOURCE"] = "strict-bootstrap"
