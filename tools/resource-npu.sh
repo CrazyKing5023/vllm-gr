@@ -154,13 +154,7 @@ function lock_npu() {
 # Kills the background process created by lock_npu.
 function unlock_npu() {
     local pid=$1
-    [ -n "$pid" ] || return 0
-    kill -9 "$pid" 2>/dev/null || true
-    # wait_process_exit lives in resource.sh, which sources this file. Guard the
-    # call so sourcing resource-npu.sh standalone still works.
-    if declare -F wait_process_exit >/dev/null; then
-        wait_process_exit "$pid" 5
-    fi
+    [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null
 }
 
 function lock_npus() {
