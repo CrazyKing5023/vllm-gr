@@ -1266,7 +1266,7 @@
     "tests/test_beam_search_v1_input_processor.py::test_npu_request_accepts_matching_width_and_canonical_backend": "l1",
     "tests/test_beam_search_v1_input_processor.py::test_npu_unconstrained_candidate_capacity_matches_retained_stage_widths": "l1",
     "tests/test_beam_search_v1_input_processor.py::test_npu_unconstrained_request_needs_no_constraint_artifact": "l1",
-    "tests/test_beam_search_v1_input_processor.py::test_npu_unconstrained_request_rejects_unsupported_generation_length": "l1",
+    "tests/test_beam_search_v1_input_processor.py::test_npu_unconstrained_request_enforces_supported_generation_length": "l1",
     "tests/test_beam_search_v1_input_processor.py::test_offline_compact_output_preserves_accepted_prompt_snapshot": "l1",
     "tests/test_beam_search_v1_input_processor.py::test_offline_inputs_preserve_caller_formed_batch_order": "l1",
     "tests/test_beam_search_v1_input_processor.py::test_offline_inputs_reject_unsupported_batch_size_before_admission": "l1",
