@@ -10,6 +10,7 @@ a serving request and no GPU product name is dispatched on.
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass
 from functools import lru_cache
@@ -33,6 +34,31 @@ MIN_HEADROOM = 1.5
 # bound, so the relative win is unreal: 1024/B1/W128 predicted 1.5x and measured
 # 5% slower.
 MIN_CHAIN_US = 150.0
+ENV_MIN_CHAIN_US = "VLLM_GR_PREFIX_MIN_CHAIN_US"
+
+
+def _min_chain_us() -> float:
+    """Chain bound in microseconds; invalid overrides keep MIN_CHAIN_US."""
+    raw = os.environ.get(ENV_MIN_CHAIN_US)
+    if raw is None:
+        return MIN_CHAIN_US
+    return _parse_min_chain_us(raw)
+
+
+@lru_cache(maxsize=8)
+def _parse_min_chain_us(raw: str) -> float:
+    try:
+        value = float(raw)
+    except ValueError:
+        value = float("nan")
+    if math.isfinite(value) and value >= 0:
+        return value
+    from vllm.logger import init_logger
+
+    init_logger(__name__).warning(
+        "vllm_gr: ignoring %s=%r (expected a finite value >= 0)", ENV_MIN_CHAIN_US, raw
+    )
+    return MIN_CHAIN_US
 
 
 @dataclass(frozen=True)
@@ -290,8 +316,13 @@ class PrefixCalibration:
         }
 
 
+# Bump when a kernel the coefficients describe changes cost. Schema 2: the
+# segment merge runs one program per (request, head, tile), so schema-1 files
+# overstate the per-segment overhead m.
+CALIBRATION_SCHEMA = 2
+
 _CALIBRATION_HEADER = """\
-# vllm-gr Beam prefix-segmentation calibration (auto-generated, schema 1).
+# vllm-gr Beam prefix-segmentation calibration (auto-generated, schema 2).
 #
 # Measured once per (device, model geometry) when the engine starts and reused by
 # later starts. Delete this file to force a re-measurement; start the engine with
@@ -365,6 +396,8 @@ def load_calibration(device: dict[str, Any], geometry: dict[str, Any]) -> Prefix
 
     try:
         data = yaml.safe_load(calibration_path().read_text(encoding="utf-8"))
+        if data.get("schema") != CALIBRATION_SCHEMA:
+            return None  # measured by an older merge kernel; re-measure
         entry = data["entries"][_device_key(device)]
     except Exception:  # noqa: BLE001 - a missing or unreadable file is not an error
         return None
@@ -400,7 +433,11 @@ def store_calibration(
     entries: dict[str, Any] = {}
     try:
         existing = yaml.safe_load(path.read_text(encoding="utf-8"))
-        if isinstance(existing, dict) and isinstance(existing.get("entries"), dict):
+        if (
+            isinstance(existing, dict)
+            and existing.get("schema") == CALIBRATION_SCHEMA
+            and isinstance(existing.get("entries"), dict)
+        ):
             entries = dict(existing["entries"])
     except Exception:  # noqa: BLE001 - start from an empty file
         entries = {}
@@ -410,7 +447,7 @@ def store_calibration(
         **calibration.as_mapping(),
     }
     body = _CALIBRATION_HEADER + yaml.safe_dump(
-        {"schema": 1, "entries": entries}, sort_keys=True, default_flow_style=False
+        {"schema": CALIBRATION_SCHEMA, "entries": entries}, sort_keys=True, default_flow_style=False
     )
     path.write_text(body, encoding="utf-8")
 
@@ -471,7 +508,10 @@ def resolve_prefix_plan(
         # Already compute/byte bound at S=1: the model's own win would not
         # survive the extra query copies and merges.
         return None
-    if calibration.terms_us(shape, 1, sm_count)[0] < MIN_CHAIN_US:
+    # The 150us default was fitted on L20 while the merge kernel ran serially
+    # (~40us/call); on RTX PRO 6000 with the parallel merge it blocks 1.3-3.8x
+    # wins at 512-4096 tokens. Overridable until re-measured per device.
+    if calibration.terms_us(shape, 1, sm_count)[0] < _min_chain_us():
         # Short prefix: the call is launch bound, so a relative win does not pay
         # for the extra launches and merges.
         return None
