@@ -285,7 +285,7 @@ def _run_regression(work_dir: Path) -> None:
     kwargs: dict[str, Any] = dict(
         model=model,
         trust_remote_code=True,
-        dtype="bfloat16",
+        dtype="float16",
         seed=0,
         vllm_gr_config=config,
         async_scheduling=True,
