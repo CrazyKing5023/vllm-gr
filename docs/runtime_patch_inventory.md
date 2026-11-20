@@ -42,9 +42,11 @@ NPU startup and inference revalidation remained outstanding at that point.
 The machine-readable counterpart is `docs/patch_inventory.yaml`. Owner,
 installer, activation, validation, process-role, `scope`, and `backend_id` entries
 below must remain aligned with it. `scope: core` has a null `backend_id`;
-`scope: backend` has exactly one provider owner. These IDs currently use the
-canonical provider keys `cuda` and `npu`; they do not introduce a versioned
-provider identity API.
+`scope: backend` has exactly one provider owner. These IDs use the provider
+`backend_id` values `cuda` and `ascend`, which are stable GR implementation
+identities; the Ascend provider's tensor placement remains `npu`. Provider API
+versioning and identity matching are defined in
+[the platform contract](platform_backend_contract.md#provider-api-versions).
 
 Ownership is semantic, not the location of the orchestrating call. In
 particular, common EngineCore/ModelRunner dispatch may install a backend-owned
@@ -76,8 +78,8 @@ installers run or their ordering.
 | GR-PATCH-009 | `v1/engine/core.py`, `engine_core_patch.py`, `hot_update.py` | `apply_engine_core_request_patches` | Shared EngineCore plan, including NPU child entry, finds request dispatch or Trie-capacity initialization incomplete; utilities do not depend on the management listener | request validators; V1 admission, NPU multi-Trie routing, hot-update utility contracts and management tests | EngineCore |
 | GR-PATCH-010 | `v1/core/sched/scheduler_patch.py`, `gr_async_scheduler.py` | `apply_scheduler_patch` | EngineCore plan finds either scheduler wrapper missing | `_validate_scheduler_patch`; EngineCore protocol contracts | EngineCore |
 | GR-PATCH-022 | `v1/core/kv_cache_utils.py` | `apply_kv_hash_memo_patch` | EngineCore plan installs the prefix hash memos | `_validate_kv_hash_memo_patch`; block and chain equivalence tests | EngineCore |
-| GR-PATCH-011 | GPU V1/V2 runner patches; `worker/hot_update.py` | `model_runner_patch.apply_worker_patches` | selected CUDA runner hooks are incomplete; common installer mounts Worker utilities | runner validator; GPU, utility contract, reload and lifecycle tests | GPU worker |
-| GR-PATCH-012 | NPU runner patch; `worker/hot_update.py`, `ascend_compat.py` | `model_runner_patch.apply_worker_patches`; delayed `NPUWorker.init_device` | active NPU runner hooks are incomplete; delayed initialization mounts Worker utilities | NPU runner, delayed-install and unsupported-reload guard tests | NPU worker |
+| GR-PATCH-011 | GPU V1/V2 runner patches; `worker/hot_update.py` | `model_runner_patch.apply_worker_patches` | the CUDA provider selects V1 or V2 hooks and mounts Worker utilities | runner validator; GPU, utility contract, reload and lifecycle tests | GPU worker |
+| GR-PATCH-012 | NPU runner patch; `worker/hot_update.py`, `ascend_compat.py` | `model_runner_patch.apply_worker_patches`; delayed `NPUWorker.init_device` | the Ascend provider supplies runner hooks and delayed initialization mounts Worker utilities | NPU runner, delayed-install and unsupported-reload guard tests | NPU worker |
 | GR-PATCH-013 | `v1/attention/backends/beam_attn.py` | `register_backend` decorator | facade import and CUSTOM selection | Beam Attention platform, metadata, and configuration tests | EngineCore, worker |
 | GR-PATCH-015 | `vllm_gr/ops/sliced_logits.py` | `sliced_logits_patch.apply_sliced_logits_patch` | hooks install at startup; valid slice enables execution | installer result; sliced-logits and optional patch-count tests | worker |
 | GR-PATCH-016 | `vllm_gr/npu_spawn_patch.py` | `vllm_gr.npu_spawn_patch.apply_npu_spawn_patch` | selected NPU provider, before native worker import | installer result; spawn patch tests | main, EngineCore |
@@ -129,7 +131,7 @@ installers run or their ordering.
 
 ### GR-PATCH-002 — NPUWorker Initialization Hook
 
-- Scope: `backend`; backend ID: `npu`
+- Scope: `backend`; backend ID: `ascend`
 
 - Source: `vllm_gr/v1/ascend_compat.py`
 - Orchestration: selected NPU provider via `vllm_gr/patch.py`
@@ -187,6 +189,11 @@ requests continue through their existing non-Beam entry points.
 
 ### GR-PATCH-005 — EngineArgs Configuration Override
 
+After GR normalization, `platforms/planning.py` adds the immutable backend plan
+to native configuration transport. Ordinary native engines remain unplanned.
+Coverage: `tests/engine/test_backend_plan_engine_args.py` and
+`tests/platforms/test_backend_plan.py`.
+
 - Scope: `core`; backend ID: `null`
 
 - Targets:
@@ -239,6 +246,11 @@ requests continue through their existing non-Beam entry points.
 - Removal condition: grouped Beam messages can be carried through a stable upstream extension mechanism without mutating Enum internals.
 
 ### GR-PATCH-009 — EngineCore Lifecycle and Socket Processing
+
+The constructor wrapper verifies the expected workers' backend fingerprints
+and bound implementation identities before returning. Missing readiness or
+disagreement shuts down the executor and fails startup. This adds no new
+native patch target. Coverage: `tests/platforms/test_backend_plan.py`.
 
 - Scope: `core`; backend ID: `null`
 
@@ -318,6 +330,21 @@ requests continue through their existing non-Beam entry points.
 
 - Scope: `backend`; backend ID: `cuda`
 
+The CUDA provider patches `Worker.init_device` at process startup. Each worker
+installs and verifies the runner generation selected by its vLLM configuration
+before constructing the native runner.
+
+The common model-load wrapper also binds the admitted backend plan after a
+successful load. Reload/shutdown release the runner-owned binding with the
+constraint runtime. `platforms/binding.py` owns this shared lifecycle logic;
+`tests/platforms/test_backend_plan.py` covers isolation and failed binding.
+First binding and full reload compare the admitted plan while allowing a
+positive native `max_model_len` reduction within its admitted limit. Capability
+validation still receives the live fitted configuration; other drift fails
+before service creation. `tests/platforms/test_runner_lifecycle.py` covers both
+autofit boundaries, adapter replacement, and rejected configuration drift.
+The same lifecycle applies to the Ascend wrapper in GR-PATCH-012.
+
 Cross-batch stage-adapter caching is opt-in through
 `beam.adapter_cache_enabled` (default false). The existing same-batch reuse
 and Decode capture policy remain active when this cache is disabled.
@@ -343,8 +370,8 @@ and Decode capture policy remain active when this cache is disabled.
   `gr_gc.py` owns Worker-side process flags, locks, depth and freeze entrypoints.
   `gr_context.py` owns config/context and graph diagnostics;
   `model_runner_contracts.py` owns markers/checks without hardware imports.
-  The public installer selects V1 before importing its wrapper and installs
-  NumPy staging once for either CUDA version. Public RPC names, async sampling
+  The CUDA provider loads its selected V1 or V2 installer. Both install NumPy
+  staging, and each planned runner binds its own native lifecycle methods. Public RPC names, async sampling
   context lifetime, freeze policy and cleanup ordering retain existing behavior.
   Coverage: `tests/v1/worker/test_model_runner_common.py`,
   `tests/v1/worker/test_model_runner_stage_binding.py`, `tests/v1/worker/test_model_runner_patch.py`,
@@ -449,7 +476,7 @@ and Decode capture policy remain active when this cache is disabled.
 
 ### GR-PATCH-012 — NPU ModelRunner Override
 
-- Scope: `backend`; backend ID: `npu`
+- Scope: `backend`; backend ID: `ascend`
 
 - Source: `vllm_gr/v1/worker/npu/npu_model_runner_patch.py`
 - Shared helpers: `vllm_gr/v1/worker/model_runner_common.py`, `vllm_gr/v1/worker/npu/npu_model_runner_inputs.py`, `vllm_gr/v1/worker/npu/npu_model_runner_bookkeeping.py`, `vllm_gr/v1/worker/model_runner_contracts.py`, `vllm_gr/v1/worker/gr_gc.py`, `vllm_gr/v1/worker/gr_context.py`, `vllm_gr/v1/worker/gr_execution.py`, `vllm_gr/v1/worker/hot_update.py`, `vllm_gr/constraints/versioned_table.py`, `vllm_gr/v1/ascend_compat.py`
@@ -546,7 +573,7 @@ The CUDA plugin subprocess test and sliced-logits proxy tests cover this boundar
 
 ### GR-PATCH-016 — NPU-aware Spawn Start Method
 
-- Scope: `backend`; backend ID: `npu`
+- Scope: `backend`; backend ID: `ascend`
 
 - Source / Installer: `vllm_gr/npu_spawn_patch.py`
 - Orchestration: `vllm_gr/patch.py`
@@ -562,7 +589,7 @@ The CUDA plugin subprocess test and sliced-logits proxy tests cover this boundar
 
 ### GR-PATCH-018 — Ascend Penalties Warmup OOM Guard
 
-- Scope: `backend`; backend ID: `npu`
+- Scope: `backend`; backend ID: `ascend`
 
 - Source / Installer: `vllm_gr/v1/ascend_compat.py`
 - Orchestration: `vllm_gr/v1/ascend_compat.py::patch_npu_worker_init_device`
@@ -586,7 +613,7 @@ The CUDA plugin subprocess test and sliced-logits proxy tests cover this boundar
 
 ### GR-PATCH-019 — Ascend additional_config Sanitizer
 
-- Scope: `backend`; backend ID: `npu`
+- Scope: `backend`; backend ID: `ascend`
 
 - Source / Installer: `vllm_gr/v1/ascend_compat.py`
 - Orchestration: `vllm_gr/engine/arg_utils_gr.py::create_engine_config`
@@ -647,7 +674,7 @@ The CUDA plugin subprocess test and sliced-logits proxy tests cover this boundar
 
 ### GR-PATCH-021 — Contiguous Beam Prefix KV
 
-- Scope: `backend`; backend ID: `npu`
+- Scope: `backend`; backend ID: `ascend`
 
 - Source / Installer: `vllm_gr/v1/npu_kv_layout.py::apply_npu_contiguous_kv_cache_patch`
 - Orchestration: the NPU worker `init_device` hook, before native runner construction.

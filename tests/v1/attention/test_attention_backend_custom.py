@@ -155,50 +155,34 @@ class TestNpuDefaultBlockSize(unittest.TestCase):
         )
 
     def test_npu_uses_128_when_block_size_was_not_explicit(self):
-        from vllm_gr.engine.arg_utils_gr import _apply_npu_default_block_size
+        from vllm_gr.platforms.ascend.config import AscendConfigService
 
         config = self._config()
-        with mock.patch(
-            "vllm.platforms.current_platform",
-            SimpleNamespace(device_type="npu"),
-        ):
-            _apply_npu_default_block_size(config)
+        AscendConfigService().apply_native_defaults(config)
 
         assert config.cache_config.block_size == 128
 
     def test_npu_preserves_explicit_block_size(self):
-        from vllm_gr.engine.arg_utils_gr import _apply_npu_default_block_size
+        from vllm_gr.platforms.ascend.config import AscendConfigService
 
         config = self._config(user_specified=True)
-        with mock.patch(
-            "vllm.platforms.current_platform",
-            SimpleNamespace(device_type="npu"),
-        ):
-            _apply_npu_default_block_size(config)
+        AscendConfigService().apply_native_defaults(config)
 
         assert config.cache_config.block_size == 16
 
     def test_npu_preserves_hybrid_model_block_size(self):
-        from vllm_gr.engine.arg_utils_gr import _apply_npu_default_block_size
+        from vllm_gr.platforms.ascend.config import AscendConfigService
 
         config = self._config(is_hybrid=True)
-        with mock.patch(
-            "vllm.platforms.current_platform",
-            SimpleNamespace(device_type="npu"),
-        ):
-            _apply_npu_default_block_size(config)
+        AscendConfigService().apply_native_defaults(config)
 
         assert config.cache_config.block_size == 16
 
     def test_gpu_keeps_vllm_default(self):
-        from vllm_gr.engine.arg_utils_gr import _apply_npu_default_block_size
+        from vllm_gr.platforms.cuda.config import CudaConfigService
 
         config = self._config()
-        with mock.patch(
-            "vllm.platforms.current_platform",
-            SimpleNamespace(device_type="cuda"),
-        ):
-            _apply_npu_default_block_size(config)
+        CudaConfigService().apply_native_defaults(config)
 
         assert config.cache_config.block_size == 16
 
@@ -316,3 +300,11 @@ if __name__ == "__main__":
 
 
 pytestmark = pytest.mark.cpu_test
+
+
+@pytest.fixture(autouse=True)
+def _isolate_backend_plan_admission(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise configuration policy independently of a native backend install."""
+    from vllm_gr.platforms import planning
+
+    monkeypatch.setattr(planning, "admit_backend_plan", lambda config: None)

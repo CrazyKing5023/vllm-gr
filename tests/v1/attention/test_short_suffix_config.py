@@ -14,6 +14,7 @@ import torch
 
 from tests.helpers.gr_config import engine_args_from_file, make_gr_config
 from vllm_gr.config import GRConfig, gr_config_from_mapping, gr_config_to_mapping
+from vllm_gr.platforms.legacy import legacy_config_service
 from vllm_gr.v1.attention.backends.beam_attn_gpu import (
     GPUBeamAttentionBatch,
     validate_short_suffix_attention,
@@ -165,8 +166,11 @@ def _short_suffix_engine_config(
         else SimpleNamespace(gr=options)
     )
     monkeypatch.setattr(arg_utils_gr, "origin_create_engine_config", lambda *args: config)
-    monkeypatch.setattr(arg_utils_gr, "_is_cuda_platform", lambda: cuda)
-    monkeypatch.setattr(arg_utils_gr, "_is_npu_platform", lambda: not cuda)
+    monkeypatch.setattr(
+        arg_utils_gr,
+        "engine_config_service",
+        lambda: legacy_config_service("cuda" if cuda else "npu"),
+    )
     return config, args
 
 
@@ -828,3 +832,11 @@ def test_fused_suffix_uses_the_fa2_emulating_kernel_for_every_prefix_backend(
 
 
 pytestmark = pytest.mark.cpu_test
+
+
+@pytest.fixture(autouse=True)
+def _isolate_backend_plan_admission(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise configuration policy independently of a native backend install."""
+    from vllm_gr.platforms import planning
+
+    monkeypatch.setattr(planning, "admit_backend_plan", lambda config: None)

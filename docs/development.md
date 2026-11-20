@@ -33,8 +33,13 @@ offline entry point. Runtime initialization belongs to
 repeatable initialization in the relevant frontend, EngineCore, and Worker
 processes; frontend startup alone does not establish Worker patch installation.
 
-Platform registration is hardware-import-free. Provider activation does not
-replace the separate Worker and Attention dispatchers. The
+Platform registration is hardware-import-free. Provider selection keys on a
+declared backend ID matched against the native platform identity, not on tensor
+device type. GR EngineArgs carries an immutable BackendPlan to workers; runner
+service binding and an EngineCore readiness collective verify agreement before
+request acceptance. The active provider selects the worker hooks. The runner owns its
+prepare, execute and sample adapter. The attention backend selects its execution
+module. The
 [platform contract](platform_backend_contract.md) explains these boundaries;
 the [patch inventory](runtime_patch_inventory.md) records installation ownership.
 
