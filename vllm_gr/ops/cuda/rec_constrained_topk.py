@@ -131,7 +131,17 @@ def _lookup_constraint_tokens(
     return offsets, begin, degree, token, candidate_mask
 
 
-@triton.jit(do_not_specialize=["start", "cols", "vocab_size", "vocab_offset"])
+@triton.jit(
+    do_not_specialize=[
+        "start",
+        "cols",
+        "vocab_size",
+        "vocab_offset",
+        "pair_count",
+        "first_count",
+        "temperature_count",
+    ]
+)
 def _stream_constraint_logits_kernel(
     logits,
     candidate_logits,
@@ -154,9 +164,9 @@ def _stream_constraint_logits_kernel(
     prefix_stride: tl.constexpr,
     candidate_stride: tl.constexpr,
     table_vocab_size: tl.constexpr,
-    pair_count: tl.constexpr,
-    first_count: tl.constexpr,
-    temperature_count: tl.constexpr,
+    pair_count,
+    first_count,
+    temperature_count,
     TRIE_COUNT: tl.constexpr,
     step: tl.constexpr,
     DEVICE_STEP: tl.constexpr,

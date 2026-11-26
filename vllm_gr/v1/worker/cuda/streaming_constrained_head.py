@@ -190,3 +190,28 @@ class StreamingConstrainedHead:
             denominator_stats=self.stats,
             logits_vocab_size_override=self.vocab_size,
         )
+
+
+@torch.inference_mode()
+def prewarm_streaming_constrained_head(worker: Any, backend: Any, top_k: int) -> None:
+    """Prepare the Decode Triton variants before publishing a compatible Trie."""
+    head = StreamingConstrainedHead.for_worker(worker, backend, 1, top_k)
+    if head is None:
+        return
+
+    # Grid size and counts do not specialize either kernel. One row with the
+    # production prefix stride and a device step warms every Decode batch size.
+    device = head.weight.device
+    hidden = torch.zeros((1, head.weight.shape[1]), dtype=head.weight.dtype, device=device)
+    prefix = torch.full((1, 3), -1, dtype=torch.int32, device=device)
+    temperature = torch.ones(1, dtype=torch.float32, device=device)
+    step = torch.zeros(1, dtype=torch.int32, device=device)
+    trie_ids = torch.zeros_like(step) if backend.info.table_metadata.trie_count > 1 else None
+    outputs = (
+        torch.empty((1, top_k), dtype=torch.int32, device=device),
+        torch.empty((1, top_k), dtype=torch.float32, device=device),
+        torch.empty((1, top_k), dtype=torch.bool, device=device),
+    )
+    counts = torch.empty(1, dtype=torch.int32, device=device)
+    head.select(hidden, prefix, temperature, outputs, counts, step, trie_ids=trie_ids)
+    torch.accelerator.synchronize(device)

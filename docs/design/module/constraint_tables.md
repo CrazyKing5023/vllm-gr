@@ -67,7 +67,10 @@ variants, and windows without workspace savings use their existing paths.
 
 Streaming sampling runs outside native Forward CUDA Graphs. Each lookup uses
 the concrete current table; publishing a table with different degrees rebuilds
-the candidate workspace without recapturing native Forward.
+the candidate workspace without recapturing native Forward. Catalog counts
+are not Triton specialization keys. For an eligible streaming head, each new
+compatible table prewarms the streaming kernels with a single row before
+publication. Different batch sizes reuse the same Triton variants.
 
 ### Ascend
 
